@@ -434,7 +434,28 @@ off by default:
       Press HOME to exit
 
   The full red crash log (registers, backtrace) is what the chord shows.
-- Risk to check: the TV button normally opens the system's TV Remote overlay, so it may not
-  reach the app through `VPADRead` (`VPAD_BUTTON_TV`, 0x00010000). Test it early; if it is
-  swallowed, pick a replacement final button with the user.
+- **Checked 2026-11-12:** the TV button does reach the app through `VPADRead`
+  (`VPAD_BUTTON_TV`, 0x00010000; the joypad driver reports it as `JoyButton::MISC1`), so the
+  chord can use it. HOME also shows in `hold` (0x2) but belongs to the system.
 - Until graphics exist, the log stays the main screen (current behaviour: black, red on crash).
+
+## 12. Input (joypad_wiiu.cpp), 2026-11-12
+
+`JoypadWiiU` (created in `OS_WiiU::initialize_joypads`, polled once per frame at the top of
+`OS_WiiU::run`'s loop) is the only GamePad reader while Godot runs. VPAD's `trigger` bits are
+per read call, so the log console gets the same sample through `wiiu_console_handle_buttons`;
+`wiiu_console_update_input` (its own `VPADRead`) is only for the crash and exit screens.
+
+- Device 0: GamePad. Devices 1-4: KPAD channels 0-3 (Wii Remote, + Nunchuk, Classic
+  Controller, Wii U Pro Controller; `WPADEnableURCC(TRUE)` for Pro/Bloopair pads). Changing
+  the extension reconnects the device under a new name.
+- **Buttons map by printed label** (the user's choice): Wii U A = `JoyButton::A`, B = B, X = X,
+  Y = Y, - = BACK, + = START, L/R = shoulders, stick clicks, D-pad, TV = MISC1. ZL/ZR are
+  trigger axes (0 or 1; analog on an original Classic Controller). Stick Y is negated (Godot
+  is +Y down).
+- GUIDs `cafe00...0N` are not in Godot's mapping DB, so raw values pass through unmapped.
+- Verified on the console with the GamePad: every mapped button, both sticks in every
+  direction, ZL/ZR, TV. KPAD is untested (no Wii Remote was connected).
+- `LOG_GAMEPAD_BITS` in `joypad_wiiu.cpp` logs raw `hold` changes; turn it off when it gets noisy.
+- LVENGINE: the user added joypad bindings to its InputMap themselves (synced from their PC
+  working copy at `~/Projects/Godot/LVENGINE`, not from git).

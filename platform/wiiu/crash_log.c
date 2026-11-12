@@ -56,6 +56,11 @@ void wiiu_console_enter_crash_mode(uint32_t color);
 void wiiu_console_update_input(void);
 void wiiu_console_draw(void);
 void wiiu_console_free(void);
+void wiiu_console_resume(void);
+
+// wiiu_gx2.c
+bool wiiu_gx2_is_active(void);
+void wiiu_gx2_shutdown(void);
 
 // Console background colours, 0xRRGGBBAA.
 #define CONSOLE_COLOR_NORMAL 0x00000000u
@@ -481,6 +486,13 @@ static void enter_crash_screen(void) {
 			OSSuspendThread(OSGetCurrentThread());
 		}
 	}
+
+	// GX2 owns the display while the game runs: hand it back to the log console
+	// (GX2 state may be what broke, so don't try to draw the log with it).
+	if (wiiu_gx2_is_active()) {
+		wiiu_gx2_shutdown();
+	}
+	wiiu_console_resume();
 
 	// Keep the log on screen until HOME, then leave like a normal app would,
 	// so the console returns to the Wii U menu instead of a fatal error.

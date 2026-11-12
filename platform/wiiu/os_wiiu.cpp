@@ -1,5 +1,7 @@
 #include "os_wiiu.h"
 
+#include "display_server_wiiu.h"
+
 #include "core/config/project_settings.h"
 #include "core/os/main_loop.h"
 #include "main/main.h"
@@ -43,6 +45,10 @@ uint64_t OS_WiiU::get_ticks_usec() const {
 	return (ticks / clock) * 1000000ull + ((ticks % clock) * 1000000ull) / clock;
 }
 
+void OS_WiiU::initialize_joypads() {
+	joypad = memnew(JoypadWiiU(Input::get_singleton()));
+}
+
 void OS_WiiU::set_main_loop(MainLoop *p_main_loop) {
 	main_loop = p_main_loop;
 }
@@ -60,6 +66,10 @@ void OS_WiiU::delete_main_loop() {
 
 void OS_WiiU::finalize() {
 	delete_main_loop();
+	if (joypad) {
+		memdelete(joypad);
+		joypad = nullptr;
+	}
 }
 
 bool OS_WiiU::_check_internal_feature_support(const String &p_feature) {
@@ -159,7 +169,7 @@ extern "C" void wiiu_crash_check(void);
 extern "C" bool wiiu_proc_is_running(void);
 
 // Defined in wiiu_console.c.
-extern "C" void wiiu_console_update_input(void);
+extern "C" void wiiu_console_handle_buttons(uint32_t hold, uint32_t trigger);
 extern "C" void wiiu_console_draw(void);
 
 void OS_WiiU::run() {
@@ -170,13 +180,20 @@ void OS_WiiU::run() {
 	main_loop->initialize();
 
 	while (wiiu_proc_is_running()) {
+		// Read every controller once per frame, before the engine runs the frame.
+		// The same GamePad sample scrolls the log (D-pad, L/R).
+		if (joypad) {
+			joypad->process();
+			wiiu_console_handle_buttons(joypad->get_gamepad_hold(), joypad->get_gamepad_trigger());
+		}
 		DisplayServer::get_singleton()->process_events();
 		if (Main::iteration()) {
 			break;
 		}
-		// D-pad scrolls the log. Godot has no Wii U input driver yet, so nothing
-		// else reads the GamePad; revisit once a joypad driver exists.
-		wiiu_console_update_input();
+		DisplayServer *ds = DisplayServer::get_singleton();
+		if (ds && ds->get_name() == "GX2") {
+			static_cast<DisplayServerWiiU *>(ds)->present();
+		}
 		wiiu_console_draw();
 		// Show the crash screen here if another thread crashed (crash_log.c).
 		wiiu_crash_check();
@@ -186,6 +203,7 @@ void OS_WiiU::run() {
 }
 
 OS_WiiU::OS_WiiU() {
+	DisplayServerWiiU::register_wiiu_driver();
 	Vector<Logger *> loggers;
 	loggers.push_back(memnew(WiiULogger));
 	_set_logger(memnew(CompositeLogger(loggers)));

@@ -2,6 +2,7 @@
 
 #include "core/io/logger.h"
 #include "drivers/unix/os_unix.h"
+#include "joypad_wiiu.h"
 #include "servers/audio/audio_server.h"
 
 class MainLoop;
@@ -14,6 +15,7 @@ public:
 
 class OS_WiiU : public OS_Unix {
 	MainLoop *main_loop = nullptr;
+	JoypadWiiU *joypad = nullptr;
 
 protected:
 	virtual void initialize() override;
@@ -23,7 +25,7 @@ protected:
 	virtual bool _check_internal_feature_support(const String &p_feature) override;
 
 public:
-	virtual void initialize_joypads() override {}
+	virtual void initialize_joypads() override;
 	virtual MainLoop *get_main_loop() const override;
 
 	virtual String get_name() const override;

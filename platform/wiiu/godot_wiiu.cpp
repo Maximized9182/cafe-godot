@@ -4,6 +4,7 @@
 
 #include <coreinit/thread.h>
 #include <coreinit/time.h>
+#include <sysapp/launch.h>
 #include <whb/log.h>
 #include <whb/log_cafe.h>
 #include <whb/log_udp.h>
@@ -24,6 +25,7 @@ extern "C" void wiiu_console_init(void);
 extern "C" void wiiu_console_free(void);
 extern "C" void wiiu_console_update_input(void);
 extern "C" void wiiu_console_draw(void);
+extern "C" void wiiu_console_resume(void);
 
 // GCC's EABI startup: runs the static constructors (__do_global_ctors_aux over
 // the .ctors list). With -meabi, GCC inserts a call to __eabi() (which calls
@@ -67,14 +69,13 @@ int main(int argc, char *argv[]) {
 	{
 		OS_WiiU os;
 
-		// No real display or audio drivers yet: run headless. The game's pack is
-		// bundled as fs:/vol/content/godot.pck, next to the executable path that
-		// OS_WiiU reports, which is where export templates look for it.
-		char arg_headless[] = "--headless";
-		char *engine_args[] = { arg_headless };
+		// No arguments: the GX2 display server is the default, and the game's
+		// pack is bundled as fs:/vol/content/godot.pck, next to the executable
+		// path that OS_WiiU reports, which is where export templates look for it.
+		char *engine_args[] = { nullptr };
 
 		wiiu_log_heap_state("before Main::setup");
-		Error err = Main::setup(argc > 0 ? argv[0] : (char *)"godot", 1, engine_args);
+		Error err = Main::setup(argc > 0 ? argv[0] : (char *)"godot", 0, engine_args);
 		if (err != OK) {
 			WHBLogPrintf("Main::setup failed (error %d).", (int)err);
 			exit_code = EXIT_FAILURE;
@@ -91,8 +92,22 @@ int main(int argc, char *argv[]) {
 	}
 
 	if (wiiu_proc_is_running()) {
-		// The game quit on its own: hand control back to the system so ProcUI can shut us down.
-		wait_for_home_menu();
+		if (exit_code == EXIT_SUCCESS) {
+			// The game quit on its own without an error: go back to the Wii U
+			// Menu. SYSLaunchMenu() asks the system to switch; ProcUI then sends
+			// the Exit message, which ends this loop.
+			SYSLaunchMenu();
+			while (wiiu_proc_is_running()) {
+				wiiu_console_draw();
+				OSSleepTicks(OSMillisecondsToTicks(16));
+			}
+		} else {
+			// Setup failed or the game exited with an error: keep the log on screen
+			// so it can be read, until the user leaves through HOME. GX2 was shut
+			// down with the display server, so the console can take the screen back.
+			wiiu_console_resume();
+			wait_for_home_menu();
+		}
 	}
 
 #ifdef WIIU_UDP_LOG

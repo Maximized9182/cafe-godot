@@ -56,6 +56,9 @@ static void *console_buffer_drc = NULL;
 static uint32_t console_buffer_tv_size = 0;
 static uint32_t console_buffer_drc_size = 0;
 static bool console_acquired = false;
+// While GX2 owns the display (wiiu_gx2.c), the console is suspended: OSScreen
+// and GX2 can't share the display controller, and both use the MEM1 frame heap.
+static bool console_suspended = false;
 
 static uint32_t console_hold_frames = 0;
 
@@ -113,6 +116,9 @@ static void console_log_handler(const char *msg) {
 
 static uint32_t console_proc_acquired(void *context) {
 	(void)context;
+	if (console_suspended) {
+		return 0;
+	}
 	MEMHeapHandle heap = MEMGetBaseHeapHandle(MEM_BASE_HEAP_MEM1);
 	MEMRecordStateForFrmHeap(heap, CONSOLE_FRAME_HEAP_TAG);
 	console_buffer_tv = MEMAllocFromFrmHeapEx(heap, console_buffer_tv_size, 4);
@@ -152,6 +158,48 @@ void wiiu_console_init(void) {
 	WHBAddLogHandler(console_log_handler);
 }
 
+// Gives the display and MEM1 to GX2. Log lines keep being collected (and go to
+// the Cafe OS and UDP logs); they show again after wiiu_console_resume.
+void wiiu_console_suspend(void) {
+	if (console_suspended) {
+		return;
+	}
+	if (console_acquired) {
+		OSScreenShutdown();
+		console_proc_released(NULL);
+	}
+	console_suspended = true;
+}
+
+// Takes the display back after GX2 has shut down (crash screen, exit screen).
+// Only while the app is in the foreground: MEM1 isn't ours otherwise, and the
+// ProcUI acquire callback sets the buffers up when the app comes back.
+bool wiiu_gx2_is_active(void);
+void wiiu_gx2_shutdown(void);
+
+void wiiu_console_resume(void) {
+	if (!console_suspended) {
+		return;
+	}
+	// Never run OSScreen on top of a live GX2 (both own the display and stack
+	// states on the MEM1 frame heap), e.g. when Main::setup fails after the
+	// display server was created.
+	if (wiiu_gx2_is_active()) {
+		wiiu_gx2_shutdown();
+	}
+	console_suspended = false;
+	OSScreenInit();
+	if (ProcUIInForeground()) {
+		console_proc_acquired(NULL);
+	}
+	OSScreenEnableEx(SCREEN_TV, TRUE);
+	OSScreenEnableEx(SCREEN_DRC, TRUE);
+}
+
+bool wiiu_console_is_suspended(void) {
+	return console_suspended;
+}
+
 void wiiu_console_free(void) {
 	WHBRemoveLogHandler(console_log_handler);
 	// Only touch OSScreen while the app still has the foreground: after ProcUI
@@ -176,13 +224,14 @@ void wiiu_console_enter_crash_mode(uint32_t color) {
 	console_scroll = 0;
 }
 
-// Reads the GamePad and scrolls the history.
-void wiiu_console_update_input(void) {
+// Scrolls the history from a GamePad sample. While Godot runs, its joypad
+// driver (joypad_wiiu.cpp) reads the GamePad once per frame and passes the
+// sample here, because VPAD's trigger bits are per read: two readers would
+// split button presses between them.
+void wiiu_console_handle_buttons(uint32_t hold, uint32_t trigger) {
 	VPADStatus status;
-	VPADReadError error = VPAD_READ_SUCCESS;
-	if (VPADRead(VPAD_CHAN_0, &status, 1, &error) < 1 || error != VPAD_READ_SUCCESS) {
-		return;
-	}
+	status.hold = hold;
+	status.trigger = trigger;
 
 	uint32_t stored = console_stored_lines();
 	uint32_t max_scroll = stored > CONSOLE_DRC_ROWS ? stored - CONSOLE_DRC_ROWS : 0;
@@ -275,6 +324,17 @@ static void console_draw_screen(OSScreenID screen, uint32_t rows) {
 		console_format_indicator(indicator, console_snapshot_scroll);
 		OSScreenPutFontEx(screen, 0, rows - 1, indicator);
 	}
+}
+
+// Reads the GamePad itself and scrolls the history. Only for loops where
+// Godot's joypad driver isn't running (crash screen, exit screen).
+void wiiu_console_update_input(void) {
+	VPADStatus status;
+	VPADReadError error = VPAD_READ_SUCCESS;
+	if (VPADRead(VPAD_CHAN_0, &status, 1, &error) < 1 || error != VPAD_READ_SUCCESS) {
+		return;
+	}
+	wiiu_console_handle_buttons(status.hold, status.trigger);
 }
 
 void wiiu_console_draw(void) {
