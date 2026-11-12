@@ -372,7 +372,7 @@ void *__wrap_malloc(size_t size) {
 	void *ptr = __real_malloc(size);
 	heap_record("malloc", ptr, size);
 	heap_check("after malloc", __builtin_return_address(0));
-	if (size != 0 && (ptr == NULL || size >= LARGE_ALLOC_BYTES)) {
+	if (size != 0 && (ptr == NULL /* || size >= LARGE_ALLOC_BYTES */)) {
 		log_alloc("malloc", 1, size, ptr, __builtin_return_address(0));
 	}
 	return ptr;
@@ -384,7 +384,7 @@ void *__wrap_calloc(size_t count, size_t size) {
 	size_t total = count * size;
 	heap_record("calloc", ptr, total);
 	heap_check("after calloc", __builtin_return_address(0));
-	if (total != 0 && (ptr == NULL || total >= LARGE_ALLOC_BYTES)) {
+	if (total != 0 && (ptr == NULL /* || total >= LARGE_ALLOC_BYTES */)) {
 		log_alloc("calloc", count, size, ptr, __builtin_return_address(0));
 	}
 	return ptr;
@@ -395,7 +395,7 @@ void *__wrap_realloc(void *old_ptr, size_t size) {
 	void *ptr = __real_realloc(old_ptr, size);
 	heap_record("realloc", ptr, size);
 	heap_check("after realloc", __builtin_return_address(0));
-	if (size != 0 && (ptr == NULL || size >= LARGE_ALLOC_BYTES)) {
+	if (size != 0 && (ptr == NULL /* || size >= LARGE_ALLOC_BYTES */)) {
 		log_alloc("realloc", 1, size, ptr, __builtin_return_address(0));
 	}
 	return ptr;

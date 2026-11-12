@@ -735,7 +735,7 @@ bool wiiu_gx2_init(void) {
 	gx2_proc_acquired(NULL);
 	ProcUIRegisterCallback(PROCUI_CALLBACK_ACQUIRE, gx2_proc_acquired, NULL, 100);
 	ProcUIRegisterCallback(PROCUI_CALLBACK_RELEASE, gx2_proc_released, NULL, 100);
-	WHBLogPrintf("[gx2] initialised: TV %dx%d, GamePad %dx%d", TV_WIDTH, TV_HEIGHT, DRC_WIDTH, DRC_HEIGHT);
+	// WHBLogPrintf("[gx2] initialised: TV %dx%d, GamePad %dx%d", TV_WIDTH, TV_HEIGHT, DRC_WIDTH, DRC_HEIGHT);
 	return gx2_acquired;
 }
 

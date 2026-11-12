@@ -173,7 +173,7 @@ void JoypadWiiU::set_connected(int p_device, int p_kind, const String &p_name, c
 	d.connected = true;
 	d.kind = p_kind;
 	input->joy_connection_changed(p_device, true, p_name, p_guid);
-	WHBLogPrintf("Joypad %d connected: %s", p_device, p_name.utf8().get_data());
+	// WHBLogPrintf("Joypad %d connected: %s", p_device, p_name.utf8().get_data());
 }
 
 void JoypadWiiU::set_disconnected(int p_device) {
@@ -189,7 +189,7 @@ void JoypadWiiU::set_disconnected(int p_device) {
 	d.connected = false;
 	d.kind = -1;
 	input->joy_connection_changed(p_device, false, "");
-	WHBLogPrintf("Joypad %d disconnected", p_device);
+	// WHBLogPrintf("Joypad %d disconnected", p_device);
 }
 
 void JoypadWiiU::update_buttons(int p_device, uint64_t p_buttons) {
@@ -231,10 +231,11 @@ void JoypadWiiU::process_gamepad() {
 	gamepad_hold = status.hold;
 	gamepad_trigger = status.trigger;
 
-	if (LOG_GAMEPAD_BITS && status.hold != gamepad_logged_hold) {
-		WHBLogPrintf("[input] GamePad hold %08x", (unsigned)status.hold);
-		gamepad_logged_hold = status.hold;
-	}
+	// Debug: log the GamePad's raw button bits whenever they change.
+	// if (LOG_GAMEPAD_BITS && status.hold != gamepad_logged_hold) {
+	// 	WHBLogPrintf("[input] GamePad hold %08x", (unsigned)status.hold);
+	// 	gamepad_logged_hold = status.hold;
+	// }
 
 	uint64_t buttons = map_buttons(status.hold, GAMEPAD_BUTTONS, COUNT(GAMEPAD_BUTTONS));
 	update_buttons(GAMEPAD_DEVICE, buttons);

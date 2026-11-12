@@ -60,10 +60,11 @@ int main(int argc, char *argv[]) {
 	// crashes or aborts shows on the crash screen instead of failing silently.
 	// Nothing above this line may use C++ globals.
 	__init();
-	WHBLogPrint("Static constructors done.");
+	// WHBLogPrint("Static constructors done.");
 	wiiu_console_draw();
-	wiiu_log_heap_state("start of main");
-	wiiu_log_memory_bounds();
+	// Debug: heap state and memory bounds at start-up.
+	// wiiu_log_heap_state("start of main");
+	// wiiu_log_memory_bounds();
 
 	int exit_code = EXIT_SUCCESS;
 	{
@@ -74,7 +75,7 @@ int main(int argc, char *argv[]) {
 		// path that OS_WiiU reports, which is where export templates look for it.
 		char *engine_args[] = { nullptr };
 
-		wiiu_log_heap_state("before Main::setup");
+		// wiiu_log_heap_state("before Main::setup");
 		Error err = Main::setup(argc > 0 ? argv[0] : (char *)"godot", 0, engine_args);
 		if (err != OK) {
 			WHBLogPrintf("Main::setup failed (error %d).", (int)err);
