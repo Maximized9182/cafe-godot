@@ -175,12 +175,13 @@ void wiiu_gx2_present_clear(float r, float g, float b) {
 	GX2CopyColorBufferToScanBuffer(&gx2_drc.color_buffer, GX2_SCAN_TARGET_DRC);
 	GX2SwapScanBuffers();
 	GX2Flush();
-	if (gx2_first_frame) {
-		// Turn the outputs on only once there's a frame to show.
-		GX2SetTVEnable(TRUE);
-		GX2SetDRCEnable(TRUE);
-		gx2_first_frame = false;
-	}
+	// Re-enable the outputs every frame, as WHBGfx does: enabling them only on
+	// the first frame left both screens black, because the system turns them
+	// off again while it finishes the launch (they came back only after an
+	// overlay such as Aroma's config menu restored the display state).
+	GX2SetTVEnable(TRUE);
+	GX2SetDRCEnable(TRUE);
+	gx2_first_frame = false;
 	// Paces the loop to the display (60 Hz).
 	GX2WaitForFlip();
 }

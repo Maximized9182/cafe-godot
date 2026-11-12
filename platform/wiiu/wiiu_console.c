@@ -62,6 +62,9 @@ static bool console_suspended = false;
 
 static uint32_t console_hold_frames = 0;
 
+// Fixed bottom row (crash and exit screens). NULL: no footer.
+static const char *console_footer = NULL;
+
 static void console_lock_acquire(void) {
 	if (!console_no_lock) {
 		OSUninterruptibleSpinLock_Acquire(&console_lock);
@@ -145,13 +148,13 @@ static uint32_t console_proc_released(void *context) {
 }
 
 // Call after WHBProcInit.
+// The console starts suspended: it collects log lines but doesn't touch the
+// display. Bringing OSScreen up at boot and then handing the display to GX2
+// left both screens black until an overlay (Aroma's config menu) re-applied
+// the GX2 scan buffers. So OSScreen only starts in wiiu_console_resume (crash
+// screen, error exit), after GX2 has shut down or if it never started.
 void wiiu_console_init(void) {
-	OSScreenInit();
-	console_buffer_tv_size = OSScreenGetBufferSizeEx(SCREEN_TV);
-	console_buffer_drc_size = OSScreenGetBufferSizeEx(SCREEN_DRC);
-	console_proc_acquired(NULL);
-	OSScreenEnableEx(SCREEN_TV, TRUE);
-	OSScreenEnableEx(SCREEN_DRC, TRUE);
+	console_suspended = true;
 	ProcUIRegisterCallback(PROCUI_CALLBACK_ACQUIRE, console_proc_acquired, NULL, 100);
 	ProcUIRegisterCallback(PROCUI_CALLBACK_RELEASE, console_proc_released, NULL, 100);
 	VPADInit();
@@ -189,6 +192,8 @@ void wiiu_console_resume(void) {
 	}
 	console_suspended = false;
 	OSScreenInit();
+	console_buffer_tv_size = OSScreenGetBufferSizeEx(SCREEN_TV);
+	console_buffer_drc_size = OSScreenGetBufferSizeEx(SCREEN_DRC);
 	if (ProcUIInForeground()) {
 		console_proc_acquired(NULL);
 	}
@@ -209,6 +214,17 @@ void wiiu_console_free(void) {
 		OSScreenShutdown();
 		console_proc_released(NULL);
 	}
+}
+
+// Sets a fixed bottom row, or NULL for none. While the log is scrolled up,
+// that row shows the scroll position instead. The string must stay valid.
+void wiiu_console_set_footer(const char *footer) {
+	console_footer = footer;
+}
+
+// The footer for screens that wait for HOME (crash screen, error exit).
+void wiiu_console_set_exit_footer(void) {
+	wiiu_console_set_footer("Press HOME to exit, or press Up/Down/L/R to scroll the log.");
 }
 
 // Background colour, 0xRRGGBBAA.
@@ -270,6 +286,7 @@ void wiiu_console_handle_buttons(uint32_t hold, uint32_t trigger) {
 static char console_snapshot[CONSOLE_TV_ROWS][CONSOLE_WRAP_COLUMNS + 1];
 static uint32_t console_snapshot_count = 0;
 static uint32_t console_snapshot_scroll = 0;
+static uint32_t console_snapshot_stored = 0;
 
 // Caller holds the lock.
 static void console_take_snapshot(void) {
@@ -285,17 +302,11 @@ static void console_take_snapshot(void) {
 	}
 	console_snapshot_count = count;
 	console_snapshot_scroll = scroll;
+	console_snapshot_stored = stored;
 }
 
-// Builds "-- scrolled up N lines ... --" without snprintf, to stay
-// allocation-free.
-static void console_format_indicator(char *out, uint32_t n) {
-	const char *prefix = "-- scrolled up ";
-	const char *suffix = " lines (D-pad / L / R) --";
-	size_t pos = 0;
-	for (const char *c = prefix; *c; c++) {
-		out[pos++] = *c;
-	}
+// Appends the decimal digits of n at out[pos]; returns the new position.
+static size_t console_append_uint(char *out, size_t pos, uint32_t n) {
 	char digits[12];
 	int nd = 0;
 	do {
@@ -305,6 +316,16 @@ static void console_format_indicator(char *out, uint32_t n) {
 	while (nd > 0) {
 		out[pos++] = digits[--nd];
 	}
+	return pos;
+}
+
+// Builds "<current line>/<max line>, use Up/Down/L/R" without snprintf, to
+// stay allocation-free. The current line is the bottom visible one.
+static void console_format_position(char *out, uint32_t current, uint32_t max) {
+	const char *suffix = ", use Up/Down/L/R";
+	size_t pos = console_append_uint(out, 0, current);
+	out[pos++] = '/';
+	pos = console_append_uint(out, pos, max);
 	for (const char *c = suffix; *c && pos < CONSOLE_WRAP_COLUMNS; c++) {
 		out[pos++] = *c;
 	}
@@ -313,16 +334,20 @@ static void console_format_indicator(char *out, uint32_t n) {
 
 static void console_draw_screen(OSScreenID screen, uint32_t rows) {
 	OSScreenClearBufferEx(screen, console_color);
-	uint32_t text_rows = console_snapshot_scroll != 0 ? rows - 1 : rows;
+	const bool bottom_row = console_snapshot_scroll != 0 || console_footer != NULL;
+	uint32_t text_rows = bottom_row ? rows - 1 : rows;
 	uint32_t shown = console_snapshot_count < text_rows ? console_snapshot_count : text_rows;
 	uint32_t first = console_snapshot_count - shown;
 	for (uint32_t i = 0; i < shown; i++) {
 		OSScreenPutFontEx(screen, 0, i, console_snapshot[first + i]);
 	}
 	if (console_snapshot_scroll != 0) {
-		char indicator[CONSOLE_WRAP_COLUMNS + 1];
-		console_format_indicator(indicator, console_snapshot_scroll);
-		OSScreenPutFontEx(screen, 0, rows - 1, indicator);
+		char position[CONSOLE_WRAP_COLUMNS + 1];
+		console_format_position(position, console_snapshot_stored - console_snapshot_scroll,
+				console_snapshot_stored);
+		OSScreenPutFontEx(screen, 0, rows - 1, position);
+	} else if (console_footer != NULL) {
+		OSScreenPutFontEx(screen, 0, rows - 1, console_footer);
 	}
 }
 

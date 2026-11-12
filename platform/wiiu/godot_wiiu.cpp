@@ -26,6 +26,7 @@ extern "C" void wiiu_console_free(void);
 extern "C" void wiiu_console_update_input(void);
 extern "C" void wiiu_console_draw(void);
 extern "C" void wiiu_console_resume(void);
+extern "C" void wiiu_console_set_exit_footer(void);
 
 // GCC's EABI startup: runs the static constructors (__do_global_ctors_aux over
 // the .ctors list). With -meabi, GCC inserts a call to __eabi() (which calls
@@ -35,7 +36,8 @@ extern "C" void __init(void);
 
 // Keep the log on screen until the user leaves through the HOME menu.
 static void wait_for_home_menu() {
-	WHBLogPrint("Press HOME to exit. D-pad up/down or L/R scrolls the log.");
+	WHBLogPrint("Waiting for HOME.");
+	wiiu_console_set_exit_footer();
 	while (wiiu_proc_is_running()) {
 		wiiu_console_update_input();
 		wiiu_console_draw();

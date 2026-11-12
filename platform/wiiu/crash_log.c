@@ -57,6 +57,7 @@ void wiiu_console_update_input(void);
 void wiiu_console_draw(void);
 void wiiu_console_free(void);
 void wiiu_console_resume(void);
+void wiiu_console_set_exit_footer(void);
 
 // wiiu_gx2.c
 bool wiiu_gx2_is_active(void);
@@ -496,7 +497,8 @@ static void enter_crash_screen(void) {
 
 	// Keep the log on screen until HOME, then leave like a normal app would,
 	// so the console returns to the Wii U menu instead of a fatal error.
-	log_static("Press HOME to exit. D-pad up/down or L/R scrolls the log.");
+	log_static("Waiting for HOME.");
+	wiiu_console_set_exit_footer();
 	while (wiiu_proc_is_running()) {
 		wiiu_console_update_input();
 		wiiu_console_draw();
