@@ -32,9 +32,6 @@ func _ready() -> void:
 
 # Renderer test (stage 3): one of each kind of 2D draw command.
 func _add_test_visuals() -> void:
-	# Export templates have no built-in font with glyphs, so text drew as hex
-	# boxes. Noto Sans (SIL Open Font License) for every control in the test.
-	ThemeDB.fallback_font = load("res://fonts/NotoSans-Regular.ttf")
 	RenderingServer.set_default_clear_color(Color(0.29, 0.18, 0.12))  # Coffee brown.
 
 	var rect := ColorRect.new()  # RECT, untextured
@@ -59,6 +56,14 @@ func _add_test_visuals() -> void:
 	label.add_theme_font_size_override("font_size", 40)
 	label.position = Vector2(80, 240)
 	add_child(label)
+
+	# A TTF loaded from the project (Noto Sans, SIL Open Font License).
+	var noto_label := Label.new()
+	noto_label.text = "Noto Sans from a TTF file"
+	noto_label.add_theme_font_override("font", load("res://fonts/NotoSans-Regular.ttf"))
+	noto_label.add_theme_font_size_override("font_size", 32)
+	noto_label.position = Vector2(80, 300)
+	add_child(noto_label)
 
 	var line := Line2D.new()  # POLYGON triangle strip
 	line.points = PackedVector2Array([Vector2(80, 360), Vector2(300, 440), Vector2(520, 360), Vector2(740, 440)])

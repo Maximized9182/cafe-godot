@@ -45,6 +45,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <proc_ui/procui.h>
 #include <sysapp/launch.h>
 #include <vpad/input.h>
 #include <whb/log.h>
@@ -431,22 +432,40 @@ bool wiiu_proc_is_running(void) {
 	return proc_running;
 }
 
-// Keeps the OSScreen log up until the user leaves. HOME goes straight to the
-// Wii U Menu: the HOME menu is disabled here, because opening it on top of
-// OSScreen often hung the console. Reads the GamePad once per frame (HOME and
-// log scrolling share the sample). Returns once ProcUI has sent Exit.
+// HOME pressed while the HOME menu is disabled: ProcUI swallows the press and
+// sends "Home Button Denied" instead (the GamePad's HOME bit may never show
+// up in VPADRead then), so this callback is what notices it.
+static volatile bool home_pressed = false;
+
+static uint32_t home_denied_callback(void *context) {
+	(void)context;
+	home_pressed = true;
+	return 0;
+}
+
+// Keeps the OSScreen log up until the user leaves. HOME goes straight back to
+// the Wii U Menu (SYSLaunchMenu quits the app; it doesn't open the HOME
+// menu). The HOME menu is disabled here, because opening it on top of
+// OSScreen often hung the console. Reads the GamePad once per frame for log
+// scrolling. Returns once ProcUI has sent Exit.
 void wiiu_wait_for_home_exit(void) {
+	home_pressed = false;
 	OSEnableHomeButtonMenu(FALSE);
+	ProcUIRegisterCallback(PROCUI_CALLBACK_HOME_BUTTON_DENIED, home_denied_callback, NULL, 100);
 	bool launched = false;
 	while (wiiu_proc_is_running()) {
 		VPADStatus status;
 		VPADReadError error = VPAD_READ_SUCCESS;
 		if (VPADRead(VPAD_CHAN_0, &status, 1, &error) > 0 && error == VPAD_READ_SUCCESS) {
-			if (!launched && (status.trigger & VPAD_BUTTON_HOME)) {
-				SYSLaunchMenu();
-				launched = true;
+			if (status.trigger & VPAD_BUTTON_HOME) {
+				home_pressed = true;
 			}
 			wiiu_console_handle_buttons(status.hold, status.trigger);
+		}
+		if (home_pressed && !launched) {
+			log_static("HOME pressed: returning to the Wii U Menu.");
+			SYSLaunchMenu();
+			launched = true;
 		}
 		wiiu_console_draw();
 		OSSleepTicks(OSMillisecondsToTicks(16));

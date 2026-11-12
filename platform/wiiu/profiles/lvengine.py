@@ -20,5 +20,7 @@ disable_physics_3d = "yes"
 # RichTextLabel lives behind advanced GUI, and LVENGINE uses it.
 disable_advanced_gui = "no"
 minizip = "no"
-brotli = "no"
+# Godot's built-in default font is WOFF2, which needs brotli; without it every
+# glyph of the default font draws as a hex box.
+brotli = "yes"
 deprecated = "no"

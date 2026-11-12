@@ -9,5 +9,7 @@ disable_navigation_3d = "yes"
 disable_physics_3d = "yes"
 disable_advanced_gui = "yes"
 minizip = "no"
-brotli = "no"
+# Godot's built-in default font is WOFF2, which needs brotli; without it every
+# glyph of the default font draws as a hex box.
+brotli = "yes"
 deprecated = "no"
