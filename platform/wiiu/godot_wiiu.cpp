@@ -19,6 +19,7 @@ extern "C" void wiiu_log_memory_bounds(void);
 extern "C" void wiiu_crash_screen_init(void);
 extern "C" void wiiu_crash_note_procui_shutdown(void);
 extern "C" bool wiiu_proc_is_running(void);
+extern "C" void wiiu_wait_for_home_exit(void);
 
 // Defined in wiiu_console.c.
 extern "C" void wiiu_console_init(void);
@@ -38,11 +39,8 @@ extern "C" void __init(void);
 static void wait_for_home_menu() {
 	WHBLogPrint("Waiting for HOME.");
 	wiiu_console_set_exit_footer();
-	while (wiiu_proc_is_running()) {
-		wiiu_console_update_input();
-		wiiu_console_draw();
-		OSSleepTicks(OSMillisecondsToTicks(16));
-	}
+	// HOME goes straight to the Wii U Menu (see crash_log.c).
+	wiiu_wait_for_home_exit();
 }
 
 int main(int argc, char *argv[]) {

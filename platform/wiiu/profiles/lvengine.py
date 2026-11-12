@@ -10,6 +10,8 @@ module_vorbis_enabled = "yes"
 # Imported textures are stored as lossless WebP inside .ctex (Godot 4 default
 # unless rendering/textures/lossless_compression/force_png is set).
 module_webp_enabled = "yes"
+# RegEx (LVENGINE's typewriter label, scripts/utdr-label.gd).
+module_regex_enabled = "yes"
 disable_3d = "yes"
 disable_xr = "yes"
 disable_navigation_2d = "yes"

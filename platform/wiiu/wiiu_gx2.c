@@ -255,8 +255,11 @@ void wiiu_gx2_texture_free(WiiUTexture *p_texture) {
 	if (p_texture == NULL) {
 		return;
 	}
-	// The GPU may still read it from the last frame.
-	if (gx2_active) {
+	// The GPU may still read it from the last frame. Only while in the
+	// foreground: after ProcUI releases it (HOME, or exit, where Godot frees
+	// its resources afterwards) GX2 calls fault, and the release callback has
+	// already waited for the GPU.
+	if (gx2_acquired) {
 		GX2DrawDone();
 	}
 	if (p_texture->owns_image) {
@@ -292,7 +295,8 @@ void wiiu_gx2_render_target_free(WiiURenderTarget *p_rt) {
 	if (p_rt == NULL) {
 		return;
 	}
-	if (gx2_active) {
+	// See wiiu_gx2_texture_free.
+	if (gx2_acquired) {
 		GX2DrawDone();
 	}
 	if (target_rt == p_rt) {

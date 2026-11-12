@@ -31,6 +31,7 @@
 #include <coreinit/memexpheap.h>
 #include <coreinit/memheap.h>
 #include <coreinit/memory.h>
+#include <coreinit/systeminfo.h>
 #include <coreinit/thread.h>
 #include <coreinit/time.h>
 #include <errno.h>
@@ -44,6 +45,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sysapp/launch.h>
+#include <vpad/input.h>
 #include <whb/log.h>
 #include <whb/proc.h>
 
@@ -58,6 +61,7 @@ void wiiu_console_draw(void);
 void wiiu_console_free(void);
 void wiiu_console_resume(void);
 void wiiu_console_set_exit_footer(void);
+void wiiu_console_handle_buttons(uint32_t hold, uint32_t trigger);
 
 // wiiu_gx2.c
 bool wiiu_gx2_is_active(void);
@@ -427,6 +431,28 @@ bool wiiu_proc_is_running(void) {
 	return proc_running;
 }
 
+// Keeps the OSScreen log up until the user leaves. HOME goes straight to the
+// Wii U Menu: the HOME menu is disabled here, because opening it on top of
+// OSScreen often hung the console. Reads the GamePad once per frame (HOME and
+// log scrolling share the sample). Returns once ProcUI has sent Exit.
+void wiiu_wait_for_home_exit(void) {
+	OSEnableHomeButtonMenu(FALSE);
+	bool launched = false;
+	while (wiiu_proc_is_running()) {
+		VPADStatus status;
+		VPADReadError error = VPAD_READ_SUCCESS;
+		if (VPADRead(VPAD_CHAN_0, &status, 1, &error) > 0 && error == VPAD_READ_SUCCESS) {
+			if (!launched && (status.trigger & VPAD_BUTTON_HOME)) {
+				SYSLaunchMenu();
+				launched = true;
+			}
+			wiiu_console_handle_buttons(status.hold, status.trigger);
+		}
+		wiiu_console_draw();
+		OSSleepTicks(OSMillisecondsToTicks(16));
+	}
+}
+
 static volatile bool crash_in_progress = false;
 // Set right before WHBProcShutdown: after that there is no foreground, no
 // console and no ProcUI to wait on, so a crash just ends the process.
@@ -499,11 +525,7 @@ static void enter_crash_screen(void) {
 	// so the console returns to the Wii U menu instead of a fatal error.
 	log_static("Waiting for HOME.");
 	wiiu_console_set_exit_footer();
-	while (wiiu_proc_is_running()) {
-		wiiu_console_update_input();
-		wiiu_console_draw();
-		OSSleepTicks(OSMillisecondsToTicks(16));
-	}
+	wiiu_wait_for_home_exit();
 	wiiu_console_free();
 	WHBProcShutdown();
 	// _Exit skips atexit handlers and static destructors: the engine is in an

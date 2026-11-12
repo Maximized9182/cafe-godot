@@ -1,5 +1,6 @@
 #include "os_wiiu.h"
 
+#include "dir_access_wiiu.h"
 #include "display_server_wiiu.h"
 
 #include "core/config/project_settings.h"
@@ -36,6 +37,10 @@ static OSTime wiiu_ticks_start = 0;
 void OS_WiiU::initialize() {
 	wiiu_ticks_start = OSGetSystemTime();
 	OS_Unix::initialize_core();
+	// make_dir_recursive that works on the SD card (see dir_access_wiiu.h).
+	DirAccess::make_default<DirAccessWiiU>(DirAccess::ACCESS_RESOURCES);
+	DirAccess::make_default<DirAccessWiiU>(DirAccess::ACCESS_USERDATA);
+	DirAccess::make_default<DirAccessWiiU>(DirAccess::ACCESS_FILESYSTEM);
 }
 
 uint64_t OS_WiiU::get_ticks_usec() const {

@@ -54,6 +54,15 @@ Size2i DisplayServerWiiU::window_get_size_with_decorations(DisplayServerEnums::W
 	return WIIU_WINDOW_SIZE;
 }
 
+// True while GX2 owns the screens and the app is in the foreground.
+bool DisplayServerWiiU::window_can_draw(DisplayServerEnums::WindowID p_window) const {
+	return wiiu_gx2_can_draw();
+}
+
+bool DisplayServerWiiU::can_any_window_draw() const {
+	return wiiu_gx2_can_draw();
+}
+
 DisplayServerWiiU::DisplayServerWiiU() {
 	// GX2 takes over the display and MEM1 from the log console.
 	wiiu_console_suspend();

@@ -17,6 +17,41 @@ func _ready() -> void:
 	print("Display server: ", DisplayServer.get_name())
 	print("Joypads: ", Input.get_connected_joypads())
 	Input.joy_connection_changed.connect(_on_joy_connection_changed)
+	_add_test_visuals()
+
+
+# Renderer test (stage 3): one of each kind of 2D draw command.
+func _add_test_visuals() -> void:
+	RenderingServer.set_default_clear_color(Color(0.29, 0.18, 0.12))  # Coffee brown.
+
+	var rect := ColorRect.new()  # RECT, untextured
+	rect.color = Color(0.9, 0.5, 0.1)
+	rect.position = Vector2(80, 80)
+	rect.size = Vector2(240, 120)
+	add_child(rect)
+
+	var panel := Panel.new()  # StyleBoxFlat: POLYGON, rounded corners
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.2, 0.5, 0.9)
+	style.set_corner_radius_all(16)
+	style.border_color = Color(1, 1, 1)
+	style.set_border_width_all(4)
+	panel.add_theme_stylebox_override("panel", style)
+	panel.position = Vector2(380, 80)
+	panel.size = Vector2(240, 120)
+	add_child(panel)
+
+	var label := Label.new()  # Text: RECTs from the font atlas texture
+	label.text = "Cafe Godot on Wii U"
+	label.add_theme_font_size_override("font_size", 40)
+	label.position = Vector2(80, 240)
+	add_child(label)
+
+	var line := Line2D.new()  # POLYGON triangle strip
+	line.points = PackedVector2Array([Vector2(80, 360), Vector2(300, 440), Vector2(520, 360), Vector2(740, 440)])
+	line.width = 12
+	line.default_color = Color(0.3, 0.9, 0.4)
+	add_child(line)
 
 
 func _on_joy_connection_changed(device: int, connected: bool) -> void:
