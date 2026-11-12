@@ -4,6 +4,9 @@ var frames := 0
 var elapsed := 0.0
 # Last reported side (-1, 0, 1) of each joypad axis, keyed by "device:axis".
 var axis_side := {}
+# Audio test: a 440 Hz tone through AudioStreamGenerator.
+var tone_playback: AudioStreamGeneratorPlayback
+var tone_phase := 0.0
 
 
 func _ready() -> void:
@@ -18,10 +21,20 @@ func _ready() -> void:
 	print("Joypads: ", Input.get_connected_joypads())
 	Input.joy_connection_changed.connect(_on_joy_connection_changed)
 	_add_test_visuals()
+	# Plays music/knight_sideb.ogg if it's there (local test file, git-ignored),
+	# else the generated tone.
+	if ResourceLoader.exists("res://music/knight_sideb.ogg"):
+		_start_music("res://music/knight_sideb.ogg")
+	else:
+		_start_tone()
+	print("Audio driver: ", AudioServer.get_driver_name(), ", mix rate ", AudioServer.get_mix_rate())
 
 
 # Renderer test (stage 3): one of each kind of 2D draw command.
 func _add_test_visuals() -> void:
+	# Export templates have no built-in font with glyphs, so text drew as hex
+	# boxes. Noto Sans (SIL Open Font License) for every control in the test.
+	ThemeDB.fallback_font = load("res://fonts/NotoSans-Regular.ttf")
 	RenderingServer.set_default_clear_color(Color(0.29, 0.18, 0.12))  # Coffee brown.
 
 	var rect := ColorRect.new()  # RECT, untextured
@@ -74,7 +87,41 @@ func _input(event: InputEvent) -> void:
 			print("joy ", event.device, " axis ", event.axis, " -> ", side)
 
 
+func _start_music(path: String) -> void:
+	var stream: AudioStream = load(path)
+	if stream is AudioStreamOggVorbis:
+		stream.loop = true
+	var player := AudioStreamPlayer.new()
+	player.stream = stream
+	add_child(player)
+	player.play()
+	print("Playing ", path)
+
+
+func _start_tone() -> void:
+	var generator := AudioStreamGenerator.new()
+	generator.mix_rate = 48000
+	generator.buffer_length = 0.1
+	var player := AudioStreamPlayer.new()
+	player.stream = generator
+	player.volume_db = -12.0
+	add_child(player)
+	player.play()
+	tone_playback = player.get_stream_playback()
+
+
+func _fill_tone() -> void:
+	if tone_playback == null:
+		return
+	var step := 440.0 / 48000.0
+	for i in tone_playback.get_frames_available():
+		var s := sin(tone_phase * TAU)
+		tone_playback.push_frame(Vector2(s, s))
+		tone_phase = fmod(tone_phase + step, 1.0)
+
+
 func _process(delta: float) -> void:
+	_fill_tone()
 	# Hold X + Y on the GamePad to test the crash screen.
 	if Input.is_joy_button_pressed(0, JOY_BUTTON_X) and Input.is_joy_button_pressed(0, JOY_BUTTON_Y):
 		OS.crash("Cafe Godot crash-screen test (X + Y)")

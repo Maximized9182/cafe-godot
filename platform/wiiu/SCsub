@@ -9,6 +9,7 @@ wiiu_files = [
     "joypad_wiiu.cpp",
     "display_server_wiiu.cpp",
     "rasterizer_wiiu.cpp",
+    "audio_driver_wiiu.cpp",
     "wiiu_gx2.c",
     "atomic64.c",
     "posix_stubs.c",

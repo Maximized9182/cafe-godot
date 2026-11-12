@@ -2,6 +2,7 @@
 
 #include "core/io/logger.h"
 #include "drivers/unix/os_unix.h"
+#include "audio_driver_wiiu.h"
 #include "joypad_wiiu.h"
 #include "servers/audio/audio_server.h"
 
@@ -16,6 +17,7 @@ public:
 class OS_WiiU : public OS_Unix {
 	MainLoop *main_loop = nullptr;
 	JoypadWiiU *joypad = nullptr;
+	AudioDriverWiiU audio_driver;
 
 protected:
 	virtual void initialize() override;

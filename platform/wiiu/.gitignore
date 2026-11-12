@@ -1,2 +1,5 @@
 build/
 test_project/.godot/
+
+# Local test music: never commit it.
+test_project/music/

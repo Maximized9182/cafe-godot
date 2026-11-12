@@ -204,6 +204,7 @@ void OS_WiiU::run() {
 }
 
 OS_WiiU::OS_WiiU() {
+	AudioDriverManager::add_driver(&audio_driver);
 	DisplayServerWiiU::register_wiiu_driver();
 	Vector<Logger *> loggers;
 	loggers.push_back(memnew(WiiULogger));
