@@ -171,6 +171,11 @@ public:
 	void draw_texture_rect(WiiUTexture *p_texture, const Rect2 &p_dst, const Rect2 &p_src_uv, bool p_linear);
 };
 
+// Maps a point on the GamePad screen (854x480 pixels) to Godot's window
+// coordinates, undoing the per-screen fit of the last blit. Returns false if
+// the point is outside the game's picture (in the black bars).
+bool rasterizer_wiiu_drc_to_window(const Vector2 &p_drc, Vector2 &r_window);
+
 class RasterizerWiiU : public RasterizerDummy {
 	bool blitted = false;
 

@@ -4,6 +4,8 @@ var frames := 0
 var elapsed := 0.0
 # Last reported side (-1, 0, 1) of each joypad axis, keyed by "device:axis".
 var axis_side := {}
+# Touch test: a button that counts its presses.
+var count := 0
 # Audio test: a 440 Hz tone through AudioStreamGenerator.
 var tone_playback: AudioStreamGeneratorPlayback
 var tone_phase := 0.0
@@ -65,6 +67,17 @@ func _add_test_visuals() -> void:
 	noto_label.position = Vector2(80, 300)
 	add_child(noto_label)
 
+	var button := Button.new()  # Touchscreen test (touch is emulated as a mouse click)
+	button.text = "Count: 0"
+	button.add_theme_font_size_override("font_size", 40)
+	button.position = Vector2(820, 80)
+	button.size = Vector2(380, 140)
+	button.pressed.connect(func() -> void:
+		count += 1
+		button.text = "Count: %d" % count
+		print("Button pressed, count ", count))
+	add_child(button)
+
 	var line := Line2D.new()  # POLYGON triangle strip
 	line.points = PackedVector2Array([Vector2(80, 360), Vector2(300, 440), Vector2(520, 360), Vector2(740, 440)])
 	line.width = 12
@@ -77,6 +90,8 @@ func _on_joy_connection_changed(device: int, connected: bool) -> void:
 
 
 func _input(event: InputEvent) -> void:
+	if event is InputEventScreenTouch:
+		print("touch ", "down" if event.pressed else "up", " at ", event.position)
 	if event is InputEventJoypadButton:
 		print("joy ", event.device, " button ", event.button_index, " pressed=", event.pressed)
 	elif event is InputEventJoypadMotion:

@@ -1,5 +1,8 @@
 #include "joypad_wiiu.h"
 
+#include "core/input/input_event.h"
+#include "rasterizer_wiiu.h"
+
 #include <padscore/kpad.h>
 #include <padscore/wpad.h>
 #include <vpad/input.h>
@@ -237,6 +240,8 @@ void JoypadWiiU::process_gamepad() {
 	// 	gamepad_logged_hold = status.hold;
 	// }
 
+	process_touch(status.tpNormal);
+
 	uint64_t buttons = map_buttons(status.hold, GAMEPAD_BUTTONS, COUNT(GAMEPAD_BUTTONS));
 	update_buttons(GAMEPAD_DEVICE, buttons);
 	update_axis(GAMEPAD_DEVICE, JoyAxis::LEFT_X, status.leftStick.x);
@@ -246,6 +251,53 @@ void JoypadWiiU::process_gamepad() {
 	// ZL/ZR are digital on the GamePad.
 	update_axis(GAMEPAD_DEVICE, JoyAxis::TRIGGER_LEFT, (status.hold & VPAD_BUTTON_ZL) ? 1.0f : 0.0f);
 	update_axis(GAMEPAD_DEVICE, JoyAxis::TRIGGER_RIGHT, (status.hold & VPAD_BUTTON_ZR) ? 1.0f : 0.0f);
+}
+
+void JoypadWiiU::process_touch(const VPADTouchData &p_touch) {
+	bool down = p_touch.touched != 0;
+	Vector2 position = touch_position;
+	if (down) {
+		VPADTouchData calibrated;
+		// Calibrated to GamePad screen pixels (854x480).
+		VPADGetTPCalibratedPointEx(VPAD_CHAN_0, VPAD_TP_854X480, &calibrated, &p_touch);
+		if (p_touch.validity != VPAD_VALID) {
+			// One axis is unreliable this sample: keep the last position.
+			if (!touching) {
+				return;
+			}
+		} else if (!rasterizer_wiiu_drc_to_window(Vector2(calibrated.x, calibrated.y), position)) {
+			// In the black bars around the picture: treat as no touch.
+			down = false;
+		}
+	}
+
+	if (down && !touching) {
+		Ref<InputEventScreenTouch> ev;
+		ev.instantiate();
+		ev->set_index(0);
+		ev->set_position(position);
+		ev->set_pressed(true);
+		input->parse_input_event(ev);
+	} else if (down && touching && position != touch_position) {
+		Ref<InputEventScreenDrag> ev;
+		ev.instantiate();
+		ev->set_index(0);
+		ev->set_position(position);
+		ev->set_relative(position - touch_position);
+		ev->set_relative_screen_position(position - touch_position);
+		input->parse_input_event(ev);
+	} else if (!down && touching) {
+		Ref<InputEventScreenTouch> ev;
+		ev.instantiate();
+		ev->set_index(0);
+		ev->set_position(touch_position);
+		ev->set_pressed(false);
+		input->parse_input_event(ev);
+	}
+	touching = down;
+	if (down) {
+		touch_position = position;
+	}
 }
 
 void JoypadWiiU::process_kpad(int p_channel) {

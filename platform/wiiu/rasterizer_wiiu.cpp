@@ -717,6 +717,35 @@ void RasterizerCanvasWiiU::canvas_render_items(RID p_to_render_target, Item *p_i
 // RasterizerWiiU
 // ===========================================================================
 
+// Geometry of the last blit to the GamePad, for mapping touches back.
+static struct {
+	bool valid = false;
+	Size2 rt_size; // Render-target pixels.
+	Rect2 drc_rect; // Where the render target was drawn on the GamePad.
+	Rect2 window_rect; // Where Godot thinks it is in the window (BlitToScreen::dst_rect).
+} last_drc_blit;
+
+bool rasterizer_wiiu_drc_to_window(const Vector2 &p_drc, Vector2 &r_window) {
+	if (!last_drc_blit.valid || last_drc_blit.drc_rect.size.x <= 0 || last_drc_blit.drc_rect.size.y <= 0) {
+		// No blit yet: scale the GamePad screen to the 1280x720 window.
+		r_window = p_drc * (1280.0f / 854.0f);
+		return true;
+	}
+	const Rect2 &drc = last_drc_blit.drc_rect;
+	if (!drc.has_point(p_drc)) {
+		return false;
+	}
+	// GamePad pixel -> render-target pixel -> window pixel.
+	const Vector2 rt = (p_drc - drc.position) * last_drc_blit.rt_size / drc.size;
+	const Rect2 &win = last_drc_blit.window_rect;
+	if (win.size.x > 0 && win.size.y > 0) {
+		r_window = win.position + rt * win.size / last_drc_blit.rt_size;
+	} else {
+		r_window = rt;
+	}
+	return true;
+}
+
 RasterizerWiiU::RasterizerWiiU() {
 	// Swap the dummy pieces that need to be real. Deleting the old ones first
 	// lets the new ones register as their singletons.
@@ -761,6 +790,12 @@ void RasterizerWiiU::_blit_to_screen(WiiUScreen p_screen, const RenderingServerT
 		const Size2 size(Math::round(rw * scale), Math::round(rh * scale));
 		const Point2 pos(Math::floor(((float)sw - size.x) * 0.5f), Math::floor(((float)sh - size.y) * 0.5f));
 		cv->draw_texture_rect(wiiu_gx2_render_target_texture(rt->gpu), Rect2(pos, size), p_render_targets[i].src_rect, linear);
+		if (p_screen == WIIU_SCREEN_DRC && i == 0) {
+			last_drc_blit.valid = true;
+			last_drc_blit.rt_size = Size2(rw, rh);
+			last_drc_blit.drc_rect = Rect2(pos, size);
+			last_drc_blit.window_rect = Rect2(p_render_targets[i].dst_rect);
+		}
 	}
 }
 

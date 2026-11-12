@@ -585,3 +585,14 @@ Verified: LVENGINE exported and uploaded with it.
 
 The later "real" option (an editor export platform in platform/wiiu/export/) needs a
 custom editor build; see section 15.
+
+## 17. GamePad touchscreen (2026-11-12)
+
+`JoypadWiiU::process_touch` reads VPAD `tpNormal` each frame, calibrates it with
+`VPADGetTPCalibratedPointEx(VPAD_CHAN_0, VPAD_TP_854X480, ...)` to GamePad pixels, and maps
+it to Godot's window with `rasterizer_wiiu_drc_to_window()` (GamePad pixel -> render-target
+pixel via the last GamePad blit's fit rect -> window pixel via Godot's BlitToScreen dst_rect).
+Touches in the black bars are ignored. Events: InputEventScreenTouch / InputEventScreenDrag,
+index 0; Godot's default emulate_mouse_from_touch turns them into clicks, so Controls work.
+Verified on the console with Godot Hello's counter button. Samples with an invalid axis
+(`validity != VPAD_VALID`) keep the previous position.

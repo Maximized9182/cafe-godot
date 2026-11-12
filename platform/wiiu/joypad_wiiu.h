@@ -2,6 +2,8 @@
 
 #include "core/input/input.h"
 
+#include <vpad/input.h>
+
 #include <cstdint>
 
 // Controller input for Cafe Godot.
@@ -44,6 +46,10 @@ private:
 	Input *input = nullptr;
 	Device devices[1 + KPAD_CHANNELS];
 
+	// GamePad touchscreen, sent as touch index 0 (Godot emulates the mouse).
+	bool touching = false;
+	Vector2 touch_position; // Window coordinates.
+
 	uint32_t gamepad_hold = 0;
 	uint32_t gamepad_trigger = 0;
 	uint32_t gamepad_logged_hold = 0;
@@ -54,5 +60,6 @@ private:
 	void update_axis(int p_device, JoyAxis p_axis, float p_value);
 
 	void process_gamepad();
+	void process_touch(const VPADTouchData &p_touch);
 	void process_kpad(int p_channel);
 };
