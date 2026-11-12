@@ -559,3 +559,29 @@ Not started; the user asked to keep these for later.
 - **USB keyboard and mouse**, if Cafe OS exposes them to apps.
 - Also from the fix list: 1080p TV mode (LVENGINE's 640x480 at 2x), on-screen keyboard
   (swkbd) for LineEdit/TextEdit, an editor export plugin, release templates.
+
+## 16. Exporting games: `cafe-export` (2026-11-12)
+
+`platform/wiiu/tools/cafe-export.sh` exports any Godot 4.7 project as a .wuhb from the user's
+normal editor (no custom editor build):
+
+    cafe-export <project-dir> [out.wuhb] [--preset NAME] [--name ...] [--short-name ...]
+                [--author ...] [--icon png] [--tv-image png] [--drc-image png] [--upload HOST]
+
+It runs `godot --headless --export-pack <preset>` (the first preset in export_presets.cfg by
+default; any platform works, it only decides which resources go in), then `wuhbtool` with the
+Cafe Godot template, then optionally uploads to `sd:/wiiu/apps/` over FTP. Name and icon come
+from project.godot (config/name, config/icon, including uid:// icons via the .import files);
+icons of 64 px or smaller are scaled with nearest-neighbour; splash images are fitted on black.
+
+On the user's PC it's installed as `~/.local/bin/cafe-export` (symlink to
+`~/Projects/wiiu-godot/tools/cafe-export.sh`). Files in `~/.local/share/cafe-godot/`:
+`bin/wuhbtool` (copied from the VM's devkitPro) and
+`templates/4.7.2/wiiu_template_debug.rpx`. **After rebuilding the engine, copy the new
+`bin/godot.wiiu.template_debug.ppc32.rpx` there** (it's the lvengine profile build: GDScript,
+2D physics, text_server_fb + freetype, ogg/vorbis, webp, regex, brotli). The user's editor
+must be 4.7.x (theirs is 4.7.2 from Arch, the same commit ed1daf0bf as Cafe Godot).
+Verified: LVENGINE exported and uploaded with it.
+
+The later "real" option (an editor export platform in platform/wiiu/export/) needs a
+custom editor build; see section 15.
