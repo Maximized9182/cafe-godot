@@ -83,15 +83,45 @@ project_value() {
 [[ -n "$short_name" ]] || short_name="$name"
 [[ -n "$out" ]] || out="$PWD/$(echo "$name" | tr -c 'A-Za-z0-9._-' '_' | sed 's/_*$//').wuhb"
 
+work="$(mktemp -d)"
+temp_presets=""
+cleanup() {
+	rm -rf "$work"
+	# Remove the temporary export_presets.cfg, leaving the project as it was.
+	[[ -n "$temp_presets" ]] && rm -f "$temp_presets"
+	return 0
+}
+trap cleanup EXIT
+
 if [[ -z "$preset" ]]; then
-	[[ -f "$project/export_presets.cfg" ]] ||
-		die "no export_presets.cfg: add any export preset in the editor (e.g. Linux), or use --preset"
+	if [[ ! -f "$project/export_presets.cfg" ]]; then
+		# No presets: write a minimal temporary one (Linux; it only decides which
+		# resources go into the pack) and remove it afterwards.
+		temp_presets="$project/export_presets.cfg"
+		cat > "$temp_presets" <<-'EOF'
+			[preset.0]
+
+			name="Cafe Godot"
+			platform="Linux"
+			runnable=false
+			dedicated_server=false
+			custom_features=""
+			export_filter="all_resources"
+			include_filter=""
+			exclude_filter=""
+			export_path=""
+			encryption_include_filters=""
+			encryption_exclude_filters=""
+			encrypt_pck=false
+			encrypt_directory=false
+
+			[preset.0.options]
+		EOF
+		echo "cafe-export: no export_presets.cfg; using a temporary \"Cafe Godot\" preset."
+	fi
 	preset="$(grep -m1 '^name=' "$project/export_presets.cfg" | sed -e 's/^name=//' -e 's/^"//' -e 's/"$//')"
 	[[ -n "$preset" ]] || die "no preset found in export_presets.cfg"
 fi
-
-work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/content"
 
 echo "cafe-export: exporting \"$name\" with preset \"$preset\"..."

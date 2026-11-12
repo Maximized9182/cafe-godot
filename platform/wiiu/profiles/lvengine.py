@@ -12,6 +12,8 @@ module_vorbis_enabled = "yes"
 module_webp_enabled = "yes"
 # RegEx (LVENGINE's typewriter label, scripts/utdr-label.gd).
 module_regex_enabled = "yes"
+# MP3 music (AudioStreamMP3), common in games.
+module_mp3_enabled = "yes"
 disable_3d = "yes"
 disable_xr = "yes"
 disable_navigation_2d = "yes"
