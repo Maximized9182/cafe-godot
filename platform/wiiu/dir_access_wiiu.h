@@ -21,6 +21,15 @@ class DirAccessWiiU : public DirAccessUnix {
 public:
 	static constexpr const char *SD_ROOT = "fs:/vol/external01";
 
+	// Cafe OS's stat may reject a directory path ending in "/" (e.g.
+	// DirAccess.dir_exists_absolute("user://mus/")); check it without.
+	bool dir_exists(String p_dir) override {
+		while (p_dir.length() > 1 && p_dir.ends_with("/") && !p_dir.ends_with(":/") && !p_dir.ends_with("://")) {
+			p_dir = p_dir.substr(0, p_dir.length() - 1);
+		}
+		return DirAccessUnix::dir_exists(p_dir);
+	}
+
 	Error change_dir(String p_dir) override {
 		// Resolve ".." etc. first: wut's stat doesn't.
 		String check = p_dir;
