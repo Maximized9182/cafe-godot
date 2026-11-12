@@ -543,3 +543,19 @@ Open:
 - TV output is 720p only, with whole-number scaling (LVENGINE's 640x480 shows at 1x on the TV).
 - HOME menu while GX2 runs has been flaky in the past; the user often closes apps with
   Aroma's close/restart plugin.
+
+## 15. Planned later (user ideas, 2026-11-12)
+
+Not started; the user asked to keep these for later.
+- **3D:** via a GX2 version of the Compatibility (GLES3) renderer's 3D side. The blocker is
+  shaders: Godot generates GLSL at runtime, GX2 needs binaries, so it needs CafeGLSL (GLSL 3.3
+  compiled on the console) with a shader cache on the SD card. Suggested order: CafeGLSL for
+  2D canvas shaders first, then basic 3D (meshes, depth buffer, Camera3D, StandardMaterial3D
+  subset, one directional light), then lights/shadows/skeletons.
+- **Separate rendering for the TV and the GamePad** (today both show the same root viewport,
+  fitted per screen).
+- **GamePad features:** gyro/accelerometer, microphone, touchscreen (as touch/mouse input),
+  and Wii Remote pointing (IR).
+- **USB keyboard and mouse**, if Cafe OS exposes them to apps.
+- Also from the fix list: 1080p TV mode (LVENGINE's 640x480 at 2x), on-screen keyboard
+  (swkbd) for LineEdit/TextEdit, an editor export plugin, release templates.
