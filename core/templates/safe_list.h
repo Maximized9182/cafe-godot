@@ -61,7 +61,9 @@ class SafeList {
 		T val;
 	};
 
+#ifndef WIIU_ENABLED // Wii U: 64-bit atomics are lock-based (see platform/wiiu/atomic64.c).
 	static_assert(std::atomic<T>::is_always_lock_free);
+#endif
 
 	std::atomic<SafeListNode *> head = nullptr;
 	std::atomic<SafeListNode *> graveyard_head = nullptr;

@@ -62,7 +62,9 @@ template <typename T>
 class SafeNumeric {
 	std::atomic<T> value;
 
+#ifndef WIIU_ENABLED // Wii U: 64-bit atomics are lock-based (see platform/wiiu/atomic64.c).
 	static_assert(std::atomic<T>::is_always_lock_free);
+#endif
 
 public:
 	_ALWAYS_INLINE_ void set(T p_value) {

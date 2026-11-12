@@ -1,0 +1,440 @@
+# Cafe Godot: Godot 4.7.2 for the Nintendo Wii U (handoff notes)
+
+**Project name: Cafe Godot** (chosen by the user to fit the Wii U's internal cafe/coffee naming:
+Cafe OS, Espresso, Latte). Use it for the port, its repo and user-facing text.
+
+This file is the full state of a work-in-progress port of Godot 4.7.2 to the Wii U
+(Cafe OS homebrew, run through Aroma). It was written at the end of the first working
+session so another agent or person can continue without that conversation.
+
+Status as of 2026-11-12: **the headless template boots on the console but crashes in
+`Main::setup` because `malloc` runs out of memory almost immediately** (section 9). No
+renderer, audio or input drivers exist.
+
+---
+
+## 1. Background and decisions
+
+- **Starting point.** The existing community port, https://github.com/Homebrodot/platform-wiiu
+  (12 commits, last touched April 2024, targets Godot 4.2), was reviewed and judged to be an
+  early sketch: it doesn't compile (syntax errors throughout), has no working renderer, file
+  access, audio or threads, and its export plugin returns `ERR_CANT_CREATE`. Nothing from it
+  was reused except general ideas. The user does not own that repo.
+- **Godot version: 4.7.2-stable.** Compared 4.2.2, 4.3, 4.4.1, 4.5.1, 4.6 and 4.7.2:
+  - 4.3 split rendering into `RenderingDevice` + a per-API `RenderingDeviceDriver`
+    (174 pure-virtual methods in 4.7.2; the 4.7 additions are ray tracing and HDR, which can be stubbed).
+  - 4.4 added `detect.get_tools(env)`, letting a platform pick its own SCons tools.
+  - 4.5 added the shader baker / `rendering_shader_container` (per-driver compiled shader format).
+  - 4.5 **removed `ppc32`** from the allowed architectures. It only affects the arch enum
+    and x86 flags, so it's re-added with a one-line patch (see section 4).
+  - C++17 and `std::thread` are used in every version; nothing else differs for this port.
+- **Compiler: Clang, not devkitPPC's GCC.** Godot has ~130 `thread_local` variables even in a
+  minimal build. devkitPPC's GCC compiles them as native TLS (`.tbss`/`.tdata`, r2-relative
+  `@tprel`), but wut's linker script has no TLS sections and `elf2rpl` doesn't support TLS,
+  so the link fails. Clang's `-femulated-tls` turns them into calls to `__emutls_get_address`,
+  which devkitPPC's `libgcc.a` already contains (it sits on top of wut's gthreads/pthreads).
+  Linking still uses `powerpc-eabi-g++` + `wut.specs`, so newlib, libstdc++ and libgcc are
+  the stock GCC-built ones. Alternatives considered and not taken: rebuilding devkitPPC GCC
+  with `--disable-tls` (exact ABI, but needs a custom toolchain for everyone), adding native
+  TLS to wut + `elf2rpl` (the proper fix, but a toolchain project of its own), rewriting
+  `thread_local` in Godot (126+ sites, a permanent fork).
+- **Headless first.** Milestone 1 is an `.rpx` that boots, loads a `.pck` and runs GDScript
+  with Godot's dummy renderer and dummy audio, printing to the screen. Graphics come later.
+
+## 2. Environment the work was done in
+
+- Arch Linux VM (KVM, QEMU user-mode NAT at 10.0.2.15). Repo at `/home/user/wiiu/godot`,
+  branch `wiiu-port`, shallow clone of `4.7.2-stable` (commit `ed1daf0`). **Nothing is
+  committed**: the changes are uncommitted working-tree edits plus the untracked
+  `platform/wiiu/` folder. A patch of everything may sit next to this file's repo as
+  `/home/user/wiiu/wiiu-port.patch`.
+- Tools: devkitPro at `/opt/devkitpro` (devkitPPC GCC 16.1.0, wut, wut-tools: `elf2rpl`,
+  `wuhbtool`, `readrpl`, `udplogserver`), `clang` 22.1.8, SCons 4.11.1 (was in a temporary
+  venv; reinstall with `pip install scons`).
+- Godot 4.7.2 official Linux editor was used on the host side to export `.pck` files
+  (`Godot_v4.7.2-stable_linux.x86_64`, from godotengine/godot-builds releases).
+- No Cemu in the VM, no direct access to the console. The user has a Wii U with Aroma and
+  the Claude desktop app.
+
+## 3. Build and package
+
+```bash
+export DEVKITPRO=/opt/devkitpro DEVKITPPC=/opt/devkitpro/devkitPPC
+scons platform=wiiu profile=platform/wiiu/profiles/headless_minimal.py -j8
+```
+
+Outputs in `bin/`:
+- `godot.wiiu.template_debug.ppc32.elf` (~54 MB, linked)
+- `godot.wiiu.template_debug.ppc32.stripped.elf` (the same minus `.note.GNU-stack`)
+- `godot.wiiu.template_debug.ppc32.rpx` (~16.5 MB; `.text` is ~25 MB in memory)
+
+`target=template_debug` is the default; `template_release` should also work (untested).
+Editor builds are rejected by `detect.py`.
+
+Export a game's pack with the desktop editor, then bundle:
+
+```bash
+Godot_v4.7.2-stable_linux.x86_64 --headless --path <project> --export-pack "<preset>" game.pck
+platform/wiiu/tools/make_wuhb.sh --rpx bin/godot.wiiu.template_debug.ppc32.rpx \
+    --pck game.pck --out MyGame.wuhb --name "My Game" [--short-name ..] [--author ..] \
+    [--icon icon.png] [--tv-image tv.png] [--drc-image drc.png]
+```
+
+Image sizes: icon 128×128, TV splash 1280×720, GamePad (DRC) splash 854×480. The script
+puts the pack at `/content/godot.pck` inside the bundle; the engine loads
+`fs:/vol/content/godot.pck`.
+
+Already built: `platform/wiiu/build/godot-hello.wuhb` (the test project below).
+
+To run: copy the `.wuhb` to `sd:/wiiu/apps/` and launch it from the Wii U menu under Aroma.
+Logs appear on screen (WHBLogConsole), in the Cafe OS log (WHBLogCafe) and over UDP
+(WHBLogUdp, read with `udplogserver` on a machine on the same LAN; a NAT'd VM won't see it).
+
+## 4. Changes to Godot core (keep these minimal)
+
+| File | Change | Why |
+|---|---|---|
+| `platform_methods.py` | Add `"ppc32"` to `architectures` | Removed upstream in 4.5 |
+| `core/templates/safe_refcount.h`, `core/templates/safe_list.h` | Wrap `static_assert(std::atomic<T>::is_always_lock_free)` in `#ifndef WIIU_ENABLED` | Espresso has no 64-bit atomics; `std::atomic<uint64_t>` uses locks (see `atomic64.c`). 535 of the first build's 543 errors were this assert |
+| `core/io/file_access.h/.cpp` | New `_needs_byteswap()`: swap only when the file's byte order (`big_endian` flag) differs from the CPU's (`__BYTE_ORDER__`). The six `if (big_endian)` checks in `get_16/32/64` and `store_16/32/64` use it | **Big-endian bug**: these read and wrote raw host-order bytes, so every number read from a little-endian `.pck` on the big-endian Wii U came out byte-swapped. Desktop behaviour is unchanged |
+
+`core/io/marshalls.h` (`encode_*/decode_*`) already uses byte shifts and is endian-safe.
+Other host-endian assumptions (e.g. raw `get_buffer` into typed arrays in
+`resource_format_binary.cpp`, image data) have **not** been audited yet.
+
+## 5. The platform folder: `platform/wiiu/`
+
+- `detect.py`: platform hooks. `get_tools` returns cc/c++/ar/link/textfile/zip.
+  `get_flags` defaults: `arch=ppc32`, `target=template_debug`, all GPU backends off
+  (vulkan/opengl3/d3d12/metal), `builtin_pcre2_with_jit=False`, raycast off, `optimize=size`.
+  Option `wiiu_udp_log` (default on). `configure()`:
+  - Compiles with `clang`/`clang++` using `--target=powerpc-unknown-linux-gnu -mcpu=750
+    -mhard-float -mlong-double-64 -femulated-tls -fno-pic`, plus `-U` for
+    `__linux__ __linux linux __gnu_linux__ __unix__ __unix unix`. Clang's own
+    `powerpc-eabi` target was rejected because it makes `size_t` an `unsigned long`
+    (GCC uses `unsigned int`), which breaks C++ name mangling against libstdc++.
+    devkitPPC's `wchar_t` is `long` vs Clang's `int`; same size, and C++ mangles `wchar_t`
+    as a builtin, so it's left alone.
+  - Headers: `-nostdinc++ -nostdlibinc`, then devkitPPC libstdc++ (`powerpc-eabi/include/c++/<ver>`
+    and its `powerpc-eabi` subdir), newlib (`powerpc-eabi/include`), wut (`wut/include`),
+    and Clang's resource `include` last.
+  - Links with `powerpc-eabi-g++ -mcpu=750 -meabi -mhard-float -specs=$WUT/share/wut.specs`,
+    `-L$WUT/lib`, libs `wut m`. AR/RANLIB/AS are the `powerpc-eabi-` binutils. LTO forced off.
+  - Defines: `ESPRESSO __WIIU__ __WUT__ WIIU_ENABLED UNIX_ENABLED UNIX_SOCKET_UNAVAILABLE
+    PTHREAD_NO_RENAME` (+ `WIIU_UDP_LOG`).
+  - `CPPPATH` gets `#platform/wiiu` and `#platform/wiiu/compat`.
+- `SCsub`: builds `godot_wiiu.cpp os_wiiu.cpp atomic64.c posix_stubs.c crash_log.c tls_keys.c` with
+  `env.add_program("#bin/godot", ...)` (`PROGSUFFIX=.elf`). **Removes `-s` from LINKFLAGS**:
+  wut.specs links with `--emit-relocs` (needed by `elf2rpl`) and ld fails with
+  "final link failed: invalid operation" when combined with `-s`. Then
+  `powerpc-eabi-objcopy --remove-section=.note.GNU-stack` (Clang adds it; `elf2rpl` fails
+  with "Failed to calculate offset for section .note.GNU-stack") and `elf2rpl` → `.rpx`.
+- `platform_config.h`: just `#include <alloca.h>`.
+- `godot_wiiu.cpp`: `main()` calls `WHBProcInit`, `WHBLogConsoleInit`, `WHBLogCafeInit`,
+  optionally `WHBLogUdpInit`, then runs Godot with fixed args
+  `--headless --main-pack fs:/vol/content/godot.pck` (`Main::setup` → `Main::start` →
+  `OS_WiiU::run` → `Main::cleanup`). On failure or normal exit it prints "Press HOME to exit."
+  and keeps drawing the console until `WHBProcIsRunning()` is false, then tears down.
+- `os_wiiu.h/.cpp`: `OS_WiiU : OS_Unix`. `initialize()` calls `OS_Unix::initialize_core()`
+  (FileAccessUnix/DirAccessUnix over newlib + wut's `fs:` devoptab). Main loop: while
+  `WHBProcIsRunning()`: `DisplayServer::process_events()`, `Main::iteration()`,
+  `WHBLogConsoleDraw()`. Paths: user data `fs:/vol/external01/wiiu/godot/<project>`, temp
+  `fs:/vol/external01/tmp`, executable `fs:/vol/content/godot.rpx`. Feature tags `wiiu`,
+  `game_console`, `homebrew`. `get_name()` = "Wii U", distribution "Cafe OS", 3 processors.
+  Process/dynamic-library/shell functions return `ERR_UNAVAILABLE`. `WiiULogger` sends all
+  engine output to `WHBLogWrite`. `initialize_joypads()` is empty.
+- `atomic64.c`: implements `__atomic_{load,store,exchange,compare_exchange}_8` and
+  `__atomic_{fetch_OP,OP_fetch}_8` for add/sub/and/or/xor/nand (both GCC and Clang lower
+  `std::atomic<uint64_t>` to these libcalls; there's no libatomic in devkitPPC). Defined
+  under `__asm__` names to avoid builtin-redeclaration errors. Uses 64 striped
+  `OSSpinLock`s with `OSUninterruptibleSpinLock_Acquire/Release` so a lock holder can't be
+  preempted by a higher-priority thread spinning on the same core. Zero-filled `OSSpinLock`
+  equals `OSInitSpinLock`.
+- `crash_log.c`: `abort()` is wrapped at link time (`-Wl,--wrap=abort` in `SCsub`), so every
+  caller (engine, libstdc++, newlib) reaches `__wrap_abort` first. It logs the thread, the
+  runtime address of `main` (to compute the load offset) and the stack back chain. On the
+  main thread it keeps the log on screen until HOME, then `WHBProcShutdown` + `_Exit(1)`, so
+  the console returns to the menu. On other threads it waits 5 s, then calls wut's real
+  `abort()` (`OSFatal("Abort called.")`). Map addresses with
+  `powerpc-eabi-addr2line -f -C -e bin/godot.wiiu.template_debug.ppc32.elf`.
+- `tls_keys.c`: the `__syscall_tls_create/set/get/delete` hooks behind newlib's
+  `pthread_key_*`. wut 1.9.1 doesn't define them, so `pthread_key_create` returned `ENOSYS`
+  and libgcc's emutls called `abort()` on the first `thread_local` access
+  (`Thread::make_main_thread()` in `Main::setup`); this was the first on-console crash.
+  Keys map 1:1 onto Cafe OS thread-specific slots 0-13 (14/15 are wut's). Destructors are
+  not run at thread exit, so each exiting thread leaks its emutls block.
+- `posix_stubs.c`: `execvp popen pclose waitpid sigaction pipe setsid mkfifo`, all failing
+  with `ENOSYS`/`ECHILD`. newlib declares them but nothing implements them.
+- `compat/`: stub headers newlib lacks, found first via CPPPATH: `dlfcn.h` (dlopen always
+  fails), `syslog.h` (no-ops), `sys/xattr.h` (ENOTSUP), `sys/resource.h` (`#include_next`
+  plus a `struct rlimit` / `getrlimit` stub returning -1).
+- `profiles/headless_minimal.py`: GDScript only; disables 3D, XR, navigation 2D/3D,
+  physics 3D, advanced GUI, minizip, brotli, deprecated.
+- `profiles/lvengine.py`: for the user's game (section 7): GDScript, `godot_physics_2d`,
+  `text_server_fb` + `freetype`, `ogg` + `vorbis`; keeps advanced GUI (RichTextLabel needs
+  it); disables 3D, XR, navigation, physics 3D. **Not built yet.**
+- `tools/make_wuhb.sh`: packaging script (section 3).
+- `test_project/`: hello-world project (`main.gd` prints OS name, engine version, the `wiiu`
+  feature flag, `PackedByteArray([1,2,3,4]).decode_u32(0)` which must be `67305985`, and
+  frames per second). Export preset "Pack" writes `../build/game.pck`.
+- `.gitignore`: `build/`, `test_project/.godot/`.
+
+## 6. Known risks and open questions
+
+1. **Never run.** First test: boot `godot-hello.wuhb` on the console. Expected on-screen
+   lines: "Godot for Wii U: starting up", "Hello from GDScript on Wii U (Cafe OS)",
+   `decode_u32 ... 67305985`, then "frames in the last second: N" every second.
+2. **Code size.** `.text` is ~25 MB. Unknown whether Cafe OS / Aroma loads that; if it
+   refuses to start, try `template_release`, more `-Os`, fewer modules.
+3. **Clang/GCC ABI mix.** Clang's linux target assumes a 16-byte-aligned stack; GCC's
+   EABI-built newlib/libstdc++/wut use 8 bytes. Probably harmless (no AltiVec on the 750),
+   but only visible at runtime. Clang reserves r2/r13 per SVR4, so it shouldn't clobber
+   Cafe's small-data registers.
+4. **`fs:/vol/content` mount.** Assumes wut's devoptab exposes WUHB content at
+   `fs:/vol/content`. Unverified.
+5. **Big-endian beyond FileAccess.** Binary resources, images and audio buffers may still
+   assume little-endian in places.
+6. **Main loop pacing.** Headless mode has no vsync; the loop may spin. Fine for now.
+7. **Rendering approach is undecided.** Godot's `RenderingDevice` renderers (even the 2D
+   canvas renderer) need SSBOs: `canvas_uniforms_inc.glsl` uses `std430 buffer` blocks
+   (`Transforms`, `LightData`, `GlobalShaderUniformData`). wut's GX2 headers expose only
+   uniform blocks: no storage buffers, no compute. The GPU (Latte) is roughly GL 3.3 /
+   DX10.1-class, closer to what the Compatibility (GLES3) renderer needs. Options: emulate
+   SSBOs inside a GX2 `RenderingDeviceDriver`, or put a GX2 backend under the Compatibility
+   renderer (`drivers/gles3` talks to GL directly, so that means a GL-subset shim or a fork
+   of that renderer). Shaders: Godot produces SPIR-V/GLSL; GX2 needs its own binaries, either
+   compiled at runtime by the CafeGLSL compiler (`glslcompiler.rpl` on the console) or at
+   export time via the 4.5+ shader container.
+
+## 7. Test game: LVENGINE
+
+At `/home/user/wiiu/LVENGINE` (the user's Undertale-style fan engine, 106 MB, own git repo).
+
+- Godot 4.7, pure 2D, 640×480, `stretch/mode="viewport"`, integer scaling, 60 FPS cap.
+  `rendering_method="mobile"` in project settings but feature tag says "GL Compatibility".
+- Nodes used: Label, AudioStreamPlayer, ColorRect, TextureRect, RichTextLabel,
+  Sprite2D/AnimatedSprite2D, TileMapLayer, Camera2D, CharacterBody2D, StaticBody2D, Area2D,
+  RayCast2D, ProgressBar, VBoxContainer, Themes. No shaders, no 3D.
+- Assets: PNG (12 MB), WAV + Ogg sounds, 3 TTF fonts. `videos/roring_nite.mp4` (7.5 MB)
+  and two GIFs are unused; exclude them from the Wii U export.
+- **Input is keyboard-only** (actions up/down/left/right/confirm/cancel/menu/fullscreen/
+  quit/DEBUG). Needs joypad bindings once a Wii U input driver exists.
+- **Music is loaded from the player's Steam Undertale install** (`scripts/playervars.gd:50-51`,
+  Windows and Linux paths); on Wii U it'll be silent except for its own SFX. Could add an
+  SD-card path.
+- Fits the GamePad's 854×480 at 1×; a 720p TV at 1×, a 1080p TV at 2×.
+
+## 8. Next steps, in order
+
+1. Boot `godot-hello.wuhb` on the console; fix whatever breaks (watch for code-size limits,
+   the `fs:/vol/content` path, byte-order issues, startup crashes; capture with
+   `udplogserver`).
+2. Build with `profiles/lvengine.py`, export LVENGINE's pack, bundle it, and boot it headless
+   (exercises resource loading, autoloads, scene changes, timers/tweens).
+3. Input: a joypad driver over VPAD (GamePad) and KPAD (Wiimote/Pro Controller), reporting
+   Godot joypad events; HOME handled by ProcUI. Then add joypad bindings to LVENGINE.
+4. Audio: an `AudioDriver` on `sndcore2` (AX).
+5. A real `DisplayServer` for TV + GamePad, then the GX2 renderer (decide the approach in
+   risk 7 first). Start 2D-only.
+6. Editor-side export plugin (`platform/wiiu/export/`) so the editor can export `.wuhb`
+   directly with icon/name/banners (would need a custom editor build including the platform).
+7. Consider native TLS support in wut/`elf2rpl` upstream, which would let the port drop Clang.
+
+## 9. Session 2 (2026-11-11/12): first console runs
+
+Runs, in order:
+1. `OSFatal("Abort called.")`: `emutls_init` aborted because `pthread_key_create` returned
+   `ENOSYS` (wut has no `__syscall_tls_*` hooks). Fixed by `tls_keys.c`.
+2. DSI at `CowData<_CoreConstant>::push_back` from `register_global_constants`: `malloc`
+   returned NULL for 88 bytes, and Godot dereferenced the result.
+3. Heap logging at the start of `main`: **newlib malloc arena 38956 bytes (5304 free), MEM2
+   base heap 0 free.** wut's `__init_wut_sbrk_heap` takes all of MEM2's free space as the
+   sbrk heap, so 0 free in MEM2 is expected. But the arena tops out at ~40 KB, so **MEM2 had
+   only ~40 KB free when wut initialised, before any Godot code ran.**
+
+Prepared but not run (built in the VM; the upload to the SD card may not have completed):
+- `godot-hello.wuhb` with `wiiu_log_memory_bounds()` at the start of `main`: logs
+  `OSGetMemBound(OS_MEM1/OS_MEM2)`, `sbrk(0)` and a `sbrk(1 MB)` probe.
+- `/home/user/wiiu/memprobe/memprobe.wuhb`: a minimal wut app (built with stock devkitPPC
+  GCC) printing the same numbers plus a 64 MB malloc test, as a baseline.
+
+Next step: run memprobe, then godot-hello, and compare. If only Godot gets a tiny MEM2, the
+image is eating the app's memory budget (RPL FILEINFO: textSize 0x17DC100, dataSize
+0x57D000, loadSize 0x8B1460, tempSize 0xE6E920; memprobe: 0x10760 / 0x7000 / 0x4380 /
+0x8028), so shrink the build. If memprobe is tiny too, it's a launch/environment issue.
+
+Logging findings:
+- `WHBLogPrint` and `WHBLogPrintf` allocate a 2048-byte buffer from the default heap (routed
+  into newlib malloc) and print **nothing** when memory is gone. `WHBLogWrite` doesn't
+  allocate. `crash_log.c`'s `log_static` formats into a static buffer and uses `WHBLogWrite`.
+- `crash_log.c` also wraps `malloc/calloc/realloc` (`--wrap` in `SCsub`): logs failures and
+  every allocation of 1 MB or more, plus `wiiu_log_heap_state(tag)`.
+- Load offset: the RPX text runs 0x0a000000 above its link address (`main` linked at
+  0x02004e84, runs at 0x0c004e84). Subtract it before `powerpc-eabi-addr2line`.
+
+Known next landmines:
+- **Main thread stack is 64 KB** (`stackSize 0x10000`, hardcoded by `elf2rpl`, no option).
+  `register_global_constants` alone has a ~25 KB frame. Expect a stack overflow once the heap
+  works. Fix: patch FILEINFO `stackSize` in the `.rpx` (and its CRC), or run the engine on a
+  big-stack thread (ProcUI must still be pumped from the main thread).
+- **Stack protector reads garbage**: Clang's ppc32-linux canary is `lwz rX,-28680(r2)`
+  (TCB-0x7008), but on Cafe r2 is the SDA2 base. Add `-fno-stack-protector` (or a global guard
+  if Clang supports it for ppc32) at the next full rebuild.
+
+Console tooling (user's Wii U at 192.168.1.34, PC 192.168.1.22):
+- FTP port 21, empty credentials; apps go in `/fs/vol/external01/wiiu/apps/`. FTP is down
+  while the console sits on a crash screen.
+- MochaPayload TCP shell: the PC broadcasts UDP beacon `WIIU_TCP_SYSLOG_BEACON_V1` on 4445, and
+  the console connects back to TCP 7965. It streams the system log, including OSContext crash
+  dumps with symbols. Commands: `iosu reboot`, `iosu shutdown`, `iosu reload`, `iosu help`.
+  `platform/wiiu/tools/mocha_logger.py LOG FIFO` logs it to a file and sends lines written to
+  the FIFO as commands.
+- WHBLogUdp output: `udplogserver` (devkitPro tools) on the PC.
+- SCons now lives in `~/scons-venv` on the VM: `~/scons-venv/bin/scons ...`.
+
+## 10. Session 3 (2026-11-12): heap corruption root cause, crash screen, console
+
+**Root cause of the boot-time malloc failure: static constructors ran in reverse order.**
+wut.ld merges `.init_array` into the same list as GCC's `.ctors` (inside `.rodata`), and GCC's
+EABI startup (`__init` -> `__do_global_ctors_aux`) walks that list backwards. That's right for
+`.ctors`, wrong for Clang's default `.init_array`. A static `StringName` was built before
+`StringName::allocator`'s constructor ran. Its `alloc()` ran with `page_size` 0, and the
+allocator's later `configure(4096)` failed its `page_pool != nullptr` check. So every page was
+0 bytes, and `StringName::_Data` objects overran the heap. In newlib's mallocr that shrank the
+top chunk's size word, malloc took the "foreign sbrk" path with a tiny old top, and returned
+NULL without setting errno.
+
+Fix: `-fno-use-init-array` in `detect.py`, so Clang emits `.ctors`. `-fno-stack-protector` was
+added at the same time: Clang's ppc32-linux canary is read from r2, which is the SDA2 base on
+Cafe. Both need a full rebuild.
+
+How it was found (the tooling is worth keeping):
+- memprobe showed that a ~39 KB malloc arena is normal: malloc grows it with sbrk on demand.
+- A `_sbrk_r` trace (`--wrap=_sbrk_r`) showed sbrk succeeding while malloc failed.
+- `heap_check()` in `crash_log.c` runs on entry to and exit from every
+  malloc/calloc/realloc/free and checks that top + size == sbrk(0). On the first mismatch it
+  dumps the 64 bytes below top, walks the chunk chain, and names the block below top with a
+  6-frame caller trace. It showed a 16-char String ("fs:/vol/content") followed by overrun
+  bytes, and `PagedAllocator<StringName::_Data>` allocating 0-byte pages (16 bytes = Godot's
+  prepad only).
+- Heap addresses are the same from run to run for the same build.
+
+Crash screen (`crash_log.c`):
+- The console background is black, and turns red on `abort()` or on a DSI/ISI/PROGRAM
+  exception (`OSSetExceptionCallbackEx`, GLOBAL_ALL_CORES).
+- The exception callback saves the context and resumes the thread at `crash_exception_entry`
+  on a private 64 KB stack. That logs the registers, SRR0/LR/DAR/DSISR and a backtrace with
+  `OSGetSymbolName` names, then waits for HOME and calls `_Exit`.
+- A crash on another thread parks that thread and hands over to the main thread through
+  `wiiu_crash_check()`, which the main loop calls every frame.
+- A second crash while the screen is up returns FALSE, so Cafe OS handles it.
+
+On-screen console (`wiiu_console.c`, replaces WHBLogConsole):
+- 1024-line history, wrapped at 68 columns; TV shows 27 rows, GamePad 17. D-pad up/down
+  scrolls (hold to repeat), L/R pages. Registered as a WHB log handler.
+- OSScreen buffers live in the MEM1 frame heap, allocated and freed in the ProcUI
+  acquire/release callbacks. Rows are copied under the lock and rendered outside it.
+- **Only call `OSScreenShutdown` while the app has the foreground.** After ProcUI releases it
+  (exit through HOME), the display registers (e.g. 0xFC206084) are unmapped and the call
+  faults, which hangs the console on the loading screen.
+
+Wording used with the user: "Godot crashed" means the app crashed but HOME works; "console
+crashed" means the console is hung and needs `iosu reboot` over the Mocha TCP shell.
+
+The VM is started with `~/archvm.sh` on the host (qemu; ports 2222->22, 2121->21). If it was
+launched as a background task of a Claude session, it stops when that session ends.
+
+The local working copies of the platform files are in `~/Projects/wiiu-godot/tools/staging/`
+on the host. The VM tree is the source of truth.
+
+### 10.1 Correction: the real root cause was that static constructors never ran
+
+The "reverse order" explanation above was wrong. **No C++ static constructor ran at all.** With
+`-meabi`, GCC inserts a call to `__eabi()` at the top of `main`; `__eabi` calls `__init`, which
+runs `__do_global_ctors_aux` over the `.ctors` list. wut's crt (`__rpx_start` -> `init_wut`)
+only calls `__init_wut` and then `main`, so it relies on that hidden call. Our `main` is
+compiled by Clang, which never emits it. (memprobe worked because its `main` was GCC-compiled.)
+`StringName::Table::allocator` was therefore never configured, `page_size` stayed 0, and the
+0-byte pages corrupted the heap.
+
+Fix: `godot_wiiu.cpp` calls `__init()` as the first statement of `main`.
+`-fno-use-init-array` stays: wut.ld puts `.init_array` into the same list, which
+`__do_global_ctors_aux` walks backwards, so `.init_array` entries would run in reverse order.
+
+### 10.2 Packaging: `godot.pck` instead of `--main-pack`
+
+4.7 export templates reject `--main-pack` unless built with `disable_path_overrides=no`
+(main.cpp:1894). The engine now gets only `--headless`, and `make_wuhb.sh` bundles the pack as
+`content/godot.pck`. That is `<executable basename>.pck` next to
+`OS_WiiU::get_executable_path()` (`fs:/vol/content/godot.rpx`), which is where templates look.
+
+### 10.3 Big-endian: binary resources
+
+`resource_format_binary.cpp` read packed arrays (int32/int64/float32/float64, Color, and the
+real arrays behind Vector2/3/4) with a raw `get_buffer` into typed memory. On the Wii U a
+PackedScene's `_bundled` int arrays came out byte-swapped
+(`nprops[j].name = 16777216` = 0x01000000). Fixed with `fix_buffer_byte_order()`, which swaps
+each element when `FileAccess::_needs_byteswap()` is true. Still not audited: images, audio
+buffers, other `get_buffer` users outside this file.
+
+First run that got this far (2026-11-12): engine banner printed, WorkerThreadPool started,
+physics fell back to the dummy server, GDScript analysed, then the scene load failed on the
+byte order above. `ERROR: Parameter "_create" is null. at: create (core/io/ip.cpp:336)` is
+expected (no IP implementation on this platform yet).
+
+### 10.4 Heap check and threads
+
+`heap_check()` takes newlib's recursive `__malloc_lock` while it reads the heap. Without it,
+worker threads allocating at the same time caused a false "top no longer ends at the break"
+report.
+
+### 10.5 (Resolved in 10.6) console hang on HOME
+
+Twice, pressing HOME froze the whole console: no crash dump, `cos` commands stopped
+answering, IOSU and Mocha kept running, the loading music kept playing. That points to a
+PowerPC core stuck with interrupts disabled during the process switch. Once it worked (HOME
+menu opened and returned). Not understood yet. Suspects: the `OSUninterruptibleSpinLock`s in
+`wiiu_console.c`, `atomic64.c` and `tls_keys.c`.
+
+### 10.6 Resolved: console hang on close / HOME
+
+Cause: `WHBProcIsRunning()` calls `ProcUIShutdown()` itself when it sees the Exit message and
+returns false. `main` then called `WHBProcIsRunning()` again (to decide whether to wait for
+HOME), and `ProcUIProcessMessages` after shutdown raises
+`OSPanic in "procui.c" at line 641`, which takes Cafe OS down. Earlier runs showed this as a
+silent hang because the log handlers were already detached.
+Fix: `wiiu_proc_is_running()` in `crash_log.c` latches the first false and never calls into
+ProcUI again. The main loop (`OS_WiiU::run`), the exit wait and the crash screen all use it.
+**Never call `WHBProcIsRunning()` directly.** `main` also ends with `_Exit(exit_code)` after
+`WHBProcShutdown()`, so Godot's static destructors don't run after the engine is shut down.
+Confirmed 2026-11-12: run, HOME menu and back several times, close from the HOME menu, and
+the console returns to the Wii U Menu.
+
+Clock: wut's `clock_gettime` supports only `CLOCK_REALTIME` (1) and `CLOCK_MONOTONIC` (4).
+Godot's OS_Unix uses `CLOCK_MONOTONIC_RAW` (5) whenever it's defined, so ticks stayed 0 and
+every frame's delta was 0. `OS_WiiU::get_ticks_usec()` overrides it with `OSGetSystemTime()`.
+The hello project then runs at ~25 fps headless, limited by the per-frame console redraw
+(clearing the TV buffer and drawing both screens). Redrawing only when the log changes would
+fix that.
+
+## 11. Planned (user requirements, not built yet)
+
+**Once there is a renderer** (GX2 DisplayServer), the on-screen log becomes an overlay that is
+off by default:
+
+- The GamePad chord **ZL + L + D-pad Right + X + Y + TV, pressed in that order** (each button
+  added while the previous ones are held) toggles the display between the game and the Godot
+  log, and back. The log keeps the D-pad / L / R scrolling.
+- It also works after a crash, where the game's last frame stays on screen.
+- **On a crash, don't switch to the log automatically** (so the player doesn't get a
+  jumpscare). Keep the last frame and draw a centred message on it:
+
+      Godot crashed!
+      Press ZL+L+RIGHT+X+Y+TV to see log
+      Press HOME to exit
+
+  The full red crash log (registers, backtrace) is what the chord shows.
+- Risk to check: the TV button normally opens the system's TV Remote overlay, so it may not
+  reach the app through `VPADRead` (`VPAD_BUTTON_TV`, 0x00010000). Test it early; if it is
+  swallowed, pick a replacement final button with the user.
+- Until graphics exist, the log stays the main screen (current behaviour: black, red on crash).

@@ -313,7 +313,7 @@ uint16_t FileAccess::get_16() const {
 	uint16_t data = 0;
 	get_buffer(reinterpret_cast<uint8_t *>(&data), sizeof(uint16_t));
 
-	if (big_endian) {
+	if (_needs_byteswap()) {
 		data = BSWAP16(data);
 	}
 
@@ -324,7 +324,7 @@ uint32_t FileAccess::get_32() const {
 	uint32_t data = 0;
 	get_buffer(reinterpret_cast<uint8_t *>(&data), sizeof(uint32_t));
 
-	if (big_endian) {
+	if (_needs_byteswap()) {
 		data = BSWAP32(data);
 	}
 
@@ -335,7 +335,7 @@ uint64_t FileAccess::get_64() const {
 	uint64_t data = 0;
 	get_buffer(reinterpret_cast<uint8_t *>(&data), sizeof(uint64_t));
 
-	if (big_endian) {
+	if (_needs_byteswap()) {
 		data = BSWAP64(data);
 	}
 
@@ -587,7 +587,7 @@ bool FileAccess::store_8(uint8_t p_dest) {
 }
 
 bool FileAccess::store_16(uint16_t p_dest) {
-	if (big_endian) {
+	if (_needs_byteswap()) {
 		p_dest = BSWAP16(p_dest);
 	}
 
@@ -595,7 +595,7 @@ bool FileAccess::store_16(uint16_t p_dest) {
 }
 
 bool FileAccess::store_32(uint32_t p_dest) {
-	if (big_endian) {
+	if (_needs_byteswap()) {
 		p_dest = BSWAP32(p_dest);
 	}
 
@@ -603,7 +603,7 @@ bool FileAccess::store_32(uint32_t p_dest) {
 }
 
 bool FileAccess::store_64(uint64_t p_dest) {
-	if (big_endian) {
+	if (_needs_byteswap()) {
 		p_dest = BSWAP64(p_dest);
 	}
 

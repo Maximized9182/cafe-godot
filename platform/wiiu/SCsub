@@ -1,0 +1,35 @@
+#!/usr/bin/env python
+from misc.utility.scons_hints import *
+
+Import("env")
+
+wiiu_files = [
+    "godot_wiiu.cpp",
+    "os_wiiu.cpp",
+    "atomic64.c",
+    "posix_stubs.c",
+    "crash_log.c",
+    "tls_keys.c",
+    "wiiu_console.c",
+]
+
+# wut.specs links with --emit-relocs (elf2rpl needs the relocations), which ld can't
+# combine with the -s that SConstruct adds for builds without debug symbols.
+env["LINKFLAGS"] = [flag for flag in env["LINKFLAGS"] if flag != "-s"]
+
+# Route abort(), allocations and sbrk through crash_log.c (crash screen, heap logging).
+env.Append(LINKFLAGS=["-Wl,--wrap=abort,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free,--wrap=_sbrk_r", "-Wl,-Map=bin/godot.wiiu.map"])
+
+prog = env.add_program("#bin/godot", wiiu_files)
+
+# Convert the linked ELF into a Cafe OS executable (.rpx). Clang's objects carry
+# .note.GNU-stack sections, which elf2rpl can't lay out, so they're stripped first.
+rpx = env.Command(
+    str(prog[0]).replace(".elf", ".rpx"),
+    prog,
+    [
+        "powerpc-eabi-objcopy --remove-section=.note.GNU-stack $SOURCE ${TARGET.base}.stripped.elf",
+        "elf2rpl ${TARGET.base}.stripped.elf $TARGET",
+    ],
+)
+env.Default(rpx)

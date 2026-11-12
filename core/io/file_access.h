@@ -196,6 +196,16 @@ public:
 	String get_as_text() const;
 	virtual String get_as_utf8_string() const;
 
+	// `big_endian` is the byte order of the file data. Swap only when it differs from the CPU's
+	// (e.g. little-endian .pck data read on the big-endian Wii U).
+	_FORCE_INLINE_ bool _needs_byteswap() const {
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+		return !big_endian;
+#else
+		return big_endian;
+#endif
+	}
+
 	/**
 
 	 * Use this for files WRITTEN in _big_ endian machines (ie, amiga/mac)

@@ -110,11 +110,33 @@ void ResourceLoaderBinary::_advance_padding(uint32_t p_len) {
 	}
 }
 
+// get_buffer() copies raw bytes. Packed arrays are stored in the file's byte
+// order (little-endian unless the file is flagged big-endian), so on a CPU of
+// the other byte order (the big-endian Wii U) each element has to be swapped
+// in place after reading.
+static void fix_buffer_byte_order(Ref<FileAccess> &f, void *p_data, size_t p_count, size_t p_element_size) {
+	if (!f->_needs_byteswap()) {
+		return;
+	}
+	if (p_element_size == 4) {
+		uint32_t *data = static_cast<uint32_t *>(p_data);
+		for (size_t i = 0; i < p_count; i++) {
+			data[i] = BSWAP32(data[i]);
+		}
+	} else if (p_element_size == 8) {
+		uint64_t *data = static_cast<uint64_t *>(p_data);
+		for (size_t i = 0; i < p_count; i++) {
+			data[i] = BSWAP64(data[i]);
+		}
+	}
+}
+
 static Error read_reals(real_t *dst, Ref<FileAccess> &f, size_t count) {
 	if (f->real_is_double) {
 		if constexpr (sizeof(real_t) == 8) {
 			// Ideal case with double-precision
 			f->get_buffer((uint8_t *)dst, count * sizeof(double));
+			fix_buffer_byte_order(f, dst, count, sizeof(double));
 		} else if constexpr (sizeof(real_t) == 4) {
 			// May be slower, but this is for compatibility. Eventually the data should be converted.
 			for (size_t i = 0; i < count; ++i) {
@@ -127,6 +149,7 @@ static Error read_reals(real_t *dst, Ref<FileAccess> &f, size_t count) {
 		if constexpr (sizeof(real_t) == 4) {
 			// Ideal case with float-precision
 			f->get_buffer((uint8_t *)dst, count * sizeof(float));
+			fix_buffer_byte_order(f, dst, count, sizeof(float));
 		} else if constexpr (sizeof(real_t) == 8) {
 			for (size_t i = 0; i < count; ++i) {
 				dst[i] = f->get_float();
@@ -510,6 +533,7 @@ Error ResourceLoaderBinary::parse_variant(Variant &r_v) {
 			array.resize(len);
 			int32_t *w = array.ptrw();
 			f->get_buffer((uint8_t *)w, len * sizeof(int32_t));
+			fix_buffer_byte_order(f, w, len, sizeof(int32_t));
 
 			r_v = array;
 		} break;
@@ -520,6 +544,7 @@ Error ResourceLoaderBinary::parse_variant(Variant &r_v) {
 			array.resize(len);
 			int64_t *w = array.ptrw();
 			f->get_buffer((uint8_t *)w, len * sizeof(int64_t));
+			fix_buffer_byte_order(f, w, len, sizeof(int64_t));
 
 			r_v = array;
 		} break;
@@ -530,6 +555,7 @@ Error ResourceLoaderBinary::parse_variant(Variant &r_v) {
 			array.resize(len);
 			float *w = array.ptrw();
 			f->get_buffer((uint8_t *)w, len * sizeof(float));
+			fix_buffer_byte_order(f, w, len, sizeof(float));
 
 			r_v = array;
 		} break;
@@ -540,6 +566,7 @@ Error ResourceLoaderBinary::parse_variant(Variant &r_v) {
 			array.resize(len);
 			double *w = array.ptrw();
 			f->get_buffer((uint8_t *)w, len * sizeof(double));
+			fix_buffer_byte_order(f, w, len, sizeof(double));
 
 			r_v = array;
 		} break;
@@ -590,6 +617,7 @@ Error ResourceLoaderBinary::parse_variant(Variant &r_v) {
 			// Colors always use `float` even with double-precision support enabled
 			static_assert(sizeof(Color) == 4 * sizeof(float));
 			f->get_buffer((uint8_t *)w, len * sizeof(float) * 4);
+			fix_buffer_byte_order(f, w, len * 4, sizeof(float));
 
 			r_v = array;
 		} break;
