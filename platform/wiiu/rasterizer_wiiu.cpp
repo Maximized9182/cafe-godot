@@ -497,7 +497,7 @@ void RasterizerCanvasWiiU::canvas_render_items(RID p_to_render_target, Item *p_i
 		const RSE::CanvasItemTextureFilter item_filter = ci->texture_filter == RSE::CANVAS_ITEM_TEXTURE_FILTER_DEFAULT ? p_default_filter : ci->texture_filter;
 		const RSE::CanvasItemTextureRepeat item_repeat = ci->texture_repeat == RSE::CANVAS_ITEM_TEXTURE_REPEAT_DEFAULT ? p_default_repeat : ci->texture_repeat;
 		// final_transform already maps the item into render-target pixels.
-		const Transform2D base_xform = ci->final_transform;
+		Transform2D base_xform = ci->final_transform;
 		Transform2D xform = base_xform;
 		const Color base_color = ci->final_modulate * p_modulate;
 
@@ -511,202 +511,226 @@ void RasterizerCanvasWiiU::canvas_render_items(RID p_to_render_target, Item *p_i
 			return res.texture != nullptr;
 		};
 
-		for (const Item::Command *c = ci->commands; c; c = c->next) {
-			switch (c->type) {
-				case Item::Command::TYPE_TRANSFORM: {
-					const Item::CommandTransform *t = static_cast<const Item::CommandTransform *>(c);
-					xform = base_xform * t->xform;
-				} break;
+		// Draws the item's commands once, shifted by p_offset (Parallax2D repeats).
+		auto record_commands = [&](const Point2 &p_offset) {
+			base_xform = ci->final_transform;
+			if (ci->repeat_source_item && (p_offset.x || p_offset.y)) {
+				// The offset is in the repeat source's space, like GLES3.
+				base_xform.columns[2] += ci->repeat_source_item->final_transform.basis_xform(p_offset);
+			}
+			xform = base_xform;
+			for (const Item::Command *c = ci->commands; c; c = c->next) {
+				switch (c->type) {
+					case Item::Command::TYPE_TRANSFORM: {
+						const Item::CommandTransform *t = static_cast<const Item::CommandTransform *>(c);
+						xform = base_xform * t->xform;
+					} break;
 
-				case Item::Command::TYPE_CLIP_IGNORE: {
-					const Item::CommandClipIgnore *ig = static_cast<const Item::CommandClipIgnore *>(c);
-					if (clip_ignored != ig->ignore) {
-						clip_ignored = ig->ignore;
-						apply_clip(current_clip);
-					}
-				} break;
-
-				case Item::Command::TYPE_RECT: {
-					const Item::CommandRect *rect = static_cast<const Item::CommandRect *>(c);
-					Size2 tsize;
-					const bool textured = use_texture(rect->texture, WIIU_PRIM_TRIANGLES, tsize);
-					if (rect->flags & CANVAS_RECT_TILE) {
-						// Tiling needs a repeating sampler.
-						_begin(WIIU_PRIM_TRIANGLES, batch_texture, batch_linear, true);
-					}
-
-					Rect2 dst = rect->rect;
-					if (dst.size.x < 0) {
-						dst.position.x += dst.size.x;
-						dst.size.x = -dst.size.x;
-					}
-					if (dst.size.y < 0) {
-						dst.position.y += dst.size.y;
-						dst.size.y = -dst.size.y;
-					}
-					Rect2 src(0, 0, 1, 1);
-					if (textured && (rect->flags & CANVAS_RECT_REGION)) {
-						src = Rect2(rect->source.position / tsize, rect->source.size / tsize);
-					}
-					float u0 = src.position.x, u1 = src.position.x + src.size.x;
-					float v0 = src.position.y, v1 = src.position.y + src.size.y;
-					if (rect->flags & CANVAS_RECT_FLIP_H) {
-						SWAP(u0, u1);
-					}
-					if (rect->flags & CANVAS_RECT_FLIP_V) {
-						SWAP(v0, v1);
-					}
-					const Vector2 pos[4] = {
-						dst.position,
-						Vector2(dst.position.x + dst.size.x, dst.position.y),
-						dst.position + dst.size,
-						Vector2(dst.position.x, dst.position.y + dst.size.y),
-					};
-					static const int corner[4][2] = { { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 1 } };
-					Vector2 uv[4];
-					for (int k = 0; k < 4; k++) {
-						int bx = corner[k][0], by = corner[k][1];
-						if (rect->flags & CANVAS_RECT_TRANSPOSE) {
-							SWAP(bx, by);
+					case Item::Command::TYPE_CLIP_IGNORE: {
+						const Item::CommandClipIgnore *ig = static_cast<const Item::CommandClipIgnore *>(c);
+						if (clip_ignored != ig->ignore) {
+							clip_ignored = ig->ignore;
+							apply_clip(current_clip);
 						}
-						uv[k] = Vector2(bx ? u1 : u0, by ? v1 : v0);
-					}
-					_quad(xform, pos, uv, rect->modulate * base_color);
-				} break;
+					} break;
 
-				case Item::Command::TYPE_NINEPATCH: {
-					const Item::CommandNinePatch *np = static_cast<const Item::CommandNinePatch *>(c);
-					Size2 tsize;
-					const bool textured = use_texture(np->texture, WIIU_PRIM_TRIANGLES, tsize);
-					const Color color = np->color * base_color;
-					Rect2 src = np->source;
-					if (!textured) {
-						src = Rect2(0, 0, 1, 1);
-						tsize = Size2(1, 1);
-					} else if (src.size == Vector2()) {
-						src = Rect2(Vector2(), tsize);
-					}
-					const Rect2 dst = np->rect;
-					// margin: left, top, right, bottom (Side order).
-					const float ml = np->margin[SIDE_LEFT], mt = np->margin[SIDE_TOP];
-					const float mr = np->margin[SIDE_RIGHT], mb = np->margin[SIDE_BOTTOM];
-					const float xs[4] = { dst.position.x, dst.position.x + ml, dst.position.x + dst.size.x - mr, dst.position.x + dst.size.x };
-					const float ys[4] = { dst.position.y, dst.position.y + mt, dst.position.y + dst.size.y - mb, dst.position.y + dst.size.y };
-					float us[4], vs[4];
-					if (textured) {
-						us[0] = src.position.x / tsize.x;
-						us[1] = (src.position.x + ml) / tsize.x;
-						us[2] = (src.position.x + src.size.x - mr) / tsize.x;
-						us[3] = (src.position.x + src.size.x) / tsize.x;
-						vs[0] = src.position.y / tsize.y;
-						vs[1] = (src.position.y + mt) / tsize.y;
-						vs[2] = (src.position.y + src.size.y - mb) / tsize.y;
-						vs[3] = (src.position.y + src.size.y) / tsize.y;
-					} else {
-						for (int i = 0; i < 4; i++) {
-							us[i] = vs[i] = 0.5f;
+					case Item::Command::TYPE_RECT: {
+						const Item::CommandRect *rect = static_cast<const Item::CommandRect *>(c);
+						Size2 tsize;
+						const bool textured = use_texture(rect->texture, WIIU_PRIM_TRIANGLES, tsize);
+						if (rect->flags & CANVAS_RECT_TILE) {
+							// Tiling needs a repeating sampler.
+							_begin(WIIU_PRIM_TRIANGLES, batch_texture, batch_linear, true);
 						}
-					}
-					// Tile modes are drawn stretched for now.
-					for (int y = 0; y < 3; y++) {
-						for (int x = 0; x < 3; x++) {
-							if (x == 1 && y == 1 && !np->draw_center) {
-								continue;
+
+						Rect2 dst = rect->rect;
+						if (dst.size.x < 0) {
+							dst.position.x += dst.size.x;
+							dst.size.x = -dst.size.x;
+						}
+						if (dst.size.y < 0) {
+							dst.position.y += dst.size.y;
+							dst.size.y = -dst.size.y;
+						}
+						Rect2 src(0, 0, 1, 1);
+						if (textured && (rect->flags & CANVAS_RECT_REGION)) {
+							src = Rect2(rect->source.position / tsize, rect->source.size / tsize);
+						}
+						float u0 = src.position.x, u1 = src.position.x + src.size.x;
+						float v0 = src.position.y, v1 = src.position.y + src.size.y;
+						if (rect->flags & CANVAS_RECT_FLIP_H) {
+							SWAP(u0, u1);
+						}
+						if (rect->flags & CANVAS_RECT_FLIP_V) {
+							SWAP(v0, v1);
+						}
+						const Vector2 pos[4] = {
+							dst.position,
+							Vector2(dst.position.x + dst.size.x, dst.position.y),
+							dst.position + dst.size,
+							Vector2(dst.position.x, dst.position.y + dst.size.y),
+						};
+						static const int corner[4][2] = { { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 1 } };
+						Vector2 uv[4];
+						for (int k = 0; k < 4; k++) {
+							int bx = corner[k][0], by = corner[k][1];
+							if (rect->flags & CANVAS_RECT_TRANSPOSE) {
+								SWAP(bx, by);
 							}
-							const Vector2 pos[4] = {
-								Vector2(xs[x], ys[y]), Vector2(xs[x + 1], ys[y]),
-								Vector2(xs[x + 1], ys[y + 1]), Vector2(xs[x], ys[y + 1])
-							};
-							const Vector2 uv[4] = {
-								Vector2(us[x], vs[y]), Vector2(us[x + 1], vs[y]),
-								Vector2(us[x + 1], vs[y + 1]), Vector2(us[x], vs[y + 1])
-							};
-							_quad(xform, pos, uv, color);
+							uv[k] = Vector2(bx ? u1 : u0, by ? v1 : v0);
 						}
-					}
-				} break;
+						_quad(xform, pos, uv, rect->modulate * base_color);
+					} break;
 
-				case Item::Command::TYPE_POLYGON: {
-					const Item::CommandPolygon *poly = static_cast<const Item::CommandPolygon *>(c);
-					PolygonData *data = polygons.getptr(poly->polygon.polygon_id);
-					if (data == nullptr) {
+					case Item::Command::TYPE_NINEPATCH: {
+						const Item::CommandNinePatch *np = static_cast<const Item::CommandNinePatch *>(c);
+						Size2 tsize;
+						const bool textured = use_texture(np->texture, WIIU_PRIM_TRIANGLES, tsize);
+						const Color color = np->color * base_color;
+						Rect2 src = np->source;
+						if (!textured) {
+							src = Rect2(0, 0, 1, 1);
+							tsize = Size2(1, 1);
+						} else if (src.size == Vector2()) {
+							src = Rect2(Vector2(), tsize);
+						}
+						const Rect2 dst = np->rect;
+						// margin: left, top, right, bottom (Side order).
+						const float ml = np->margin[SIDE_LEFT], mt = np->margin[SIDE_TOP];
+						const float mr = np->margin[SIDE_RIGHT], mb = np->margin[SIDE_BOTTOM];
+						const float xs[4] = { dst.position.x, dst.position.x + ml, dst.position.x + dst.size.x - mr, dst.position.x + dst.size.x };
+						const float ys[4] = { dst.position.y, dst.position.y + mt, dst.position.y + dst.size.y - mb, dst.position.y + dst.size.y };
+						float us[4], vs[4];
+						if (textured) {
+							us[0] = src.position.x / tsize.x;
+							us[1] = (src.position.x + ml) / tsize.x;
+							us[2] = (src.position.x + src.size.x - mr) / tsize.x;
+							us[3] = (src.position.x + src.size.x) / tsize.x;
+							vs[0] = src.position.y / tsize.y;
+							vs[1] = (src.position.y + mt) / tsize.y;
+							vs[2] = (src.position.y + src.size.y - mb) / tsize.y;
+							vs[3] = (src.position.y + src.size.y) / tsize.y;
+						} else {
+							for (int i = 0; i < 4; i++) {
+								us[i] = vs[i] = 0.5f;
+							}
+						}
+						// Tile modes are drawn stretched for now.
+						for (int y = 0; y < 3; y++) {
+							for (int x = 0; x < 3; x++) {
+								if (x == 1 && y == 1 && !np->draw_center) {
+									continue;
+								}
+								const Vector2 pos[4] = {
+									Vector2(xs[x], ys[y]), Vector2(xs[x + 1], ys[y]),
+									Vector2(xs[x + 1], ys[y + 1]), Vector2(xs[x], ys[y + 1])
+								};
+								const Vector2 uv[4] = {
+									Vector2(us[x], vs[y]), Vector2(us[x + 1], vs[y]),
+									Vector2(us[x + 1], vs[y + 1]), Vector2(us[x], vs[y + 1])
+								};
+								_quad(xform, pos, uv, color);
+							}
+						}
+					} break;
+
+					case Item::Command::TYPE_POLYGON: {
+						const Item::CommandPolygon *poly = static_cast<const Item::CommandPolygon *>(c);
+						PolygonData *data = polygons.getptr(poly->polygon.polygon_id);
+						if (data == nullptr) {
+							break;
+						}
+						const bool lines = poly->primitive == RSE::PRIMITIVE_LINES || poly->primitive == RSE::PRIMITIVE_LINE_STRIP;
+						if (poly->primitive == RSE::PRIMITIVE_POINTS) {
+							break;
+						}
+						Size2 tsize;
+						use_texture(poly->texture, lines ? WIIU_PRIM_LINES : WIIU_PRIM_TRIANGLES, tsize);
+						const uint32_t count = data->indices.size() > 0 ? data->indices.size() : data->points.size();
+						auto vertex_at = [&](uint32_t p_i) {
+							const int idx = data->indices.size() > 0 ? data->indices[p_i] : (int)p_i;
+							if (idx < 0 || idx >= (int)data->points.size()) {
+								return;
+							}
+							Color col = base_color;
+							if (data->colors.size() == data->points.size()) {
+								col = data->colors[idx] * base_color;
+							} else if (data->colors.size() == 1) {
+								col = data->colors[0] * base_color;
+							}
+							const Vector2 uv = data->uvs.size() > 0 ? data->uvs[idx] : Vector2();
+							_vertex(xform.xform(data->points[idx]), uv, col);
+						};
+						switch (poly->primitive) {
+							case RSE::PRIMITIVE_TRIANGLES:
+							case RSE::PRIMITIVE_LINES:
+								for (uint32_t i = 0; i < count; i++) {
+									vertex_at(i);
+								}
+								break;
+							case RSE::PRIMITIVE_TRIANGLE_STRIP:
+								for (uint32_t i = 2; i < count; i++) {
+									vertex_at(i - 2);
+									vertex_at(i - 1);
+									vertex_at(i);
+								}
+								break;
+							case RSE::PRIMITIVE_LINE_STRIP:
+								for (uint32_t i = 1; i < count; i++) {
+									vertex_at(i - 1);
+									vertex_at(i);
+								}
+								break;
+							default:
+								break;
+						}
+					} break;
+
+					case Item::Command::TYPE_PRIMITIVE: {
+						const Item::CommandPrimitive *prim = static_cast<const Item::CommandPrimitive *>(c);
+						Size2 tsize;
+						if (prim->point_count == 2) {
+							use_texture(prim->texture, WIIU_PRIM_LINES, tsize);
+							for (int i = 0; i < 2; i++) {
+								_vertex(xform.xform(prim->points[i]), prim->uvs[i], prim->colors[i] * base_color);
+							}
+						} else if (prim->point_count == 3 || prim->point_count == 4) {
+							use_texture(prim->texture, WIIU_PRIM_TRIANGLES, tsize);
+							static const int tri[6] = { 0, 1, 2, 0, 2, 3 };
+							const int n = prim->point_count == 3 ? 3 : 6;
+							for (int i = 0; i < n; i++) {
+								const int k = tri[i];
+								_vertex(xform.xform(prim->points[k]), prim->uvs[k], prim->colors[k] * base_color);
+							}
+						} else if (prim->point_count == 1) {
+							// A point: a one-pixel quad.
+							use_texture(prim->texture, WIIU_PRIM_TRIANGLES, tsize);
+							const Vector2 p = prim->points[0];
+							const Vector2 pos[4] = { p, p + Vector2(1, 0), p + Vector2(1, 1), p + Vector2(0, 1) };
+							const Vector2 uv[4] = { prim->uvs[0], prim->uvs[0], prim->uvs[0], prim->uvs[0] };
+							_quad(xform, pos, uv, prim->colors[0] * base_color);
+						}
+					} break;
+
+					default:
+						// Meshes, multimeshes, particles, animation slices: not supported yet.
 						break;
-					}
-					const bool lines = poly->primitive == RSE::PRIMITIVE_LINES || poly->primitive == RSE::PRIMITIVE_LINE_STRIP;
-					if (poly->primitive == RSE::PRIMITIVE_POINTS) {
-						break;
-					}
-					Size2 tsize;
-					use_texture(poly->texture, lines ? WIIU_PRIM_LINES : WIIU_PRIM_TRIANGLES, tsize);
-					const uint32_t count = data->indices.size() > 0 ? data->indices.size() : data->points.size();
-					auto vertex_at = [&](uint32_t p_i) {
-						const int idx = data->indices.size() > 0 ? data->indices[p_i] : (int)p_i;
-						if (idx < 0 || idx >= (int)data->points.size()) {
-							return;
-						}
-						Color col = base_color;
-						if (data->colors.size() == data->points.size()) {
-							col = data->colors[idx] * base_color;
-						} else if (data->colors.size() == 1) {
-							col = data->colors[0] * base_color;
-						}
-						const Vector2 uv = data->uvs.size() > 0 ? data->uvs[idx] : Vector2();
-						_vertex(xform.xform(data->points[idx]), uv, col);
-					};
-					switch (poly->primitive) {
-						case RSE::PRIMITIVE_TRIANGLES:
-						case RSE::PRIMITIVE_LINES:
-							for (uint32_t i = 0; i < count; i++) {
-								vertex_at(i);
-							}
-							break;
-						case RSE::PRIMITIVE_TRIANGLE_STRIP:
-							for (uint32_t i = 2; i < count; i++) {
-								vertex_at(i - 2);
-								vertex_at(i - 1);
-								vertex_at(i);
-							}
-							break;
-						case RSE::PRIMITIVE_LINE_STRIP:
-							for (uint32_t i = 1; i < count; i++) {
-								vertex_at(i - 1);
-								vertex_at(i);
-							}
-							break;
-						default:
-							break;
-					}
-				} break;
+				}
+			}
+		};
 
-				case Item::Command::TYPE_PRIMITIVE: {
-					const Item::CommandPrimitive *prim = static_cast<const Item::CommandPrimitive *>(c);
-					Size2 tsize;
-					if (prim->point_count == 2) {
-						use_texture(prim->texture, WIIU_PRIM_LINES, tsize);
-						for (int i = 0; i < 2; i++) {
-							_vertex(xform.xform(prim->points[i]), prim->uvs[i], prim->colors[i] * base_color);
-						}
-					} else if (prim->point_count == 3 || prim->point_count == 4) {
-						use_texture(prim->texture, WIIU_PRIM_TRIANGLES, tsize);
-						static const int tri[6] = { 0, 1, 2, 0, 2, 3 };
-						const int n = prim->point_count == 3 ? 3 : 6;
-						for (int i = 0; i < n; i++) {
-							const int k = tri[i];
-							_vertex(xform.xform(prim->points[k]), prim->uvs[k], prim->colors[k] * base_color);
-						}
-					} else if (prim->point_count == 1) {
-						// A point: a one-pixel quad.
-						use_texture(prim->texture, WIIU_PRIM_TRIANGLES, tsize);
-						const Vector2 p = prim->points[0];
-						const Vector2 pos[4] = { p, p + Vector2(1, 0), p + Vector2(1, 1), p + Vector2(0, 1) };
-						const Vector2 uv[4] = { prim->uvs[0], prim->uvs[0], prim->uvs[0], prim->uvs[0] };
-						_quad(xform, pos, uv, prim->colors[0] * base_color);
-					}
-				} break;
-
-				default:
-					// Meshes, multimeshes, particles, animation slices: not supported yet.
-					break;
+		// Parallax2D's repeat_size / repeat_times: draw the commands
+		// repeat_times + 1 times per repeating axis, centred on the item.
+		if (!ci->repeat_size.x && !ci->repeat_size.y) {
+			record_commands(Point2());
+		} else {
+			const Point2 start = ci->repeat_size * -(ci->repeat_times / 2);
+			const int times_x = ci->repeat_size.x ? ci->repeat_times : 0;
+			const int times_y = ci->repeat_size.y ? ci->repeat_times : 0;
+			for (int ry = 0; ry <= times_y; ry++) {
+				for (int rx = 0; rx <= times_x; rx++) {
+					record_commands(start + Point2(rx * ci->repeat_size.x, ry * ci->repeat_size.y));
+				}
 			}
 		}
 	}
