@@ -1,42 +1,48 @@
-// GX2 display setup for Cafe Godot: owns the TV and GamePad (DRC) outputs.
+// GX2 layer for Cafe Godot: owns the TV and GamePad (DRC) outputs and provides
+// the few drawing primitives the 2D renderer (rasterizer_wiiu.cpp) needs:
+// textures, render targets, clears, scissor and batched textured triangles.
 //
 // Modelled on Love Potion's driver/display (MIT, (c) 2018-present Serena S.
-// Postelnek & Logan Hickok-Dickson) and wut's WHBGfx.
+// Postelnek & Logan Hickok-Dickson) and wut's WHBGfx. All drawing goes through
+// texture.gsh (shaders/README.md): vertices are converted to clip space on the
+// CPU, so the shader's Transformation block holds two identity matrices.
 //
-// Memory: the scan buffers and colour buffers live in the MEM1 frame heap and
-// are only valid while the app has the foreground. They're allocated in the
-// ProcUI "acquire" callback and freed in "release" (HOME menu), so they don't
-// leak into the HOME menu's memory. OSScreen (the log console in
-// wiiu_console.c) also uses the MEM1 frame heap and the display controller, so
-// only one of the two may own the display at a time: the console is suspended
-// before wiiu_gx2_init and resumed after wiiu_gx2_shutdown (e.g. by the crash
-// screen).
+// Memory: the scan buffers and screen colour buffers live in the MEM1 frame
+// heap and are only valid while the app has the foreground. They're allocated
+// in the ProcUI "acquire" callback and freed in "release" (HOME menu), so they
+// don't leak into the HOME menu's memory. Textures, render targets and the
+// vertex arenas live in MEM2 and survive the HOME menu. OSScreen (the log
+// console in wiiu_console.c) also uses the MEM1 frame heap and the display
+// controller, so only one of the two may own the display at a time: the
+// console stays suspended while GX2 runs and resumes after wiiu_gx2_shutdown
+// (e.g. on the crash screen).
+//
+// Must only be called from the main thread (core 1), which owns GX2.
+
+#include "wiiu_gx2.h"
 
 #include <coreinit/cache.h>
 #include <coreinit/memdefaultheap.h>
 #include <coreinit/memfrmheap.h>
 #include <coreinit/memheap.h>
 #include <gx2/clear.h>
-#include <gx2/draw.h>
-#include <gx2/sampler.h>
-#include <gx2/shaders.h>
-#include <gx2/texture.h>
-#include <gx2/utils.h>
-#include <gx2r/buffer.h>
-#include <whb/gfx.h>
 #include <gx2/context.h>
 #include <gx2/display.h>
+#include <gx2/draw.h>
 #include <gx2/event.h>
 #include <gx2/mem.h>
 #include <gx2/registers.h>
+#include <gx2/sampler.h>
+#include <gx2/shaders.h>
 #include <gx2/state.h>
 #include <gx2/surface.h>
 #include <gx2/swap.h>
+#include <gx2/texture.h>
+#include <gx2/utils.h>
 #include <proc_ui/procui.h>
-#include <stdbool.h>
-#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <whb/gfx.h>
 #include <whb/log.h>
 
 #define GX2_FRAME_HEAP_TAG 0x47583242 // "GX2B"
@@ -48,23 +54,63 @@
 
 #define SCAN_BUFFER_ALIGNMENT 0x1000
 
+// Two vertex arenas, used on alternate frames: the GPU reads frame N's
+// vertices while the CPU fills frame N+1's.
+#define ARENA_BYTES (2 * 1024 * 1024)
+
+extern const uint8_t wiiu_shader_texture[];
+
 typedef struct {
 	GX2ColorBuffer color_buffer;
 	void *scan_buffer;
 	uint32_t scan_buffer_size;
 } Screen;
 
+struct WiiUTexture {
+	GX2Texture texture;
+	uint32_t width;
+	uint32_t height;
+	bool owns_image;
+};
+
+struct WiiURenderTarget {
+	GX2ColorBuffer color_buffer;
+	WiiUTexture texture; // Shares the colour buffer's image.
+};
+
 static bool gx2_active = false;
 static bool gx2_acquired = false;
-static bool gx2_first_frame = true;
 static void *gx2_command_buffer = NULL;
 static GX2ContextState *gx2_context = NULL;
 static Screen gx2_tv;
 static Screen gx2_drc;
 
-static void init_color_buffer(GX2ColorBuffer *cb, uint32_t width, uint32_t height) {
+static bool draw_ready = false;
+static WHBGfxShaderGroup draw_shader;
+static uint32_t draw_uniform_location = 0;
+static uint32_t draw_sampler_location = 0;
+static uint32_t *draw_uniforms = NULL; // 32 words, byte-swapped
+static GX2Sampler draw_samplers[2][2]; // [linear][repeat]
+static WiiUTexture *draw_white = NULL;
+
+static uint8_t *arena[2] = { NULL, NULL };
+static uint32_t arena_index = 0;
+static uint32_t arena_used = 0;
+
+// The bound target.
+static GX2ColorBuffer *target_cb = NULL;
+static WiiURenderTarget *target_rt = NULL;
+static uint32_t target_width = 0;
+static uint32_t target_height = 0;
+static int32_t scissor_x = 0, scissor_y = 0, scissor_w = 0, scissor_h = 0;
+
+// ---------------------------------------------------------------------------
+// Screens and ProcUI
+// ---------------------------------------------------------------------------
+
+static void init_color_buffer(GX2ColorBuffer *cb, uint32_t width, uint32_t height, GX2SurfaceUse use) {
 	memset(cb, 0, sizeof(*cb));
-	cb->surface.use = GX2_SURFACE_USE_TEXTURE_COLOR_BUFFER_TV;
+	cb->surface.use = use;
 	cb->surface.dim = GX2_SURFACE_DIM_TEXTURE_2D;
 	cb->surface.width = width;
 	cb->surface.height = height;
@@ -112,7 +158,6 @@ static uint32_t gx2_proc_acquired(void *context) {
 		return 0;
 	}
 	gx2_acquired = true;
-	gx2_first_frame = true;
 	return 0;
 }
 
@@ -124,187 +169,383 @@ static uint32_t gx2_proc_released(void *context) {
 	// Let the GPU finish with the buffers before they go back to the system.
 	GX2DrawDone();
 	gx2_acquired = false;
+	if (target_cb == &gx2_tv.color_buffer || target_cb == &gx2_drc.color_buffer) {
+		target_cb = NULL;
+	}
 	MEMFreeByStateToFrmHeap(MEMGetBaseHeapHandle(MEM_BASE_HEAP_MEM1), GX2_FRAME_HEAP_TAG);
 	return 0;
-}
-
-// ---------------------------------------------------------------------------
-// Stage 2 test: one textured quad.
-//
-// texture.gsh (from Love Potion, see shaders/README.md): vertex inputs
-// VertexPosition vec3, VertexTexCoord vec2, VertexColor vec4; uniform block
-// Transformation { mat4 mdlvMtx; mat4 projMtx; }; pixel = colour * texture0.
-// ---------------------------------------------------------------------------
-
-extern const uint8_t wiiu_shader_texture[];
-
-typedef struct {
-	float x, y, z;
-	float u, v;
-	float r, g, b, a;
-} Vertex;
-
-#define VERTEX_STRIDE ((uint32_t)sizeof(Vertex))
-
-static bool quad_ready = false;
-static WHBGfxShaderGroup quad_shader;
-static uint32_t quad_uniform_location = 0;
-static uint32_t quad_sampler_location = 0;
-static Vertex *quad_vertices = NULL;
-static uint32_t *quad_uniforms = NULL; // 32 words, byte-swapped
-static GX2Texture quad_texture;
-static GX2Sampler quad_sampler;
-
-static uint32_t swap32(uint32_t v) {
-	return __builtin_bswap32(v);
-}
-
-static bool quad_init(void) {
-	if (!WHBGfxLoadGFDShaderGroup(&quad_shader, 0, wiiu_shader_texture)) {
-		WHBLogPrint("[gx2] couldn't load texture.gsh");
-		return false;
-	}
-	WHBGfxInitShaderAttribute(&quad_shader, "VertexPosition", 0, 0, GX2_ATTRIB_FORMAT_FLOAT_32_32_32);
-	WHBGfxInitShaderAttribute(&quad_shader, "VertexTexCoord", 0, 12, GX2_ATTRIB_FORMAT_FLOAT_32_32);
-	WHBGfxInitShaderAttribute(&quad_shader, "VertexColor", 0, 20, GX2_ATTRIB_FORMAT_FLOAT_32_32_32_32);
-	WHBGfxInitFetchShader(&quad_shader);
-
-	GX2UniformBlock *block = GX2GetVertexUniformBlock(quad_shader.vertexShader, "Transformation");
-	if (block == NULL) {
-		WHBLogPrint("[gx2] texture.gsh has no Transformation block");
-		return false;
-	}
-	quad_uniform_location = block->offset;
-	quad_sampler_location = 0;
-	for (uint32_t i = 0; i < quad_shader.pixelShader->samplerVarCount; i++) {
-		if (strcmp(quad_shader.pixelShader->samplerVars[i].name, "texture0") == 0) {
-			quad_sampler_location = quad_shader.pixelShader->samplerVars[i].location;
-		}
-	}
-
-	// Two identity matrices. GX2 reads uniform blocks little-endian, so every
-	// 32-bit word is byte-swapped (as Love Potion does).
-	quad_uniforms = (uint32_t *)MEMAllocFromDefaultHeapEx(GX2_UNIFORM_BLOCK_ALIGNMENT, GX2_UNIFORM_BLOCK_ALIGNMENT);
-	for (int m = 0; m < 2; m++) {
-		for (int i = 0; i < 16; i++) {
-			float v = (i % 5 == 0) ? 1.0f : 0.0f;
-			uint32_t bits;
-			memcpy(&bits, &v, 4);
-			quad_uniforms[m * 16 + i] = swap32(bits);
-		}
-	}
-	GX2Invalidate(GX2_INVALIDATE_MODE_CPU | GX2_INVALIDATE_MODE_UNIFORM_BLOCK, quad_uniforms, GX2_UNIFORM_BLOCK_ALIGNMENT);
-
-	// A quad in the middle of the screen (clip space, +Y up), vertex colour white.
-	// Texture: red top-left, green top-right, blue bottom-left, white bottom-right.
-	static const Vertex corners[4] = {
-		{ -0.5f, 0.5f, 0.0f, 0.0f, 0.0f, 1, 1, 1, 1 },
-		{ 0.5f, 0.5f, 0.0f, 1.0f, 0.0f, 1, 1, 1, 1 },
-		{ 0.5f, -0.5f, 0.0f, 1.0f, 1.0f, 1, 1, 1, 1 },
-		{ -0.5f, -0.5f, 0.0f, 0.0f, 1.0f, 1, 1, 1, 1 },
-	};
-	quad_vertices = (Vertex *)MEMAllocFromDefaultHeapEx(sizeof(corners), GX2_VERTEX_BUFFER_ALIGNMENT);
-	memcpy(quad_vertices, corners, sizeof(corners));
-	GX2Invalidate(GX2_INVALIDATE_MODE_CPU | GX2_INVALIDATE_MODE_ATTRIBUTE_BUFFER, quad_vertices, sizeof(corners));
-
-	memset(&quad_texture, 0, sizeof(quad_texture));
-	quad_texture.surface.width = 2;
-	quad_texture.surface.height = 2;
-	quad_texture.surface.depth = 1;
-	quad_texture.surface.mipLevels = 1;
-	quad_texture.surface.format = GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8;
-	quad_texture.surface.aa = GX2_AA_MODE1X;
-	quad_texture.surface.use = GX2_SURFACE_USE_TEXTURE;
-	quad_texture.surface.dim = GX2_SURFACE_DIM_TEXTURE_2D;
-	quad_texture.surface.tileMode = GX2_TILE_MODE_LINEAR_ALIGNED;
-	quad_texture.viewNumMips = 1;
-	quad_texture.viewNumSlices = 1;
-	quad_texture.compMap = GX2_COMP_MAP(GX2_SQ_SEL_R, GX2_SQ_SEL_G, GX2_SQ_SEL_B, GX2_SQ_SEL_A);
-	GX2CalcSurfaceSizeAndAlignment(&quad_texture.surface);
-	GX2InitTextureRegs(&quad_texture);
-	quad_texture.surface.image = MEMAllocFromDefaultHeapEx(quad_texture.surface.imageSize, quad_texture.surface.alignment);
-	memset(quad_texture.surface.image, 0, quad_texture.surface.imageSize);
-	static const uint8_t pixels[2][2][4] = {
-		{ { 255, 0, 0, 255 }, { 0, 255, 0, 255 } },
-		{ { 0, 0, 255, 255 }, { 255, 255, 255, 255 } },
-	};
-	uint8_t *image = (uint8_t *)quad_texture.surface.image;
-	for (int y = 0; y < 2; y++) {
-		memcpy(image + y * quad_texture.surface.pitch * 4, pixels[y], sizeof(pixels[y]));
-	}
-	GX2Invalidate(GX2_INVALIDATE_MODE_CPU | GX2_INVALIDATE_MODE_TEXTURE, quad_texture.surface.image, quad_texture.surface.imageSize);
-
-	GX2InitSampler(&quad_sampler, GX2_TEX_CLAMP_MODE_CLAMP, GX2_TEX_XY_FILTER_MODE_POINT);
-
-	WHBLogPrintf("[gx2] test quad ready: uniform block at %u, sampler %u, texture pitch %u",
-			(unsigned)quad_uniform_location, (unsigned)quad_sampler_location, (unsigned)quad_texture.surface.pitch);
-	quad_ready = true;
-	return true;
-}
-
-static void quad_free(void) {
-	if (!quad_ready) {
-		return;
-	}
-	quad_ready = false;
-	WHBGfxFreeShaderGroup(&quad_shader);
-	MEMFreeToDefaultHeap(quad_texture.surface.image);
-	MEMFreeToDefaultHeap(quad_vertices);
-	MEMFreeToDefaultHeap(quad_uniforms);
-}
-
-static void quad_draw(void) {
-	GX2SetShaderMode(GX2_SHADER_MODE_UNIFORM_BLOCK);
-	GX2SetFetchShader(&quad_shader.fetchShader);
-	GX2SetVertexShader(quad_shader.vertexShader);
-	GX2SetPixelShader(quad_shader.pixelShader);
-	GX2SetVertexUniformBlock(quad_uniform_location, 32 * 4, quad_uniforms);
-	GX2SetAttribBuffer(0, 4 * VERTEX_STRIDE, VERTEX_STRIDE, quad_vertices);
-	GX2SetPixelTexture(&quad_texture, quad_sampler_location);
-	GX2SetPixelSampler(&quad_sampler, quad_sampler_location);
-	GX2SetDepthOnlyControl(FALSE, FALSE, GX2_COMPARE_FUNC_ALWAYS);
-	GX2SetCullOnlyControl(GX2_FRONT_FACE_CCW, FALSE, FALSE);
-	GX2SetColorControl(GX2_LOGIC_OP_COPY, 0xFF, FALSE, TRUE);
-	GX2SetBlendControl(GX2_RENDER_TARGET_0, GX2_BLEND_MODE_SRC_ALPHA, GX2_BLEND_MODE_INV_SRC_ALPHA,
-			GX2_BLEND_COMBINE_MODE_ADD, TRUE, GX2_BLEND_MODE_ONE, GX2_BLEND_MODE_INV_SRC_ALPHA,
-			GX2_BLEND_COMBINE_MODE_ADD);
-	GX2DrawEx(GX2_PRIMITIVE_MODE_QUADS, 4, 0, 1);
-}
-
-// Clears one screen's colour buffer, draws the test quad into it and copies it
-// to the scan buffer.
-static void render_screen(Screen *s, uint32_t width, uint32_t height, GX2ScanTarget target,
-		float r, float g, float b) {
-	GX2ClearColor(&s->color_buffer, r, g, b, 1.0f);
-	// GX2ClearColor changes GPU state; restore ours, then bind this screen.
-	GX2SetContextState(gx2_context);
-	GX2SetColorBuffer(&s->color_buffer, GX2_RENDER_TARGET_0);
-	GX2SetViewport(0.0f, 0.0f, (float)width, (float)height, 0.0f, 1.0f);
-	GX2SetScissor(0, 0, width, height);
-	if (quad_ready) {
-		quad_draw();
-	}
-	GX2CopyColorBufferToScanBuffer(&s->color_buffer, target);
-}
-
-// Stage 2: pulsing background plus the test quad on both screens, vsync.
-void wiiu_gx2_present_test(float r, float g, float b) {
-	if (!gx2_active || !gx2_acquired) {
-		return;
-	}
-	render_screen(&gx2_tv, TV_WIDTH, TV_HEIGHT, GX2_SCAN_TARGET_TV, r, g, b);
-	render_screen(&gx2_drc, DRC_WIDTH, DRC_HEIGHT, GX2_SCAN_TARGET_DRC, r, g, b);
-	GX2SwapScanBuffers();
-	GX2Flush();
-	// Re-enable the outputs every frame, as WHBGfx does (see present_clear).
-	GX2SetTVEnable(TRUE);
-	GX2SetDRCEnable(TRUE);
-	GX2WaitForFlip();
 }
 
 bool wiiu_gx2_is_active(void) {
 	return gx2_active;
 }
+
+bool wiiu_gx2_can_draw(void) {
+	return gx2_active && gx2_acquired && draw_ready;
+}
+
+void wiiu_gx2_screen_size(WiiUScreen p_screen, uint32_t *r_width, uint32_t *r_height) {
+	*r_width = p_screen == WIIU_SCREEN_TV ? TV_WIDTH : DRC_WIDTH;
+	*r_height = p_screen == WIIU_SCREEN_TV ? TV_HEIGHT : DRC_HEIGHT;
+}
+
+// ---------------------------------------------------------------------------
+// Textures and render targets
+// ---------------------------------------------------------------------------
+
+static void init_texture_view(WiiUTexture *t, const GX2Surface *surface) {
+	memset(&t->texture, 0, sizeof(t->texture));
+	t->texture.surface = *surface;
+	t->texture.viewNumMips = 1;
+	t->texture.viewNumSlices = 1;
+	t->texture.compMap = GX2_COMP_MAP(GX2_SQ_SEL_R, GX2_SQ_SEL_G, GX2_SQ_SEL_B, GX2_SQ_SEL_A);
+	GX2InitTextureRegs(&t->texture);
+	t->width = surface->width;
+	t->height = surface->height;
+}
+
+WiiUTexture *wiiu_gx2_texture_create(uint32_t p_width, uint32_t p_height, const uint8_t *p_rgba) {
+	WiiUTexture *t = (WiiUTexture *)calloc(1, sizeof(WiiUTexture));
+	if (t == NULL) {
+		return NULL;
+	}
+	GX2Surface surface;
+	memset(&surface, 0, sizeof(surface));
+	surface.width = p_width;
+	surface.height = p_height;
+	surface.depth = 1;
+	surface.mipLevels = 1;
+	surface.format = GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8;
+	surface.aa = GX2_AA_MODE1X;
+	surface.use = GX2_SURFACE_USE_TEXTURE;
+	surface.dim = GX2_SURFACE_DIM_TEXTURE_2D;
+	// Linear keeps the CPU upload a plain row copy (tiled would need GX2CopySurface).
+	surface.tileMode = GX2_TILE_MODE_LINEAR_ALIGNED;
+	GX2CalcSurfaceSizeAndAlignment(&surface);
+	surface.image = MEMAllocFromDefaultHeapEx(surface.imageSize, surface.alignment);
+	if (surface.image == NULL) {
+		WHBLogPrintf("[gx2] out of memory for a %ux%u texture", (unsigned)p_width, (unsigned)p_height);
+		free(t);
+		return NULL;
+	}
+	init_texture_view(t, &surface);
+	t->owns_image = true;
+	wiiu_gx2_texture_update(t, p_rgba);
+	return t;
+}
+
+void wiiu_gx2_texture_update(WiiUTexture *p_texture, const uint8_t *p_rgba) {
+	if (p_texture == NULL || !p_texture->owns_image) {
+		return;
+	}
+	GX2Surface *s = &p_texture->texture.surface;
+	uint8_t *image = (uint8_t *)s->image;
+	const uint32_t row = p_texture->width * 4;
+	if (p_rgba == NULL) {
+		memset(image, 0, s->imageSize);
+	} else {
+		for (uint32_t y = 0; y < p_texture->height; y++) {
+			memcpy(image + y * s->pitch * 4, p_rgba + y * row, row);
+		}
+	}
+	GX2Invalidate(GX2_INVALIDATE_MODE_CPU | GX2_INVALIDATE_MODE_TEXTURE, s->image, s->imageSize);
+}
+
+void wiiu_gx2_texture_free(WiiUTexture *p_texture) {
+	if (p_texture == NULL) {
+		return;
+	}
+	// The GPU may still read it from the last frame.
+	if (gx2_active) {
+		GX2DrawDone();
+	}
+	if (p_texture->owns_image) {
+		MEMFreeToDefaultHeap(p_texture->texture.surface.image);
+	}
+	free(p_texture);
+}
+
+WiiUTexture *wiiu_gx2_white_texture(void) {
+	return draw_white;
+}
+
+WiiURenderTarget *wiiu_gx2_render_target_create(uint32_t p_width, uint32_t p_height) {
+	WiiURenderTarget *rt = (WiiURenderTarget *)calloc(1, sizeof(WiiURenderTarget));
+	if (rt == NULL) {
+		return NULL;
+	}
+	init_color_buffer(&rt->color_buffer, p_width, p_height,
+			(GX2SurfaceUse)(GX2_SURFACE_USE_TEXTURE | GX2_SURFACE_USE_COLOR_BUFFER));
+	rt->color_buffer.surface.image =
+			MEMAllocFromDefaultHeapEx(rt->color_buffer.surface.imageSize, rt->color_buffer.surface.alignment);
+	if (rt->color_buffer.surface.image == NULL) {
+		WHBLogPrintf("[gx2] out of memory for a %ux%u render target", (unsigned)p_width, (unsigned)p_height);
+		free(rt);
+		return NULL;
+	}
+	init_texture_view(&rt->texture, &rt->color_buffer.surface);
+	rt->texture.owns_image = false;
+	return rt;
+}
+
+void wiiu_gx2_render_target_free(WiiURenderTarget *p_rt) {
+	if (p_rt == NULL) {
+		return;
+	}
+	if (gx2_active) {
+		GX2DrawDone();
+	}
+	if (target_rt == p_rt) {
+		target_rt = NULL;
+		target_cb = NULL;
+	}
+	MEMFreeToDefaultHeap(p_rt->color_buffer.surface.image);
+	free(p_rt);
+}
+
+WiiUTexture *wiiu_gx2_render_target_texture(WiiURenderTarget *p_rt) {
+	return p_rt ? &p_rt->texture : NULL;
+}
+
+// ---------------------------------------------------------------------------
+// Drawing
+// ---------------------------------------------------------------------------
+
+static bool draw_init(void) {
+	if (!WHBGfxLoadGFDShaderGroup(&draw_shader, 0, wiiu_shader_texture)) {
+		WHBLogPrint("[gx2] couldn't load texture.gsh");
+		return false;
+	}
+	WHBGfxInitShaderAttribute(&draw_shader, "VertexPosition", 0, 0, GX2_ATTRIB_FORMAT_FLOAT_32_32_32);
+	WHBGfxInitShaderAttribute(&draw_shader, "VertexTexCoord", 0, 12, GX2_ATTRIB_FORMAT_FLOAT_32_32);
+	WHBGfxInitShaderAttribute(&draw_shader, "VertexColor", 0, 20, GX2_ATTRIB_FORMAT_FLOAT_32_32_32_32);
+	WHBGfxInitFetchShader(&draw_shader);
+
+	GX2UniformBlock *block = GX2GetVertexUniformBlock(draw_shader.vertexShader, "Transformation");
+	if (block == NULL) {
+		WHBLogPrint("[gx2] texture.gsh has no Transformation block");
+		return false;
+	}
+	draw_uniform_location = block->offset;
+	for (uint32_t i = 0; i < draw_shader.pixelShader->samplerVarCount; i++) {
+		if (strcmp(draw_shader.pixelShader->samplerVars[i].name, "texture0") == 0) {
+			draw_sampler_location = draw_shader.pixelShader->samplerVars[i].location;
+		}
+	}
+
+	// Two identity matrices (vertices arrive in clip space). GX2 reads uniform
+	// blocks little-endian, so every 32-bit word is byte-swapped.
+	draw_uniforms = (uint32_t *)MEMAllocFromDefaultHeapEx(GX2_UNIFORM_BLOCK_ALIGNMENT, GX2_UNIFORM_BLOCK_ALIGNMENT);
+	for (int m = 0; m < 2; m++) {
+		for (int i = 0; i < 16; i++) {
+			float v = (i % 5 == 0) ? 1.0f : 0.0f;
+			uint32_t bits;
+			memcpy(&bits, &v, 4);
+			draw_uniforms[m * 16 + i] = __builtin_bswap32(bits);
+		}
+	}
+	GX2Invalidate(GX2_INVALIDATE_MODE_CPU | GX2_INVALIDATE_MODE_UNIFORM_BLOCK, draw_uniforms, GX2_UNIFORM_BLOCK_ALIGNMENT);
+
+	for (int linear = 0; linear < 2; linear++) {
+		for (int repeat = 0; repeat < 2; repeat++) {
+			GX2InitSampler(&draw_samplers[linear][repeat],
+					repeat ? GX2_TEX_CLAMP_MODE_WRAP : GX2_TEX_CLAMP_MODE_CLAMP,
+					linear ? GX2_TEX_XY_FILTER_MODE_LINEAR : GX2_TEX_XY_FILTER_MODE_POINT);
+		}
+	}
+
+	for (int i = 0; i < 2; i++) {
+		arena[i] = (uint8_t *)MEMAllocFromDefaultHeapEx(ARENA_BYTES, GX2_VERTEX_BUFFER_ALIGNMENT);
+		if (arena[i] == NULL) {
+			WHBLogPrint("[gx2] out of memory for the vertex arenas");
+			return false;
+		}
+	}
+
+	static const uint8_t white[4] = { 255, 255, 255, 255 };
+	draw_white = wiiu_gx2_texture_create(1, 1, white);
+	draw_ready = draw_white != NULL;
+	return draw_ready;
+}
+
+static void draw_free(void) {
+	if (draw_white) {
+		wiiu_gx2_texture_free(draw_white);
+		draw_white = NULL;
+	}
+	for (int i = 0; i < 2; i++) {
+		if (arena[i]) {
+			MEMFreeToDefaultHeap(arena[i]);
+			arena[i] = NULL;
+		}
+	}
+	if (draw_uniforms) {
+		MEMFreeToDefaultHeap(draw_uniforms);
+		draw_uniforms = NULL;
+	}
+	if (draw_ready) {
+		WHBGfxFreeShaderGroup(&draw_shader);
+	}
+	draw_ready = false;
+}
+
+// Colour writes go through the colour-buffer cache; flush them before a
+// render target is sampled as a texture.
+static void finish_target(void) {
+	if (target_rt != NULL) {
+		GX2Surface *s = &target_rt->color_buffer.surface;
+		GX2Invalidate((GX2InvalidateMode)(GX2_INVALIDATE_MODE_COLOR_BUFFER | GX2_INVALIDATE_MODE_TEXTURE), s->image, s->imageSize);
+	}
+}
+
+static void apply_target(void) {
+	GX2SetContextState(gx2_context);
+	GX2SetColorBuffer(target_cb, GX2_RENDER_TARGET_0);
+	GX2SetViewport(0.0f, 0.0f, (float)target_width, (float)target_height, 0.0f, 1.0f);
+	GX2SetScissor((uint32_t)scissor_x, (uint32_t)scissor_y, (uint32_t)scissor_w, (uint32_t)scissor_h);
+}
+
+static void bind(GX2ColorBuffer *cb, WiiURenderTarget *rt) {
+	if (cb == target_cb) {
+		return;
+	}
+	finish_target();
+	target_cb = cb;
+	target_rt = rt;
+	target_width = cb->surface.width;
+	target_height = cb->surface.height;
+	scissor_x = scissor_y = 0;
+	scissor_w = (int32_t)target_width;
+	scissor_h = (int32_t)target_height;
+	apply_target();
+}
+
+void wiiu_gx2_bind_render_target(WiiURenderTarget *p_rt) {
+	if (p_rt != NULL && wiiu_gx2_can_draw()) {
+		bind(&p_rt->color_buffer, p_rt);
+	}
+}
+
+void wiiu_gx2_bind_screen(WiiUScreen p_screen) {
+	if (wiiu_gx2_can_draw()) {
+		bind(p_screen == WIIU_SCREEN_TV ? &gx2_tv.color_buffer : &gx2_drc.color_buffer, NULL);
+	}
+}
+
+void wiiu_gx2_clear(float p_r, float p_g, float p_b, float p_a) {
+	if (target_cb == NULL || !wiiu_gx2_can_draw()) {
+		return;
+	}
+	GX2ClearColor(target_cb, p_r, p_g, p_b, p_a);
+	// GX2ClearColor changes GPU state; restore ours.
+	apply_target();
+}
+
+void wiiu_gx2_set_scissor(int32_t p_x, int32_t p_y, int32_t p_width, int32_t p_height) {
+	if (target_cb == NULL) {
+		return;
+	}
+	// Clamp to the target: GX2 rejects scissors outside it.
+	int32_t x0 = p_x < 0 ? 0 : p_x;
+	int32_t y0 = p_y < 0 ? 0 : p_y;
+	int32_t x1 = p_x + p_width;
+	int32_t y1 = p_y + p_height;
+	if (x1 > (int32_t)target_width) {
+		x1 = (int32_t)target_width;
+	}
+	if (y1 > (int32_t)target_height) {
+		y1 = (int32_t)target_height;
+	}
+	if (x1 < x0) {
+		x1 = x0;
+	}
+	if (y1 < y0) {
+		y1 = y0;
+	}
+	scissor_x = x0;
+	scissor_y = y0;
+	scissor_w = x1 - x0;
+	scissor_h = y1 - y0;
+	GX2SetScissor((uint32_t)scissor_x, (uint32_t)scissor_y, (uint32_t)scissor_w, (uint32_t)scissor_h);
+}
+
+void wiiu_gx2_draw(WiiUPrimitive p_primitive, WiiUTexture *p_texture, bool p_linear, bool p_repeat,
+		const WiiUVertex *p_vertices, uint32_t p_count) {
+	if (p_count == 0 || target_cb == NULL || !wiiu_gx2_can_draw() || scissor_w == 0 || scissor_h == 0) {
+		return;
+	}
+	const uint32_t bytes = p_count * (uint32_t)sizeof(WiiUVertex);
+	if (bytes > ARENA_BYTES) {
+		WHBLogPrintf("[gx2] draw of %u vertices is too big for the arena", (unsigned)p_count);
+		return;
+	}
+	if (arena_used + bytes > ARENA_BYTES) {
+		// Out of room this frame: wait for the GPU, then reuse the arena.
+		GX2DrawDone();
+		arena_used = 0;
+	}
+	WiiUVertex *out = (WiiUVertex *)(arena[arena_index] + arena_used);
+	// Render-target pixels (origin top-left) to clip space (+Y up).
+	const float sx = 2.0f / (float)target_width;
+	const float sy = 2.0f / (float)target_height;
+	for (uint32_t i = 0; i < p_count; i++) {
+		out[i] = p_vertices[i];
+		out[i].x = p_vertices[i].x * sx - 1.0f;
+		out[i].y = 1.0f - p_vertices[i].y * sy;
+		out[i].z = 0.0f;
+	}
+	GX2Invalidate((GX2InvalidateMode)(GX2_INVALIDATE_MODE_CPU | GX2_INVALIDATE_MODE_ATTRIBUTE_BUFFER), out, bytes);
+	arena_used += (bytes + GX2_VERTEX_BUFFER_ALIGNMENT - 1) & ~(uint32_t)(GX2_VERTEX_BUFFER_ALIGNMENT - 1);
+
+	WiiUTexture *texture = p_texture ? p_texture : draw_white;
+	GX2SetShaderMode(GX2_SHADER_MODE_UNIFORM_BLOCK);
+	GX2SetFetchShader(&draw_shader.fetchShader);
+	GX2SetVertexShader(draw_shader.vertexShader);
+	GX2SetPixelShader(draw_shader.pixelShader);
+	GX2SetVertexUniformBlock(draw_uniform_location, 32 * 4, draw_uniforms);
+	GX2SetAttribBuffer(0, bytes, (uint32_t)sizeof(WiiUVertex), out);
+	GX2SetPixelTexture(&texture->texture, draw_sampler_location);
+	GX2SetPixelSampler(&draw_samplers[p_linear ? 1 : 0][p_repeat ? 1 : 0], draw_sampler_location);
+	GX2SetDepthOnlyControl(FALSE, FALSE, GX2_COMPARE_FUNC_ALWAYS);
+	GX2SetCullOnlyControl(GX2_FRONT_FACE_CCW, FALSE, FALSE);
+	GX2SetColorControl(GX2_LOGIC_OP_COPY, 0xFF, FALSE, TRUE);
+	// Godot's default canvas blend ("mix"), straight alpha.
+	GX2SetBlendControl(GX2_RENDER_TARGET_0, GX2_BLEND_MODE_SRC_ALPHA, GX2_BLEND_MODE_INV_SRC_ALPHA,
+			GX2_BLEND_COMBINE_MODE_ADD, TRUE, GX2_BLEND_MODE_ONE, GX2_BLEND_MODE_INV_SRC_ALPHA,
+			GX2_BLEND_COMBINE_MODE_ADD);
+	GX2DrawEx(p_primitive == WIIU_PRIM_LINES ? GX2_PRIMITIVE_MODE_LINES : GX2_PRIMITIVE_MODE_TRIANGLES,
+			p_count, 0, 1);
+}
+
+void wiiu_gx2_frame_begin(void) {
+	arena_index ^= 1;
+	arena_used = 0;
+}
+
+void wiiu_gx2_frame_present(void) {
+	if (!wiiu_gx2_can_draw()) {
+		return;
+	}
+	finish_target();
+	GX2CopyColorBufferToScanBuffer(&gx2_tv.color_buffer, GX2_SCAN_TARGET_TV);
+	GX2CopyColorBufferToScanBuffer(&gx2_drc.color_buffer, GX2_SCAN_TARGET_DRC);
+	GX2SwapScanBuffers();
+	GX2Flush();
+	// Re-enable the outputs every frame, as WHBGfx does: enabling them only on
+	// the first frame left both screens black, because the system turns them
+	// off again while it finishes the launch.
+	GX2SetTVEnable(TRUE);
+	GX2SetDRCEnable(TRUE);
+	// Paces the loop to the display (60 Hz).
+	GX2WaitForFlip();
+	// The next frame starts with no target bound.
+	target_cb = NULL;
+	target_rt = NULL;
+}
+
+// ---------------------------------------------------------------------------
+// Init / shutdown
+// ---------------------------------------------------------------------------
 
 // Call with the log console suspended (it shares MEM1 and the display).
 bool wiiu_gx2_init(void) {
@@ -324,8 +565,8 @@ bool wiiu_gx2_init(void) {
 	};
 	GX2Init(attributes);
 
-	init_color_buffer(&gx2_tv.color_buffer, TV_WIDTH, TV_HEIGHT);
-	init_color_buffer(&gx2_drc.color_buffer, DRC_WIDTH, DRC_HEIGHT);
+	init_color_buffer(&gx2_tv.color_buffer, TV_WIDTH, TV_HEIGHT, GX2_SURFACE_USE_TEXTURE_COLOR_BUFFER_TV);
+	init_color_buffer(&gx2_drc.color_buffer, DRC_WIDTH, DRC_HEIGHT, GX2_SURFACE_USE_TEXTURE_COLOR_BUFFER_TV);
 	uint32_t unused;
 	GX2CalcTVSize(GX2_TV_RENDER_MODE_WIDE_720P, GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8,
 			GX2_BUFFERING_MODE_DOUBLE, &gx2_tv.scan_buffer_size, &unused);
@@ -336,36 +577,14 @@ bool wiiu_gx2_init(void) {
 	GX2SetContextState(gx2_context);
 
 	gx2_active = true;
-	quad_init();
+	if (!draw_init()) {
+		return false;
+	}
 	gx2_proc_acquired(NULL);
 	ProcUIRegisterCallback(PROCUI_CALLBACK_ACQUIRE, gx2_proc_acquired, NULL, 100);
 	ProcUIRegisterCallback(PROCUI_CALLBACK_RELEASE, gx2_proc_released, NULL, 100);
 	WHBLogPrintf("[gx2] initialised: TV %dx%d, GamePad %dx%d", TV_WIDTH, TV_HEIGHT, DRC_WIDTH, DRC_HEIGHT);
 	return gx2_acquired;
-}
-
-// Stage 1: clear both screens to one colour and present with vsync.
-void wiiu_gx2_present_clear(float r, float g, float b) {
-	if (!gx2_active || !gx2_acquired) {
-		return;
-	}
-	GX2ClearColor(&gx2_tv.color_buffer, r, g, b, 1.0f);
-	GX2ClearColor(&gx2_drc.color_buffer, r, g, b, 1.0f);
-	// GX2ClearColor changes GPU state; restore ours.
-	GX2SetContextState(gx2_context);
-	GX2CopyColorBufferToScanBuffer(&gx2_tv.color_buffer, GX2_SCAN_TARGET_TV);
-	GX2CopyColorBufferToScanBuffer(&gx2_drc.color_buffer, GX2_SCAN_TARGET_DRC);
-	GX2SwapScanBuffers();
-	GX2Flush();
-	// Re-enable the outputs every frame, as WHBGfx does: enabling them only on
-	// the first frame left both screens black, because the system turns them
-	// off again while it finishes the launch (they came back only after an
-	// overlay such as Aroma's config menu restored the display state).
-	GX2SetTVEnable(TRUE);
-	GX2SetDRCEnable(TRUE);
-	gx2_first_frame = false;
-	// Paces the loop to the display (60 Hz).
-	GX2WaitForFlip();
 }
 
 // Stops GX2 and gives MEM1 and the display back (to the log console).
@@ -378,7 +597,9 @@ void wiiu_gx2_shutdown(void) {
 		GX2SetDRCEnable(FALSE);
 		gx2_proc_released(NULL);
 	}
-	quad_free();
+	target_cb = NULL;
+	target_rt = NULL;
+	draw_free();
 	GX2Shutdown();
 	gx2_active = false;
 	if (gx2_context) {

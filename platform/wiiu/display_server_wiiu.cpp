@@ -1,17 +1,14 @@
 #include "display_server_wiiu.h"
 
-#include "core/math/math_funcs.h"
-#include "core/os/os.h"
-#include "servers/rendering/dummy/rasterizer_dummy.h"
-
-// wiiu_gx2.c
-extern "C" bool wiiu_gx2_init(void);
-extern "C" void wiiu_gx2_shutdown(void);
-extern "C" void wiiu_gx2_present_test(float r, float g, float b);
+#include "rasterizer_wiiu.h"
+#include "wiiu_gx2.h"
 
 // wiiu_console.c
 extern "C" void wiiu_console_suspend(void);
 extern "C" void wiiu_console_resume(void);
+
+// The size Godot sees for the window and screen: the TV's 720p.
+static const Size2i WIIU_WINDOW_SIZE(1280, 720);
 
 Vector<String> DisplayServerWiiU::get_rendering_drivers_func() {
 	Vector<String> drivers;
@@ -21,24 +18,40 @@ Vector<String> DisplayServerWiiU::get_rendering_drivers_func() {
 
 DisplayServer *DisplayServerWiiU::create_func(const String &p_rendering_driver, DisplayServerEnums::WindowMode p_mode, DisplayServerEnums::VSyncMode p_vsync_mode, uint32_t p_flags, const Vector2i *p_position, const Vector2i &p_resolution, int p_screen, DisplayServerEnums::Context p_context, int64_t p_parent_window, Error &r_error) {
 	r_error = OK;
-	// Stage 1: no real renderer yet.
-	RasterizerDummy::make_current();
-	return memnew(DisplayServerWiiU());
+	DisplayServerWiiU *ds = memnew(DisplayServerWiiU());
+	// The GX2 2D renderer if GX2 came up, else the dummy one (log on screen).
+	if (wiiu_gx2_can_draw()) {
+		RasterizerWiiU::make_current();
+	} else {
+		RasterizerDummy::make_current();
+	}
+	return ds;
 }
 
 void DisplayServerWiiU::register_wiiu_driver() {
 	register_create_function("GX2", create_func, get_rendering_drivers_func);
 }
 
-void DisplayServerWiiU::present() {
-	// Stage 1 test pattern: a slow pulse between coffee brown and crema, so a
-	// frozen frame is easy to spot.
-	const double t = OS::get_singleton()->get_ticks_usec() / 1000000.0;
-	const float k = 0.5f + 0.5f * (float)Math::sin(t * Math::TAU / 4.0);
-	const float r = Math::lerp(0.29f, 0.78f, k);
-	const float g = Math::lerp(0.18f, 0.58f, k);
-	const float b = Math::lerp(0.12f, 0.38f, k);
-	wiiu_gx2_present_test(r, g, b);
+Size2i DisplayServerWiiU::screen_get_size(int p_screen) const {
+	return WIIU_WINDOW_SIZE;
+}
+
+Rect2i DisplayServerWiiU::screen_get_usable_rect(int p_screen) const {
+	return Rect2i(Point2i(), WIIU_WINDOW_SIZE);
+}
+
+Vector<DisplayServerEnums::WindowID> DisplayServerWiiU::get_window_list() const {
+	Vector<DisplayServerEnums::WindowID> list;
+	list.push_back(DisplayServerEnums::MAIN_WINDOW_ID);
+	return list;
+}
+
+Size2i DisplayServerWiiU::window_get_size(DisplayServerEnums::WindowID p_window) const {
+	return WIIU_WINDOW_SIZE;
+}
+
+Size2i DisplayServerWiiU::window_get_size_with_decorations(DisplayServerEnums::WindowID p_window) const {
+	return WIIU_WINDOW_SIZE;
 }
 
 DisplayServerWiiU::DisplayServerWiiU() {

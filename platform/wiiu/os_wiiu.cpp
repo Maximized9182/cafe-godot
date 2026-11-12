@@ -190,10 +190,6 @@ void OS_WiiU::run() {
 		if (Main::iteration()) {
 			break;
 		}
-		DisplayServer *ds = DisplayServer::get_singleton();
-		if (ds && ds->get_name() == "GX2") {
-			static_cast<DisplayServerWiiU *>(ds)->present();
-		}
 		wiiu_console_draw();
 		// Show the crash screen here if another thread crashed (crash_log.c).
 		wiiu_crash_check();

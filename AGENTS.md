@@ -459,3 +459,42 @@ per read call, so the log console gets the same sample through `wiiu_console_han
 - `LOG_GAMEPAD_BITS` in `joypad_wiiu.cpp` logs raw `hold` changes; turn it off when it gets noisy.
 - LVENGINE: the user added joypad bindings to its InputMap themselves (synced from their PC
   working copy at `~/Projects/Godot/LVENGINE`, not from git).
+
+## 13. Video (GX2), 2026-11-12
+
+Stages, one console run each:
+1. **Done:** DisplayServerWiiU ("GX2") + wiiu_gx2.c clear/present, 60 fps vsync on TV and
+   GamePad. Two fixes were needed: re-enable TV/DRC output every frame (WHBGfx does too), and
+   **never start OSScreen before GX2**. The log console starts suspended and only brings up
+   OSScreen in `wiiu_console_resume()` (crash screen, error exit). OSScreen-then-GX2 left both
+   screens black until an overlay re-applied the GX2 scan buffers.
+2. **Done:** textured quad with `shaders/texture.gsh` (Love Potion, MIT, see
+   `shaders/README.md`; embedded by SCsub as `wiiu_shader_texture`). Verified: linear RGBA8
+   upload, vertex fetch, byte-swapped uniform blocks, alpha blending.
+3. **Written and building, NOT yet run on the console** (commit "WIP: GX2 2D renderer"):
+   - `wiiu_gx2.h/.c`: GX2 layer (textures, render targets as sampleable colour buffers in
+     MEM2, screen colour/scan buffers in the MEM1 frame heap tied to ProcUI, two 2 MB vertex
+     arenas alternating per frame, scissor, batched triangles/lines, present).
+   - `rasterizer_wiiu.h/.cpp`: RasterizerWiiU on RasterizerDummy. Swaps in
+     TextureStorageWiiU (textures, proxies, render targets, canvas textures), UtilitiesWiiU
+     (free() for those RIDs; the dummy's free() uses non-virtual owns_texture), and
+     RasterizerCanvasWiiU (rect incl. region/flip/transpose/tile, nine-patch stretched,
+     polygons, primitives, transform, clip/clip-ignore; colour = command * final_modulate *
+     canvas modulate; final_transform is already in render-target pixels).
+   - Blit: own fit per screen (largest whole-number scale with nearest filtering, else a
+     linear downscale). Godot's dst_rect is ignored on purpose.
+   - DisplayServerWiiU reports one 1280x720 fullscreen window/screen and installs
+     RasterizerWiiU (dummy if GX2 failed). Presenting happens in RasterizerWiiU::end_frame;
+     the OS loop no longer calls a present.
+   Next: run Godot Hello (it has no visuals beyond the default clear colour; add a Label or
+   ColorRect to the test project), then LVENGINE. Likely first issues: clear colour/alpha,
+   render target and texture cache invalidation, font textures (LA8, converted to RGBA8),
+   stretch.
+4. Planned: nine-patch tile modes, MSDF text, materials/shaders, the log-overlay chord and
+   crash overlay (section 11), drawing the log with GX2 instead of OSScreen.
+
+Tooling notes:
+- Start the VM (`~/archvm.sh`) and the Mocha logger detached (`setsid nohup ... &`), not as
+  Claude background tasks, which die with the session.
+- HOME round trips and closing via HOME work again with GX2 (stage 1 build). The user may
+  close apps with Aroma's "close/restart" plugin instead.
