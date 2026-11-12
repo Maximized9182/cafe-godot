@@ -17,6 +17,13 @@
 #include <coreinit/memfrmheap.h>
 #include <coreinit/memheap.h>
 #include <gx2/clear.h>
+#include <gx2/draw.h>
+#include <gx2/sampler.h>
+#include <gx2/shaders.h>
+#include <gx2/texture.h>
+#include <gx2/utils.h>
+#include <gx2r/buffer.h>
+#include <whb/gfx.h>
 #include <gx2/context.h>
 #include <gx2/display.h>
 #include <gx2/event.h>
@@ -121,6 +128,180 @@ static uint32_t gx2_proc_released(void *context) {
 	return 0;
 }
 
+// ---------------------------------------------------------------------------
+// Stage 2 test: one textured quad.
+//
+// texture.gsh (from Love Potion, see shaders/README.md): vertex inputs
+// VertexPosition vec3, VertexTexCoord vec2, VertexColor vec4; uniform block
+// Transformation { mat4 mdlvMtx; mat4 projMtx; }; pixel = colour * texture0.
+// ---------------------------------------------------------------------------
+
+extern const uint8_t wiiu_shader_texture[];
+
+typedef struct {
+	float x, y, z;
+	float u, v;
+	float r, g, b, a;
+} Vertex;
+
+#define VERTEX_STRIDE ((uint32_t)sizeof(Vertex))
+
+static bool quad_ready = false;
+static WHBGfxShaderGroup quad_shader;
+static uint32_t quad_uniform_location = 0;
+static uint32_t quad_sampler_location = 0;
+static Vertex *quad_vertices = NULL;
+static uint32_t *quad_uniforms = NULL; // 32 words, byte-swapped
+static GX2Texture quad_texture;
+static GX2Sampler quad_sampler;
+
+static uint32_t swap32(uint32_t v) {
+	return __builtin_bswap32(v);
+}
+
+static bool quad_init(void) {
+	if (!WHBGfxLoadGFDShaderGroup(&quad_shader, 0, wiiu_shader_texture)) {
+		WHBLogPrint("[gx2] couldn't load texture.gsh");
+		return false;
+	}
+	WHBGfxInitShaderAttribute(&quad_shader, "VertexPosition", 0, 0, GX2_ATTRIB_FORMAT_FLOAT_32_32_32);
+	WHBGfxInitShaderAttribute(&quad_shader, "VertexTexCoord", 0, 12, GX2_ATTRIB_FORMAT_FLOAT_32_32);
+	WHBGfxInitShaderAttribute(&quad_shader, "VertexColor", 0, 20, GX2_ATTRIB_FORMAT_FLOAT_32_32_32_32);
+	WHBGfxInitFetchShader(&quad_shader);
+
+	GX2UniformBlock *block = GX2GetVertexUniformBlock(quad_shader.vertexShader, "Transformation");
+	if (block == NULL) {
+		WHBLogPrint("[gx2] texture.gsh has no Transformation block");
+		return false;
+	}
+	quad_uniform_location = block->offset;
+	quad_sampler_location = 0;
+	for (uint32_t i = 0; i < quad_shader.pixelShader->samplerVarCount; i++) {
+		if (strcmp(quad_shader.pixelShader->samplerVars[i].name, "texture0") == 0) {
+			quad_sampler_location = quad_shader.pixelShader->samplerVars[i].location;
+		}
+	}
+
+	// Two identity matrices. GX2 reads uniform blocks little-endian, so every
+	// 32-bit word is byte-swapped (as Love Potion does).
+	quad_uniforms = (uint32_t *)MEMAllocFromDefaultHeapEx(GX2_UNIFORM_BLOCK_ALIGNMENT, GX2_UNIFORM_BLOCK_ALIGNMENT);
+	for (int m = 0; m < 2; m++) {
+		for (int i = 0; i < 16; i++) {
+			float v = (i % 5 == 0) ? 1.0f : 0.0f;
+			uint32_t bits;
+			memcpy(&bits, &v, 4);
+			quad_uniforms[m * 16 + i] = swap32(bits);
+		}
+	}
+	GX2Invalidate(GX2_INVALIDATE_MODE_CPU | GX2_INVALIDATE_MODE_UNIFORM_BLOCK, quad_uniforms, GX2_UNIFORM_BLOCK_ALIGNMENT);
+
+	// A quad in the middle of the screen (clip space, +Y up), vertex colour white.
+	// Texture: red top-left, green top-right, blue bottom-left, white bottom-right.
+	static const Vertex corners[4] = {
+		{ -0.5f, 0.5f, 0.0f, 0.0f, 0.0f, 1, 1, 1, 1 },
+		{ 0.5f, 0.5f, 0.0f, 1.0f, 0.0f, 1, 1, 1, 1 },
+		{ 0.5f, -0.5f, 0.0f, 1.0f, 1.0f, 1, 1, 1, 1 },
+		{ -0.5f, -0.5f, 0.0f, 0.0f, 1.0f, 1, 1, 1, 1 },
+	};
+	quad_vertices = (Vertex *)MEMAllocFromDefaultHeapEx(sizeof(corners), GX2_VERTEX_BUFFER_ALIGNMENT);
+	memcpy(quad_vertices, corners, sizeof(corners));
+	GX2Invalidate(GX2_INVALIDATE_MODE_CPU | GX2_INVALIDATE_MODE_ATTRIBUTE_BUFFER, quad_vertices, sizeof(corners));
+
+	memset(&quad_texture, 0, sizeof(quad_texture));
+	quad_texture.surface.width = 2;
+	quad_texture.surface.height = 2;
+	quad_texture.surface.depth = 1;
+	quad_texture.surface.mipLevels = 1;
+	quad_texture.surface.format = GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8;
+	quad_texture.surface.aa = GX2_AA_MODE1X;
+	quad_texture.surface.use = GX2_SURFACE_USE_TEXTURE;
+	quad_texture.surface.dim = GX2_SURFACE_DIM_TEXTURE_2D;
+	quad_texture.surface.tileMode = GX2_TILE_MODE_LINEAR_ALIGNED;
+	quad_texture.viewNumMips = 1;
+	quad_texture.viewNumSlices = 1;
+	quad_texture.compMap = GX2_COMP_MAP(GX2_SQ_SEL_R, GX2_SQ_SEL_G, GX2_SQ_SEL_B, GX2_SQ_SEL_A);
+	GX2CalcSurfaceSizeAndAlignment(&quad_texture.surface);
+	GX2InitTextureRegs(&quad_texture);
+	quad_texture.surface.image = MEMAllocFromDefaultHeapEx(quad_texture.surface.imageSize, quad_texture.surface.alignment);
+	memset(quad_texture.surface.image, 0, quad_texture.surface.imageSize);
+	static const uint8_t pixels[2][2][4] = {
+		{ { 255, 0, 0, 255 }, { 0, 255, 0, 255 } },
+		{ { 0, 0, 255, 255 }, { 255, 255, 255, 255 } },
+	};
+	uint8_t *image = (uint8_t *)quad_texture.surface.image;
+	for (int y = 0; y < 2; y++) {
+		memcpy(image + y * quad_texture.surface.pitch * 4, pixels[y], sizeof(pixels[y]));
+	}
+	GX2Invalidate(GX2_INVALIDATE_MODE_CPU | GX2_INVALIDATE_MODE_TEXTURE, quad_texture.surface.image, quad_texture.surface.imageSize);
+
+	GX2InitSampler(&quad_sampler, GX2_TEX_CLAMP_MODE_CLAMP, GX2_TEX_XY_FILTER_MODE_POINT);
+
+	WHBLogPrintf("[gx2] test quad ready: uniform block at %u, sampler %u, texture pitch %u",
+			(unsigned)quad_uniform_location, (unsigned)quad_sampler_location, (unsigned)quad_texture.surface.pitch);
+	quad_ready = true;
+	return true;
+}
+
+static void quad_free(void) {
+	if (!quad_ready) {
+		return;
+	}
+	quad_ready = false;
+	WHBGfxFreeShaderGroup(&quad_shader);
+	MEMFreeToDefaultHeap(quad_texture.surface.image);
+	MEMFreeToDefaultHeap(quad_vertices);
+	MEMFreeToDefaultHeap(quad_uniforms);
+}
+
+static void quad_draw(void) {
+	GX2SetShaderMode(GX2_SHADER_MODE_UNIFORM_BLOCK);
+	GX2SetFetchShader(&quad_shader.fetchShader);
+	GX2SetVertexShader(quad_shader.vertexShader);
+	GX2SetPixelShader(quad_shader.pixelShader);
+	GX2SetVertexUniformBlock(quad_uniform_location, 32 * 4, quad_uniforms);
+	GX2SetAttribBuffer(0, 4 * VERTEX_STRIDE, VERTEX_STRIDE, quad_vertices);
+	GX2SetPixelTexture(&quad_texture, quad_sampler_location);
+	GX2SetPixelSampler(&quad_sampler, quad_sampler_location);
+	GX2SetDepthOnlyControl(FALSE, FALSE, GX2_COMPARE_FUNC_ALWAYS);
+	GX2SetCullOnlyControl(GX2_FRONT_FACE_CCW, FALSE, FALSE);
+	GX2SetColorControl(GX2_LOGIC_OP_COPY, 0xFF, FALSE, TRUE);
+	GX2SetBlendControl(GX2_RENDER_TARGET_0, GX2_BLEND_MODE_SRC_ALPHA, GX2_BLEND_MODE_INV_SRC_ALPHA,
+			GX2_BLEND_COMBINE_MODE_ADD, TRUE, GX2_BLEND_MODE_ONE, GX2_BLEND_MODE_INV_SRC_ALPHA,
+			GX2_BLEND_COMBINE_MODE_ADD);
+	GX2DrawEx(GX2_PRIMITIVE_MODE_QUADS, 4, 0, 1);
+}
+
+// Clears one screen's colour buffer, draws the test quad into it and copies it
+// to the scan buffer.
+static void render_screen(Screen *s, uint32_t width, uint32_t height, GX2ScanTarget target,
+		float r, float g, float b) {
+	GX2ClearColor(&s->color_buffer, r, g, b, 1.0f);
+	// GX2ClearColor changes GPU state; restore ours, then bind this screen.
+	GX2SetContextState(gx2_context);
+	GX2SetColorBuffer(&s->color_buffer, GX2_RENDER_TARGET_0);
+	GX2SetViewport(0.0f, 0.0f, (float)width, (float)height, 0.0f, 1.0f);
+	GX2SetScissor(0, 0, width, height);
+	if (quad_ready) {
+		quad_draw();
+	}
+	GX2CopyColorBufferToScanBuffer(&s->color_buffer, target);
+}
+
+// Stage 2: pulsing background plus the test quad on both screens, vsync.
+void wiiu_gx2_present_test(float r, float g, float b) {
+	if (!gx2_active || !gx2_acquired) {
+		return;
+	}
+	render_screen(&gx2_tv, TV_WIDTH, TV_HEIGHT, GX2_SCAN_TARGET_TV, r, g, b);
+	render_screen(&gx2_drc, DRC_WIDTH, DRC_HEIGHT, GX2_SCAN_TARGET_DRC, r, g, b);
+	GX2SwapScanBuffers();
+	GX2Flush();
+	// Re-enable the outputs every frame, as WHBGfx does (see present_clear).
+	GX2SetTVEnable(TRUE);
+	GX2SetDRCEnable(TRUE);
+	GX2WaitForFlip();
+}
+
 bool wiiu_gx2_is_active(void) {
 	return gx2_active;
 }
@@ -155,6 +336,7 @@ bool wiiu_gx2_init(void) {
 	GX2SetContextState(gx2_context);
 
 	gx2_active = true;
+	quad_init();
 	gx2_proc_acquired(NULL);
 	ProcUIRegisterCallback(PROCUI_CALLBACK_ACQUIRE, gx2_proc_acquired, NULL, 100);
 	ProcUIRegisterCallback(PROCUI_CALLBACK_RELEASE, gx2_proc_released, NULL, 100);
@@ -196,6 +378,7 @@ void wiiu_gx2_shutdown(void) {
 		GX2SetDRCEnable(FALSE);
 		gx2_proc_released(NULL);
 	}
+	quad_free();
 	GX2Shutdown();
 	gx2_active = false;
 	if (gx2_context) {

@@ -7,7 +7,7 @@
 // wiiu_gx2.c
 extern "C" bool wiiu_gx2_init(void);
 extern "C" void wiiu_gx2_shutdown(void);
-extern "C" void wiiu_gx2_present_clear(float r, float g, float b);
+extern "C" void wiiu_gx2_present_test(float r, float g, float b);
 
 // wiiu_console.c
 extern "C" void wiiu_console_suspend(void);
@@ -38,7 +38,7 @@ void DisplayServerWiiU::present() {
 	const float r = Math::lerp(0.29f, 0.78f, k);
 	const float g = Math::lerp(0.18f, 0.58f, k);
 	const float b = Math::lerp(0.12f, 0.38f, k);
-	wiiu_gx2_present_clear(r, g, b);
+	wiiu_gx2_present_test(r, g, b);
 }
 
 DisplayServerWiiU::DisplayServerWiiU() {
