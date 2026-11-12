@@ -12,6 +12,7 @@
 #include <coreinit/systeminfo.h>
 #include <coreinit/time.h>
 #include <whb/log.h>
+#include <vpad/input.h>
 #include <whb/proc.h>
 
 #include <cstdio>
@@ -175,6 +176,10 @@ extern "C" bool wiiu_proc_is_running(void);
 
 // Defined in wiiu_console.c.
 extern "C" void wiiu_console_handle_buttons(uint32_t hold, uint32_t trigger);
+// Defined in crash_log.c.
+extern "C" bool wiiu_chord_update(uint32_t hold, uint32_t trigger);
+extern "C" bool wiiu_log_overlay_visible(void);
+extern "C" void wiiu_log_overlay_toggle(void);
 extern "C" void wiiu_console_draw(void);
 
 void OS_WiiU::run() {
@@ -186,10 +191,19 @@ void OS_WiiU::run() {
 
 	while (wiiu_proc_is_running()) {
 		// Read every controller once per frame, before the engine runs the frame.
-		// The same GamePad sample scrolls the log (D-pad, L/R).
+		// The same GamePad sample drives the log overlay: ZL+L+RIGHT+X+Y+TV
+		// toggles it, and while it's shown D-pad / L / R scroll it.
 		if (joypad) {
 			joypad->process();
-			wiiu_console_handle_buttons(joypad->get_gamepad_hold(), joypad->get_gamepad_trigger());
+			const uint32_t hold = joypad->get_gamepad_hold();
+			const uint32_t trigger = joypad->get_gamepad_trigger();
+			if (wiiu_chord_update(hold, trigger)) {
+				wiiu_log_overlay_toggle();
+			} else if (wiiu_log_overlay_visible() && (trigger & VPAD_BUTTON_B)) {
+				wiiu_log_overlay_toggle(); // B closes the log.
+			} else if (wiiu_log_overlay_visible()) {
+				wiiu_console_handle_buttons(hold, trigger);
+			}
 		}
 		DisplayServer::get_singleton()->process_events();
 		if (Main::iteration()) {

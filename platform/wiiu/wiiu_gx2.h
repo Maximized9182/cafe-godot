@@ -64,6 +64,19 @@ void wiiu_gx2_set_scissor(int32_t p_x, int32_t p_y, int32_t p_width, int32_t p_h
 void wiiu_gx2_draw(WiiUPrimitive p_primitive, WiiUTexture *p_texture, bool p_linear, bool p_repeat,
 		const WiiUVertex *p_vertices, uint32_t p_count);
 
+// Text and rectangles drawn with GX2 alone (crash overlay, log), using the
+// built-in 10x20 bitmap font (crash_font_data.c, ASCII 32-126).
+#define WIIU_FONT_CELL_W 10
+#define WIIU_FONT_CELL_H 20
+void wiiu_gx2_draw_rect(float p_x, float p_y, float p_w, float p_h, float p_r, float p_g, float p_b, float p_a);
+// One line at (p_x, p_y), top-left; characters outside ASCII 32-126 draw as '?'.
+void wiiu_gx2_draw_text(float p_x, float p_y, const char *p_text, float p_r, float p_g, float p_b, float p_a);
+
+// Keeps a copy of the last frame of both screens (crash overlay).
+bool wiiu_gx2_save_frame(void);
+// Draws the saved frame over the whole bound screen.
+void wiiu_gx2_draw_saved_frame(WiiUScreen p_screen);
+
 #ifdef __cplusplus
 }
 #endif

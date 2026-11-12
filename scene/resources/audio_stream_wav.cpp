@@ -195,6 +195,16 @@ void AudioStreamPlaybackWAV::decode_samples(const Depth *p_src, AudioFrame *p_ds
 			if (is_stereo) {
 				final_r = p_src[pos + 1];
 			}
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+			if constexpr (sizeof(Depth) == 2) {
+				// 16-bit sample data is little-endian (written with encode_uint16
+				// on import), but was read with a native load.
+				final = (int16_t)BSWAP16((uint16_t)final);
+				if (is_stereo) {
+					final_r = (int16_t)BSWAP16((uint16_t)final_r);
+				}
+			}
+#endif
 			if constexpr (sizeof(Depth) == 1) { /* conditions will not exist anymore when compiled! */
 				final <<= 8;
 				if (is_stereo) {

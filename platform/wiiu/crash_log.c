@@ -64,9 +64,11 @@ void wiiu_console_resume(void);
 void wiiu_console_set_exit_footer(void);
 void wiiu_console_handle_buttons(uint32_t hold, uint32_t trigger);
 
-// wiiu_gx2.c
-bool wiiu_gx2_is_active(void);
-void wiiu_gx2_shutdown(void);
+// wiiu_console.c (GX2 log view)
+uint32_t wiiu_console_copy_view(uint32_t p_rows, char (*p_out)[69], uint32_t *r_bottom, uint32_t *r_total);
+const char *wiiu_console_get_footer(void);
+
+#include "wiiu_gx2.h"
 
 // Console background colours, 0xRRGGBBAA.
 #define CONSOLE_COLOR_NORMAL 0x00000000u
@@ -472,7 +474,167 @@ void wiiu_wait_for_home_exit(void) {
 	}
 }
 
+static void draw_centered_box(WiiUScreen p_screen, const char *const *p_lines, int p_count);
+bool wiiu_chord_update(uint32_t hold, uint32_t trigger);
+void wiiu_draw_log_gx2(WiiUScreen p_screen, float p_r, float p_g, float p_b, float p_a, const char *p_footer);
+
+// The crash screen while GX2 runs: the game's last frame with a short
+// message in the middle (no jumpscare), or the log after the chord. HOME goes
+// back to the Wii U Menu, as on the OSScreen log. Returns once ProcUI has sent
+// Exit.
+static void crash_overlay_loop(void) {
+	// Button names as CafeStd's icons: ZL, L, D-pad right, X, Y, TV; HOME.
+	static const char *const message[3] = {
+		"Godot crashed!",
+		"Press \xEE\x82\x85+\xEE\x82\x83+\xEE\x81\xBC+\xEE\x80\x82+\xEE\x80\x83+\xEE\x82\x89 to see crash log",
+		"Press \xEE\x81\x84 to exit",
+	};
+	wiiu_console_set_exit_footer();
+	wiiu_gx2_save_frame();
+	home_pressed = false;
+	OSEnableHomeButtonMenu(FALSE);
+	ProcUIRegisterCallback(PROCUI_CALLBACK_HOME_BUTTON_DENIED, home_denied_callback, NULL, 100);
+	bool show_log = false;
+	bool launched = false;
+	while (wiiu_proc_is_running()) {
+		VPADStatus status;
+		VPADReadError error = VPAD_READ_SUCCESS;
+		if (VPADRead(VPAD_CHAN_0, &status, 1, &error) > 0 && error == VPAD_READ_SUCCESS) {
+			if (status.trigger & VPAD_BUTTON_HOME) {
+				home_pressed = true;
+			}
+			if (wiiu_chord_update(status.hold, status.trigger)) {
+				show_log = !show_log;
+			} else if (show_log && (status.trigger & VPAD_BUTTON_B)) {
+				show_log = false; // B closes the log.
+			} else if (show_log) {
+				wiiu_console_handle_buttons(status.hold, status.trigger);
+			}
+		}
+		if (home_pressed && !launched) {
+			log_static("HOME pressed: returning to the Wii U Menu.");
+			SYSLaunchMenu();
+			launched = true;
+		}
+		if (!wiiu_gx2_can_draw()) {
+			OSSleepTicks(OSMillisecondsToTicks(16));
+			continue;
+		}
+		wiiu_gx2_frame_begin();
+		for (int s = 0; s < 2; s++) {
+			const WiiUScreen screen = s == 0 ? WIIU_SCREEN_TV : WIIU_SCREEN_DRC;
+			wiiu_gx2_bind_screen(screen);
+			if (show_log) {
+				wiiu_draw_log_gx2(screen, 0.63f, 0.0f, 0.0f, 1.0f, "Press B to go back, HOME to exit. Up/Down/L/R scroll.");
+			} else {
+				wiiu_gx2_draw_saved_frame(screen);
+				draw_centered_box(screen, message, 3);
+			}
+		}
+		wiiu_gx2_frame_present();
+	}
+}
+
 static volatile bool crash_in_progress = false;
+// The crash happened inside gx2.rpl: GX2 can't be trusted to draw the overlay.
+static volatile bool crash_in_gx2 = false;
+
+// ---------------------------------------------------------------------------
+// Log toggle chord and the GX2-drawn log
+// ---------------------------------------------------------------------------
+
+// ZL, L, D-pad Right, X, Y, TV, pressed in that order, each one added while
+// the previous ones are held.
+static const uint32_t chord_buttons[6] = {
+	VPAD_BUTTON_ZL, VPAD_BUTTON_L, VPAD_BUTTON_RIGHT, VPAD_BUTTON_X, VPAD_BUTTON_Y, VPAD_BUTTON_TV
+};
+static int chord_step = 0;
+
+// Feed every GamePad sample; returns true once when the chord completes.
+bool wiiu_chord_update(uint32_t hold, uint32_t trigger) {
+	for (int i = 0; i < chord_step; i++) {
+		if (!(hold & chord_buttons[i])) {
+			chord_step = 0;
+			break;
+		}
+	}
+	if (chord_step < 6 && (trigger & chord_buttons[chord_step])) {
+		chord_step++;
+		if (chord_step == 6) {
+			chord_step = 0;
+			return true;
+		}
+	}
+	return false;
+}
+
+// The log drawn over the game while it runs (toggled by the chord).
+static volatile bool log_overlay_visible = false;
+
+bool wiiu_log_overlay_visible(void) {
+	return log_overlay_visible;
+}
+
+void wiiu_log_overlay_toggle(void) {
+	log_overlay_visible = !log_overlay_visible;
+}
+
+// Draws the log over the bound screen with GX2 and the built-in bitmap font.
+// p_footer is the bottom line while the log isn't scrolled up.
+void wiiu_draw_log_gx2(WiiUScreen p_screen, float p_r, float p_g, float p_b, float p_a, const char *p_footer) {
+	static char lines[48][69];
+	uint32_t w, h;
+	wiiu_gx2_screen_size(p_screen, &w, &h);
+	wiiu_gx2_draw_rect(0, 0, (float)w, (float)h, p_r, p_g, p_b, p_a);
+	uint32_t rows = h / WIIU_FONT_CELL_H - 1; // Last row: footer.
+	if (rows > 48) {
+		rows = 48;
+	}
+	uint32_t bottom = 0, total = 0;
+	const uint32_t n = wiiu_console_copy_view(rows, lines, &bottom, &total);
+	const float x0 = (float)((w - 68 * WIIU_FONT_CELL_W) / 2);
+	for (uint32_t i = 0; i < n; i++) {
+		wiiu_gx2_draw_text(x0, (float)(i * WIIU_FONT_CELL_H), lines[i], 1, 1, 1, 1);
+	}
+	char footer[80];
+	if (bottom < total) {
+		snprintf(footer, sizeof(footer), "%u/%u, use Up/Down/L/R", (unsigned)bottom, (unsigned)total);
+	} else {
+		snprintf(footer, sizeof(footer), "%s", p_footer);
+	}
+	wiiu_gx2_draw_text(x0, (float)(h - WIIU_FONT_CELL_H), footer, 1, 1, 0.6f, 1);
+}
+
+// wiiu_system_font.cpp: CafeStd (the Wii U system font) with button icons.
+float wiiu_sysfont_measure(const char *p_text, float p_px);
+float wiiu_sysfont_line_height(float p_px);
+void wiiu_sysfont_draw(float p_x, float p_y, float p_px, const char *p_text, float p_r, float p_g, float p_b, float p_a);
+
+// A centred, half-transparent red box with white centred lines in the system
+// font (the crash message), sized to the text.
+static void draw_centered_box(WiiUScreen p_screen, const char *const *p_lines, int p_count) {
+	uint32_t w, h;
+	wiiu_gx2_screen_size(p_screen, &w, &h);
+	const float px = (float)h * 0.05f; // 36 px on the TV, 24 on the GamePad.
+	const float line = wiiu_sysfont_line_height(px) * 1.15f;
+	float longest = 0.0f;
+	for (int i = 0; i < p_count; i++) {
+		const float lw = wiiu_sysfont_measure(p_lines[i], px);
+		longest = lw > longest ? lw : longest;
+	}
+	float bw = longest + px * 3.0f;
+	const float min_w = (float)w * 0.7f;
+	bw = bw < min_w ? min_w : bw;
+	const float bh = line * (float)p_count + px * 3.0f;
+	const float bx = ((float)w - bw) * 0.5f;
+	const float by = ((float)h - bh) * 0.5f;
+	wiiu_gx2_draw_rect(bx, by, bw, bh, 0.85f, 0.0f, 0.0f, 0.5f);
+	const float ty0 = by + (bh - line * (float)p_count) * 0.5f;
+	for (int i = 0; i < p_count; i++) {
+		const float tw = wiiu_sysfont_measure(p_lines[i], px);
+		wiiu_sysfont_draw(((float)w - tw) * 0.5f, ty0 + (float)i * line, px, p_lines[i], 1, 1, 1, 1);
+	}
+}
 // Set right before WHBProcShutdown: after that there is no foreground, no
 // console and no ProcUI to wait on, so a crash just ends the process.
 static volatile bool crash_procui_shut_down = false;
@@ -533,18 +695,21 @@ static void enter_crash_screen(void) {
 		}
 	}
 
-	// GX2 owns the display while the game runs: hand it back to the log console
-	// (GX2 state may be what broke, so don't try to draw the log with it).
-	if (wiiu_gx2_is_active()) {
-		wiiu_gx2_shutdown();
-	}
-	wiiu_console_resume();
-
-	// Keep the log on screen until HOME, then leave like a normal app would,
-	// so the console returns to the Wii U menu instead of a fatal error.
 	log_static("Waiting for HOME.");
-	wiiu_console_set_exit_footer();
-	wiiu_wait_for_home_exit();
+	if (wiiu_gx2_can_draw() && !crash_in_gx2) {
+		// Keep the game's last frame up with a short message; the chord shows
+		// the log (both drawn with GX2 alone, not Godot's renderer).
+		crash_overlay_loop();
+	} else {
+		// No GX2, or GX2 itself is what broke: hand the display back to the
+		// OSScreen log console.
+		if (wiiu_gx2_is_active()) {
+			wiiu_gx2_shutdown();
+		}
+		wiiu_console_resume();
+		wiiu_console_set_exit_footer();
+		wiiu_wait_for_home_exit();
+	}
 	wiiu_console_free();
 	WHBProcShutdown();
 	// _Exit skips atexit handlers and static destructors: the engine is in an
@@ -602,6 +767,12 @@ static const char *exception_name(OSExceptionType type) {
 static void crash_exception_entry(void) __attribute__((noreturn, used));
 static void crash_exception_entry(void) {
 	wiiu_console_enter_crash_mode(CONSOLE_COLOR_CRASH);
+	{
+		char symbol[96];
+		symbol[0] = '\0';
+		OSGetSymbolName(crash_context.srr0, symbol, sizeof(symbol));
+		crash_in_gx2 = strstr(symbol, "gx2") != NULL;
+	}
 	log_static("*** Godot crashed: %s ***", exception_name(crash_exception_type));
 	log_static("Thread %p (%s)", (void *)crash_thread,
 			(crash_thread && crash_thread->name) ? crash_thread->name : "?");

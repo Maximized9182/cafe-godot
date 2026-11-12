@@ -11,6 +11,8 @@ wiiu_files = [
     "rasterizer_wiiu.cpp",
     "audio_driver_wiiu.cpp",
     "wiiu_gx2.c",
+    "crash_font_data.c",
+    "wiiu_system_font.cpp",
     "atomic64.c",
     "posix_stubs.c",
     "crash_log.c",
@@ -47,6 +49,9 @@ def make_shader_c(target, source, env):
 wiiu_shaders = env.Command(
     "wiiu_shaders.gen.c", ["shaders/texture.gsh", "shaders/color.gsh"], env.Run(make_shader_c)
 )
+
+# wiiu_system_font.cpp rasterises the system font with Godot's bundled FreeType.
+env.Prepend(CPPPATH=["#thirdparty/freetype/include"])
 
 prog = env.add_program("#bin/godot", wiiu_files + wiiu_shaders)
 

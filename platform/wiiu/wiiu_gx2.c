@@ -60,6 +60,16 @@
 
 extern const uint8_t wiiu_shader_texture[];
 
+// wiiu_system_font.cpp
+bool wiiu_sysfont_init(void);
+void wiiu_sysfont_free(void);
+
+// crash_font_data.c
+extern const uint8_t wiiu_crash_font[][WIIU_FONT_CELL_W * WIIU_FONT_CELL_H];
+extern const uint32_t wiiu_crash_font_first;
+extern const uint32_t wiiu_crash_font_count;
+#define FONT_COLUMNS 16
+
 typedef struct {
 	GX2ColorBuffer color_buffer;
 	void *scan_buffer;
@@ -92,6 +102,8 @@ static uint32_t draw_sampler_location = 0;
 static uint32_t *draw_uniforms = NULL; // 32 words, byte-swapped
 static GX2Sampler draw_samplers[2][2]; // [linear][repeat]
 static WiiUTexture *draw_white = NULL;
+static WiiUTexture *draw_font = NULL; // FONT_COLUMNS glyphs per row
+static WiiUTexture *saved_frame[2] = { NULL, NULL }; // [WiiUScreen]
 
 static uint8_t *arena[2] = { NULL, NULL };
 static uint32_t arena_index = 0;
@@ -368,11 +380,47 @@ static bool draw_init(void) {
 
 	static const uint8_t white[4] = { 255, 255, 255, 255 };
 	draw_white = wiiu_gx2_texture_create(1, 1, white);
-	draw_ready = draw_white != NULL;
+
+	// The bitmap font as a white RGBA atlas with the glyph coverage in alpha.
+	const uint32_t rows = (wiiu_crash_font_count + FONT_COLUMNS - 1) / FONT_COLUMNS;
+	const uint32_t aw = FONT_COLUMNS * WIIU_FONT_CELL_W;
+	const uint32_t ah = rows * WIIU_FONT_CELL_H;
+	uint8_t *atlas = (uint8_t *)calloc(aw * ah, 4);
+	if (atlas != NULL) {
+		for (uint32_t g = 0; g < wiiu_crash_font_count; g++) {
+			const uint32_t gx = (g % FONT_COLUMNS) * WIIU_FONT_CELL_W;
+			const uint32_t gy = (g / FONT_COLUMNS) * WIIU_FONT_CELL_H;
+			for (uint32_t y = 0; y < WIIU_FONT_CELL_H; y++) {
+				for (uint32_t x = 0; x < WIIU_FONT_CELL_W; x++) {
+					uint8_t *px = atlas + ((gy + y) * aw + gx + x) * 4;
+					px[0] = px[1] = px[2] = 255;
+					px[3] = wiiu_crash_font[g][y * WIIU_FONT_CELL_W + x];
+				}
+			}
+		}
+		draw_font = wiiu_gx2_texture_create(aw, ah, atlas);
+		free(atlas);
+	}
+	draw_ready = draw_white != NULL && draw_font != NULL;
+	if (draw_ready) {
+		// CafeStd for the crash overlay, baked now so a crash doesn't need FreeType.
+		wiiu_sysfont_init();
+	}
 	return draw_ready;
 }
 
 static void draw_free(void) {
+	wiiu_sysfont_free();
+	for (int i = 0; i < 2; i++) {
+		if (saved_frame[i]) {
+			wiiu_gx2_texture_free(saved_frame[i]);
+			saved_frame[i] = NULL;
+		}
+	}
+	if (draw_font) {
+		wiiu_gx2_texture_free(draw_font);
+		draw_font = NULL;
+	}
 	if (draw_white) {
 		wiiu_gx2_texture_free(draw_white);
 		draw_white = NULL;
@@ -519,6 +567,106 @@ void wiiu_gx2_draw(WiiUPrimitive p_primitive, WiiUTexture *p_texture, bool p_lin
 			GX2_BLEND_COMBINE_MODE_ADD);
 	GX2DrawEx(p_primitive == WIIU_PRIM_LINES ? GX2_PRIMITIVE_MODE_LINES : GX2_PRIMITIVE_MODE_TRIANGLES,
 			p_count, 0, 1);
+}
+
+// ---------------------------------------------------------------------------
+// Overlay drawing (crash screen, log)
+// ---------------------------------------------------------------------------
+
+static void push_quad(WiiUVertex *v, float x0, float y0, float x1, float y1, float u0, float v0, float u1, float v1,
+		float r, float g, float b, float a) {
+	const float xs[6] = { x0, x1, x1, x0, x1, x0 };
+	const float ys[6] = { y0, y0, y1, y0, y1, y1 };
+	const float us[6] = { u0, u1, u1, u0, u1, u0 };
+	const float vs[6] = { v0, v0, v1, v0, v1, v1 };
+	for (int i = 0; i < 6; i++) {
+		v[i].x = xs[i];
+		v[i].y = ys[i];
+		v[i].z = 0.0f;
+		v[i].u = us[i];
+		v[i].v = vs[i];
+		v[i].r = r;
+		v[i].g = g;
+		v[i].b = b;
+		v[i].a = a;
+	}
+}
+
+void wiiu_gx2_draw_rect(float p_x, float p_y, float p_w, float p_h, float p_r, float p_g, float p_b, float p_a) {
+	WiiUVertex v[6];
+	push_quad(v, p_x, p_y, p_x + p_w, p_y + p_h, 0, 0, 1, 1, p_r, p_g, p_b, p_a);
+	wiiu_gx2_draw(WIIU_PRIM_TRIANGLES, draw_white, false, false, v, 6);
+}
+
+void wiiu_gx2_draw_text(float p_x, float p_y, const char *p_text, float p_r, float p_g, float p_b, float p_a) {
+	if (draw_font == NULL || p_text == NULL) {
+		return;
+	}
+	WiiUVertex v[6 * 128];
+	uint32_t n = 0;
+	const float aw = (float)draw_font->width;
+	const float ah = (float)draw_font->height;
+	float x = p_x;
+	for (const char *c = p_text; *c && n + 6 <= 6 * 128; c++, x += WIIU_FONT_CELL_W) {
+		uint32_t code = (uint8_t)*c;
+		if (code == ' ') {
+			continue;
+		}
+		if (code < wiiu_crash_font_first || code >= wiiu_crash_font_first + wiiu_crash_font_count) {
+			code = '?';
+		}
+		const uint32_t g = code - wiiu_crash_font_first;
+		const float gx = (float)((g % FONT_COLUMNS) * WIIU_FONT_CELL_W);
+		const float gy = (float)((g / FONT_COLUMNS) * WIIU_FONT_CELL_H);
+		push_quad(&v[n], x, p_y, x + WIIU_FONT_CELL_W, p_y + WIIU_FONT_CELL_H,
+				gx / aw, gy / ah, (gx + WIIU_FONT_CELL_W) / aw, (gy + WIIU_FONT_CELL_H) / ah,
+				p_r, p_g, p_b, p_a);
+		n += 6;
+	}
+	wiiu_gx2_draw(WIIU_PRIM_TRIANGLES, draw_font, false, false, v, n);
+}
+
+bool wiiu_gx2_save_frame(void) {
+	if (!wiiu_gx2_can_draw()) {
+		return false;
+	}
+	Screen *screens[2] = { &gx2_tv, &gx2_drc };
+	for (int i = 0; i < 2; i++) {
+		if (saved_frame[i] == NULL) {
+			GX2Surface *src = &screens[i]->color_buffer.surface;
+			WiiUTexture *t = (WiiUTexture *)calloc(1, sizeof(WiiUTexture));
+			if (t == NULL) {
+				return false;
+			}
+			GX2Surface surface = *src;
+			surface.use = GX2_SURFACE_USE_TEXTURE;
+			surface.image = NULL;
+			GX2CalcSurfaceSizeAndAlignment(&surface);
+			surface.image = MEMAllocFromDefaultHeapEx(surface.imageSize, surface.alignment);
+			if (surface.image == NULL) {
+				free(t);
+				return false;
+			}
+			init_texture_view(t, &surface);
+			t->owns_image = true;
+			saved_frame[i] = t;
+		}
+		GX2CopySurface(&screens[i]->color_buffer.surface, 0, 0, &saved_frame[i]->texture.surface, 0, 0);
+		GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE, saved_frame[i]->texture.surface.image, saved_frame[i]->texture.surface.imageSize);
+	}
+	// The copies must be done before the screens are drawn over.
+	GX2DrawDone();
+	return true;
+}
+
+void wiiu_gx2_draw_saved_frame(WiiUScreen p_screen) {
+	WiiUTexture *t = saved_frame[p_screen == WIIU_SCREEN_TV ? 0 : 1];
+	if (t == NULL || target_cb == NULL) {
+		return;
+	}
+	WiiUVertex v[6];
+	push_quad(v, 0, 0, (float)target_width, (float)target_height, 0, 0, 1, 1, 1, 1, 1, 1);
+	wiiu_gx2_draw(WIIU_PRIM_TRIANGLES, t, false, false, v, 6);
 }
 
 void wiiu_gx2_frame_begin(void) {

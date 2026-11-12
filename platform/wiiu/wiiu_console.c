@@ -305,6 +305,31 @@ static void console_take_snapshot(void) {
 	console_snapshot_stored = stored;
 }
 
+// Copies the lines a view of p_rows rows shows (oldest first, ending
+// console_scroll lines above the newest), for drawing the log with GX2.
+// p_out holds p_rows lines of CONSOLE_WRAP_COLUMNS (68) + 1 chars. Returns the
+// number of lines copied; r_bottom is the 1-based number of the bottom line
+// shown and r_total the number of stored lines.
+uint32_t wiiu_console_copy_view(uint32_t p_rows, char (*p_out)[CONSOLE_WRAP_COLUMNS + 1], uint32_t *r_bottom, uint32_t *r_total) {
+	console_lock_acquire();
+	const uint32_t stored = console_stored_lines();
+	const uint32_t scroll = console_scroll <= stored ? console_scroll : stored;
+	const uint32_t available = stored - scroll;
+	const uint32_t count = available < p_rows ? available : p_rows;
+	const uint32_t first = console_line_count - scroll - count;
+	for (uint32_t i = 0; i < count; i++) {
+		memcpy(p_out[i], console_lines[(first + i) % CONSOLE_HISTORY_LINES], CONSOLE_WRAP_COLUMNS + 1);
+	}
+	console_lock_release();
+	*r_bottom = stored - scroll;
+	*r_total = stored;
+	return count;
+}
+
+const char *wiiu_console_get_footer(void) {
+	return console_footer;
+}
+
 // Appends the decimal digits of n at out[pos]; returns the new position.
 static size_t console_append_uint(char *out, size_t pos, uint32_t n) {
 	char digits[12];
