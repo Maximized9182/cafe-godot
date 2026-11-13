@@ -63,6 +63,11 @@ static uint64_t *gpu_ts = NULL; // [slot][top, bottom]
 static uint32_t gpu_ts_frame = 0;
 static float stat_gpu_ms = 0.0f;
 static float stat_flip_wait_ms = 0.0f;
+// Draws since the last GX2Flush. GX2 keeps commands in its buffer until a
+// flush, so without these the GPU only started on a frame at present time and
+// CPU + GPU time added up (7.5 + 11.4 ms: every vblank missed, 30 fps).
+#define DRAWS_PER_FLUSH 16
+static uint32_t draws_since_flush = 0;
 
 #define GX2_FRAME_HEAP_TAG 0x47583242 // "GX2B"
 
@@ -613,6 +618,10 @@ void wiiu_gx2_draw(WiiUPrimitive p_primitive, WiiUTexture *p_texture, bool p_lin
 			p_count, 0, 1);
 	stat_draws++;
 	stat_vertices += p_count;
+	if (++draws_since_flush >= DRAWS_PER_FLUSH) {
+		draws_since_flush = 0;
+		GX2Flush(); // Let the GPU start while the CPU builds the rest.
+	}
 }
 
 // ---------------------------------------------------------------------------

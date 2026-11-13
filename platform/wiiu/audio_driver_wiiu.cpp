@@ -71,6 +71,13 @@ uint32_t AudioDriverWiiU::play_position() {
 
 void AudioDriverWiiU::thread_func(void *p_udata) {
 	AudioDriverWiiU *ad = static_cast<AudioDriverWiiU *>(p_udata);
+	// Off the main thread's core (1) and above normal priority (16; lower is
+	// higher): Cafe OS doesn't time-slice, so on core 1 this thread waited for
+	// the main thread's whole frame and the ring ran dry (crackling).
+	OSThread *self = OSGetCurrentThread();
+	const BOOL affinity_ok = OSSetThreadAffinity(self, OS_THREAD_ATTRIB_AFFINITY_CPU2);
+	const BOOL priority_ok = OSSetThreadPriority(self, 12);
+	WHBLogPrintf("Audio thread: core 2 %s, priority 12 %s.", affinity_ok ? "ok" : "failed", priority_ok ? "ok" : "failed");
 	OSTime last_beat = OSGetSystemTime();
 	while (!ad->exit_thread.is_set()) {
 		// In the background (HOME menu, or on the way out after SYSLaunchMenu)
