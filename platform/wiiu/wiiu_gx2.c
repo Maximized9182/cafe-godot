@@ -174,6 +174,8 @@ static bool alloc_screen_memory(MEMHeapHandle heap, Screen *s, bool tv) {
 	}
 	// The display reads the scan buffer directly: flush it out of the CPU cache.
 	GX2Invalidate(GX2_INVALIDATE_MODE_CPU, s->scan_buffer, s->scan_buffer_size);
+	// The colour buffer is GPU-only too: no dirty CPU lines left on top.
+	GX2Invalidate(GX2_INVALIDATE_MODE_CPU, s->color_buffer.surface.image, s->color_buffer.surface.imageSize);
 	if (tv) {
 		GX2SetTVBuffer(s->scan_buffer, s->scan_buffer_size, GX2_TV_RENDER_MODE_WIDE_720P,
 				GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8, GX2_BUFFERING_MODE_DOUBLE);
@@ -267,6 +269,9 @@ static void apply_target(void);
 // Fills a tiled texture from RGBA rows: the CPU writes a linear staging
 // surface and the GPU converts it with GX2CopySurface. Needs the foreground
 // (GPU commands); waits for the copy so the staging memory can go.
+// Fills a tiled texture from RGBA rows: the CPU writes a linear staging
+// surface and the GPU converts it with GX2CopySurface. Needs the foreground
+// (GPU commands); waits for the copy so the staging memory can go.
 static bool upload_tiled(WiiUTexture *p_texture, const uint8_t *p_rgba) {
 	if (!wiiu_gx2_can_draw()) {
 		return false;
@@ -290,61 +295,19 @@ static bool upload_tiled(WiiUTexture *p_texture, const uint8_t *p_rgba) {
 			memcpy(image + y * staging.pitch * 4, p_rgba + y * row, row);
 		}
 	}
-	// The copy reads the staging memory through the GPU texture cache, which can
-	// still hold lines of an earlier staging buffer at the same address, and
-	// writes the texture through the colour buffer cache: flush both ways.
+	GX2Surface *dst = &p_texture->texture.surface;
+	// Staging: out of the CPU cache, and drop GPU texture cache lines of an
+	// earlier buffer at the same address. Destination: no stale GPU lines.
 	GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, staging.image, staging.imageSize);
-	GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE | GX2_INVALIDATE_MODE_COLOR_BUFFER,
-			p_texture->texture.surface.image, p_texture->texture.surface.imageSize);
-	GX2CopySurface(&staging, 0, 0, &p_texture->texture.surface, 0, 0);
-	GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER | GX2_INVALIDATE_MODE_TEXTURE,
-			p_texture->texture.surface.image, p_texture->texture.surface.imageSize);
+	GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE | GX2_INVALIDATE_MODE_COLOR_BUFFER, dst->image, dst->imageSize);
+	GX2CopySurface(&staging, 0, 0, dst, 0, 0);
+	GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER | GX2_INVALIDATE_MODE_TEXTURE, dst->image, dst->imageSize);
 	// GX2CopySurface changes GPU state: put ours back (target, viewport, scissor).
 	GX2SetContextState(gx2_context);
 	if (target_cb != NULL) {
 		apply_target();
 	}
 	GX2DrawDone();
-	// Debug: copy the tiled result back to linear and compare (first textures only).
-	static int checks = 0;
-	if (p_rgba != NULL) {
-		checks++;
-		memset(staging.image, 0xCD, staging.imageSize);
-		GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE | GX2_INVALIDATE_MODE_COLOR_BUFFER, staging.image, staging.imageSize);
-		GX2CopySurface(&p_texture->texture.surface, 0, 0, &staging, 0, 0);
-		GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, staging.image, staging.imageSize);
-		GX2SetContextState(gx2_context);
-		if (target_cb != NULL) {
-			apply_target();
-		}
-		GX2DrawDone();
-		GX2Invalidate(GX2_INVALIDATE_MODE_CPU, staging.image, staging.imageSize);
-		uint32_t bad_rows = 0, first_x = 0, first_y = 0;
-		for (uint32_t y = 0; y < p_texture->height; y++) {
-			const uint8_t *a = image + y * staging.pitch * 4;
-			const uint8_t *b = p_rgba + y * row;
-			if (memcmp(a, b, row) != 0) {
-				if (bad_rows == 0) {
-					first_y = y;
-					for (uint32_t x = 0; x < p_texture->width; x++) {
-						if (memcmp(a + x * 4, b + x * 4, 4) != 0) {
-							first_x = x;
-							break;
-						}
-					}
-				}
-				bad_rows++;
-			}
-		}
-		static int bad_total = 0;
-		bad_total += bad_rows ? 1 : 0;
-		const GX2Surface *ts = &p_texture->texture.surface;
-		if (bad_rows || checks <= 10 || checks % 50 == 0) WHBLogPrintf("[gx2] tiled check #%d, %d bad so far", checks, bad_total);
-		if (bad_rows || checks <= 10) WHBLogPrintf("[gx2] tiled check %ux%u tile %d pitch %u swz %08x | staging pitch %u: %s (%u bad rows, first %u,%u)",
-				(unsigned)p_texture->width, (unsigned)p_texture->height, (int)ts->tileMode, (unsigned)ts->pitch,
-				(unsigned)ts->swizzle, (unsigned)staging.pitch, bad_rows ? "BAD" : "ok", (unsigned)bad_rows,
-				(unsigned)first_x, (unsigned)first_y);
-	}
 	MEMFreeToDefaultHeap(staging.image);
 	return true;
 }
@@ -384,6 +347,12 @@ static WiiUTexture *texture_create(uint32_t p_width, uint32_t p_height, const ui
 		WHBLogPrintf("[gx2] out of memory for a %ux%u texture", (unsigned)p_width, (unsigned)p_height);
 		free(t);
 		return NULL;
+	}
+	// Memory only the GPU writes (tiled: GX2CopySurface) must not keep dirty
+	// CPU cache lines from its previous owner: written back later, they land
+	// on top of the texture (random garbage in sprites, 2026-11-13).
+	if (p_tiled) {
+		GX2Invalidate(GX2_INVALIDATE_MODE_CPU, surface.image, surface.imageSize);
 	}
 	init_texture_view(t, &surface);
 	t->owns_image = true;
@@ -454,6 +423,8 @@ WiiURenderTarget *wiiu_gx2_render_target_create(uint32_t p_width, uint32_t p_hei
 		free(rt);
 		return NULL;
 	}
+	// Only the GPU writes it: no dirty CPU cache lines on top (see texture_create).
+	GX2Invalidate(GX2_INVALIDATE_MODE_CPU, rt->color_buffer.surface.image, rt->color_buffer.surface.imageSize);
 	init_texture_view(&rt->texture, &rt->color_buffer.surface);
 	rt->texture.owns_image = false;
 	stat_render_targets++;
