@@ -658,3 +658,9 @@ Verified on the console with Godot Hello's counter button. Samples with an inval
   buzzed; with AX initialised from the main thread, every main-thread frame over ~34 ms gave a
   short AX buzz with no ring underrun (AX's CPU-side work presumably waits behind the main thread
   on core 1). Cores: 0 and 2 have 512 KB L2, core 1 (main thread) 2 MB.
+- **App-switch hangs are tied to .wuhb (2026-11-13):** as a .wuhb, FNF hung the console on
+  HOME / returning / closing / loading the menu ~5 times in a few hours (Mocha shell dead, our
+  app already released or exited, GPU idle). As a plain .rpx (godot.rpx + godot.pck in
+  sd:/wiiu/apps/godot/) the user opened and closed the HOME menu ~19 times with no hang. The one
+  stack trace (0xCAFEBADD) was in Aroma's homebrew_rpx_loader. Suspect Aroma's bundle handling;
+  ship big games as .rpx + pack until that's understood (cafe-export only makes .wuhb so far).
