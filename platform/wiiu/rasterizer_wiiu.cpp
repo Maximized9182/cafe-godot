@@ -1047,7 +1047,9 @@ void RasterizerCanvasWiiU::canvas_render_items(RID p_to_render_target, Item *p_i
 							float p0, p1, t0, t1;
 							int cell;
 						};
-						auto axis_segments = [](const float p_pos[4], const float p_uv[4], float p_src_center, RSE::NinePatchAxisMode p_mode, LocalVector<Segment> &r_out) {
+						// p_half_texel: half a texel in UV units; tiles are inset by it so
+						// linear filtering doesn't blend in the border at each tile seam.
+						auto axis_segments = [](const float p_pos[4], const float p_uv[4], float p_src_center, RSE::NinePatchAxisMode p_mode, float p_half_texel, LocalVector<Segment> &r_out) {
 							r_out.clear();
 							r_out.push_back({ p_pos[0], p_pos[1], p_uv[0], p_uv[1], 0 });
 							const float center = p_pos[2] - p_pos[1];
@@ -1059,17 +1061,20 @@ void RasterizerCanvasWiiU::canvas_render_items(RID p_to_render_target, Item *p_i
 									tile = center / MAX(1.0f, Math::floor(center / p_src_center + 0.5f));
 								}
 								tile = MAX(tile, center / 256.0f); // At most 256 tiles.
+								const float u0 = p_uv[1] + p_half_texel;
+								const float u1 = p_uv[2] - p_half_texel;
 								for (float at = p_pos[1]; at < p_pos[2] - 0.001f; at += tile) {
 									const float len = MIN(tile, p_pos[2] - at);
 									const float frac = len / tile;
-									r_out.push_back({ at, at + len, p_uv[1], p_uv[1] + (p_uv[2] - p_uv[1]) * frac, 1 });
+									r_out.push_back({ at, at + len, u0, u0 + (u1 - u0) * frac, 1 });
 								}
 							}
 							r_out.push_back({ p_pos[2], p_pos[3], p_uv[2], p_uv[3], 2 });
 						};
 						LocalVector<Segment> seg_x, seg_y;
-						axis_segments(xs, us, src.size.x - ml - mr, np->axis_x, seg_x);
-						axis_segments(ys, vs, src.size.y - mt - mb, np->axis_y, seg_y);
+						const bool linear_np = batch_linear;
+						axis_segments(xs, us, src.size.x - ml - mr, np->axis_x, textured && linear_np ? 0.5f / tsize.x : 0.0f, seg_x);
+						axis_segments(ys, vs, src.size.y - mt - mb, np->axis_y, textured && linear_np ? 0.5f / tsize.y : 0.0f, seg_y);
 						for (const Segment &sy : seg_y) {
 							for (const Segment &sx : seg_x) {
 								if (sx.cell == 1 && sy.cell == 1 && !np->draw_center) {
