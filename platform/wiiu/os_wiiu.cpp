@@ -83,7 +83,7 @@ bool OS_WiiU::_check_internal_feature_support(const String &p_feature) {
 }
 
 String OS_WiiU::get_name() const {
-	return "Wii U";
+	return "Cafe OS";
 }
 
 String OS_WiiU::get_distribution_name() const {

@@ -140,7 +140,7 @@ Other host-endian assumptions (e.g. raw `get_buffer` into typed arrays in
   `WHBProcIsRunning()`: `DisplayServer::process_events()`, `Main::iteration()`,
   `WHBLogConsoleDraw()`. Paths: user data `fs:/vol/external01/wiiu/godot/<project>`, temp
   `fs:/vol/external01/tmp`, executable `fs:/vol/content/godot.rpx`. Feature tags `wiiu`,
-  `game_console`, `homebrew`. `get_name()` = "Wii U", distribution "Cafe OS", 3 processors.
+  `game_console`, `homebrew`. `get_name()` = "Cafe OS", distribution "Cafe OS", 3 processors.
   Process/dynamic-library/shell functions return `ERR_UNAVAILABLE`. `WiiULogger` sends all
   engine output to `WHBLogWrite`. `initialize_joypads()` is empty.
 - `atomic64.c`: implements `__atomic_{load,store,exchange,compare_exchange}_8` and
@@ -463,7 +463,7 @@ per read call, so the log console gets the same sample through `wiiu_console_han
 ## 13. Video (GX2), 2026-11-12
 
 Stages, one console run each:
-1. **Done:** DisplayServerWiiU ("GX2") + wiiu_gx2.c clear/present, 60 fps vsync on TV and
+1. **Done:** DisplayServerWiiU ("Cafe OS") + wiiu_gx2.c clear/present, 60 fps vsync on TV and
    GamePad. Two fixes were needed: re-enable TV/DRC output every frame (WHBGfx does too), and
    **never start OSScreen before GX2**. The log console starts suspended and only brings up
    OSScreen in `wiiu_console_resume()` (crash screen, error exit). OSScreen-then-GX2 left both

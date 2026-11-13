@@ -29,7 +29,7 @@ DisplayServer *DisplayServerWiiU::create_func(const String &p_rendering_driver, 
 }
 
 void DisplayServerWiiU::register_wiiu_driver() {
-	register_create_function("GX2", create_func, get_rendering_drivers_func);
+	register_create_function("Cafe OS", create_func, get_rendering_drivers_func);
 }
 
 Size2i DisplayServerWiiU::screen_get_size(int p_screen) const {
