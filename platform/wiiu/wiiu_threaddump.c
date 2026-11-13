@@ -1,4 +1,5 @@
-// Debug (HOME hang hunt, 2026-11-13): logs every thread of this process with
+// Debug tool, not built by default (add it to SCsub and call it).
+// Written for the HOME hang hunt (2026-11-13): logs every thread of this process with
 // where it is (PC, LR, a short backtrace with Cafe OS symbols) and what it waits
 // on (mutex and its owner, thread queue). Called from the audio thread's
 // background heartbeat, which keeps running while the main thread is stuck in

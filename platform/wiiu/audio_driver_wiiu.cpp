@@ -13,9 +13,6 @@
 
 #include "wiiu_gx2.h"
 
-// Debug (HOME hang hunt): wiiu_threaddump.c.
-extern "C" void wiiu_thread_dump(const char *p_reason);
-
 // AXInit runs on core 2: AX's own CPU-side work (the "AXIST" thread)
 // presumably stays on the core that initialised it, and on core 1 it waited
 // behind long main-thread frames (red spikes in the stats graph), so AX
@@ -27,7 +24,6 @@ static int ax_init_entry(int p_argc, const char **p_argv) {
 	params.renderer = AX_INIT_RENDERER_48KHZ;
 	params.pipeline = AX_INIT_PIPELINE_SINGLE;
 	AXInitWithParams(&params);
-	WHBLogPrintf("AX initialised on core %u.", (unsigned)OSGetCoreId());
 	return 0;
 }
 
@@ -110,32 +106,14 @@ void AudioDriverWiiU::thread_func(void *p_udata) {
 	// priority it waited out the main thread's frames (crackling); above the
 	// main thread's priority it starved the system's own audio work there
 	// (a short buzz every frame).
-	WHBLogPrintf("Audio thread on core %u, priority %d.", (unsigned)OSGetCoreId(), (int)OSGetThreadPriority(OSGetCurrentThread()));
-	uint32_t underruns = 0;
-	OSTime last_beat = OSGetSystemTime();
-	uint32_t bg_beats = 0; // Seconds in the background, for the thread dumps.
 	while (!ad->exit_thread.is_set()) {
 		// In the background (HOME menu, or on the way out after SYSLaunchMenu)
-		// the system stops AX and hands it over: don't touch AX until the app
-		// is back. Polling AXGetVoiceOffsets every 2 ms during the switch is
-		// the suspect for intermittent console hangs on HOME (2026-11-13).
+		// the voices are stopped (proc_released) and the system owns AX:
+		// don't touch AX until the app is back.
 		if (!wiiu_gx2_can_draw() || ad->voices_paused) {
-			// Debug (HOME hang hunt): once a second, note that this thread runs.
-			if (OSTicksToMilliseconds(OSGetSystemTime() - last_beat) >= 1000) {
-				last_beat = OSGetSystemTime();
-				WHBLogPrintf("[bg] audio thread alive (AX untouched); main thread: %s", (const char *)wiiu_main_state);
-				bg_beats++;
-				// A normal HOME switch finishes within a second or two; still
-				// here (and the main thread maybe stuck in ProcUI): show where
-				// every thread is.
-				if (bg_beats == 3 || bg_beats % 15 == 0) {
-					wiiu_thread_dump("background");
-				}
-			}
 			OSSleepTicks(OSMillisecondsToTicks(20));
 			continue;
 		}
-		bg_beats = 0;
 		const uint32_t play = ad->play_position();
 		uint32_t ahead = (ad->write_pos + RING_SAMPLES - play) % RING_SAMPLES;
 		if (ahead > TARGET_AHEAD + RING_CHUNK) {
@@ -143,8 +121,6 @@ void AudioDriverWiiU::thread_func(void *p_udata) {
 			// underrun) and "ahead" wrapped. Without this the thread slept while
 			// AX looped stale samples for most of the ring (a buzz). Restart
 			// writing just ahead of the play position.
-			underruns++;
-			WHBLogPrintf("[audio] underrun %u (play %u, write %u)", (unsigned)underruns, (unsigned)play, (unsigned)ad->write_pos);
 			ad->write_pos = (play + RING_CHUNK) % RING_SAMPLES;
 			ahead = RING_CHUNK;
 		}
@@ -204,7 +180,6 @@ uint32_t AudioDriverWiiU::proc_released(void *p_context) {
 			DCFlushRange(ad->rings[ch], RING_SAMPLES * sizeof(int16_t));
 		}
 	}
-	WHBLogPrint("[audio] voices stopped for the background");
 	return 0;
 }
 
@@ -213,7 +188,6 @@ uint32_t AudioDriverWiiU::proc_acquired(void *p_context) {
 	if (ad->voices_paused) {
 		ad->set_voices_playing(true);
 		ad->voices_paused = false;
-		WHBLogPrint("[audio] voices playing again");
 	}
 	return 0;
 }

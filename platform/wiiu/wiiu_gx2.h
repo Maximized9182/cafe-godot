@@ -95,9 +95,6 @@ typedef struct {
 } WiiUGX2Stats;
 void wiiu_gx2_get_stats(WiiUGX2Stats *r_stats);
 
-// Debug (HOME hang hunt): a short description of what the main thread is doing.
-extern volatile const char *wiiu_main_state;
-
 // Text and rectangles drawn with GX2 alone (crash overlay, log), using the
 // built-in 10x20 bitmap font (crash_font_data.c, ASCII 32-126).
 #define WIIU_FONT_CELL_W 10

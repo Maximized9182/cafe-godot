@@ -188,34 +188,19 @@ static bool alloc_screen_memory(MEMHeapHandle heap, Screen *s, bool tv) {
 	return true;
 }
 
-// Debug (HOME hang hunt): what the main thread is doing, for the background
-// heartbeat (audio_driver_wiiu.cpp). See wiiu_gx2_main_state().
-volatile const char *wiiu_main_state = "start";
-uint32_t wiiu_frame_textures = 0;
-uint32_t wiiu_frame_texture_us = 0;
-uint32_t wiiu_frame_texture_updates = 0;
-uint64_t wiiu_frame_render_begin = 0;
-uint64_t wiiu_frame_render_end = 0;
-
 static uint32_t gx2_proc_acquired(void *context) {
 	(void)context;
-	WHBLogPrint("[procui] acquire callback: start");
 	if (!gx2_active) {
 		return 0;
 	}
-	wiiu_main_state = "acquire: MEM1";
 	MEMHeapHandle heap = MEMGetBaseHeapHandle(MEM_BASE_HEAP_MEM1);
 	MEMRecordStateForFrmHeap(heap, GX2_FRAME_HEAP_TAG);
-	WHBLogPrintf("[procui] acquire: MEM1 free %u", (unsigned)MEMGetAllocatableSizeForFrmHeapEx(heap, 4));
-	wiiu_main_state = "acquire: screen buffers";
 	if (!alloc_screen_memory(heap, &gx2_tv, true) || !alloc_screen_memory(heap, &gx2_drc, false)) {
 		WHBLogPrint("[gx2] out of MEM1 for the scan/colour buffers");
 		MEMFreeByStateToFrmHeap(heap, GX2_FRAME_HEAP_TAG);
 		return 0;
 	}
 	gx2_acquired = true;
-	wiiu_main_state = "acquired";
-	WHBLogPrint("[procui] foreground acquired");
 	return 0;
 }
 
@@ -226,18 +211,14 @@ static uint32_t gx2_proc_released(void *context) {
 	}
 	// Let the GPU finish with the buffers before they go back to the system.
 	// GX2DrawDone gives up (FALSE) after the GPU timeout: then the GPU hung.
-	wiiu_main_state = "release: GX2DrawDone";
-	const OSTime dd_start = OSGetSystemTime();
-	const BOOL dd = GX2DrawDone();
-	WHBLogPrintf("[procui] release: GX2DrawDone %s after %u ms", dd ? "ok" : "TIMED OUT (GPU hung)",
-			(unsigned)OSTicksToMilliseconds(OSGetSystemTime() - dd_start));
+	if (!GX2DrawDone()) {
+		WHBLogPrint("[gx2] GPU timed out while releasing the foreground (GPU hung)");
+	}
 	gx2_acquired = false;
 	if (target_cb == &gx2_tv.color_buffer || target_cb == &gx2_drc.color_buffer) {
 		target_cb = NULL;
 	}
 	MEMFreeByStateToFrmHeap(MEMGetBaseHeapHandle(MEM_BASE_HEAP_MEM1), GX2_FRAME_HEAP_TAG);
-	wiiu_main_state = "released";
-	WHBLogPrint("[procui] foreground released");
 	return 0;
 }
 
@@ -363,15 +344,7 @@ static WiiUTexture *texture_create(uint32_t p_width, uint32_t p_height, const ui
 	t->owns_image = true;
 	stat_textures++;
 	stat_texture_bytes += surface.imageSize;
-	const OSTime upload_start = OSGetSystemTime();
 	wiiu_gx2_texture_update(t, p_rgba);
-	// Debug (stutters): textures made this frame (read by the slow-frame log).
-	wiiu_frame_textures++;
-	wiiu_frame_texture_us += (uint32_t)OSTicksToMicroseconds(OSGetSystemTime() - upload_start);
-	if (p_width * p_height >= 512 * 512) {
-		WHBLogPrintf("[gx2] %ux%u %s texture: upload %u ms", (unsigned)p_width, (unsigned)p_height,
-				p_tiled ? "tiled" : "linear", (unsigned)OSTicksToMilliseconds(OSGetSystemTime() - upload_start));
-	}
 	return t;
 }
 
@@ -379,7 +352,6 @@ void wiiu_gx2_texture_update(WiiUTexture *p_texture, const uint8_t *p_rgba) {
 	if (p_texture == NULL || !p_texture->owns_image) {
 		return;
 	}
-	wiiu_frame_texture_updates++;
 	GX2Surface *s = &p_texture->texture.surface;
 	if (s->tileMode != GX2_TILE_MODE_LINEAR_ALIGNED) {
 		if (!upload_tiled(p_texture, p_rgba)) {

@@ -1,11 +1,5 @@
 #include "rasterizer_wiiu.h"
 
-#include <coreinit/time.h>
-
-// Debug (stutters): frame phase times, read by the slow-frame log (os_wiiu.cpp).
-extern "C" uint64_t wiiu_frame_render_begin;
-extern "C" uint64_t wiiu_frame_render_end;
-
 #include "core/io/image.h"
 #include "core/math/math_funcs.h"
 #include "servers/rendering/rendering_server_globals.h"
@@ -1376,7 +1370,6 @@ RasterizerWiiU::RasterizerWiiU() {
 void RasterizerWiiU::begin_frame(double p_frame_step) {
 	RasterizerDummy::begin_frame(p_frame_step);
 	wiiu_stats_mark(1); // Rendering starts.
-	wiiu_frame_render_begin = OSGetSystemTime();
 	wiiu_gx2_frame_begin();
 	blitted = false;
 }
@@ -1439,7 +1432,6 @@ void RasterizerWiiU::end_frame(bool p_present) {
 		return;
 	}
 	wiiu_stats_mark(2); // Rendering done, presenting next.
-	wiiu_frame_render_end = OSGetSystemTime();
 	wiiu_stats_frame();
 	if (wiiu_stats_visible() && blitted) {
 		for (int s = 0; s < 2; s++) {

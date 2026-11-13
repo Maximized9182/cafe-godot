@@ -139,7 +139,6 @@ String OS_WiiU::get_executable_path() const {
 				path = "fs:/vol/external01/wiiu/apps/godot/godot.rpx";
 			}
 		}
-		WHBLogPrintf("Executable path: %s", path.utf8().get_data());
 	}
 	return path;
 }
@@ -216,14 +215,6 @@ extern "C" bool wiiu_chord_update(uint32_t hold, uint32_t trigger);
 extern "C" bool wiiu_stats_chord_update(uint32_t hold, uint32_t trigger);
 extern "C" void wiiu_stats_toggle(void);
 extern "C" void wiiu_stats_mark(int p_mark);
-// Defined in wiiu_gx2.c (debug, HOME hang hunt).
-extern "C" volatile const char *wiiu_main_state;
-extern "C" bool wiiu_gx2_can_draw(void);
-extern "C" uint32_t wiiu_frame_textures;
-extern "C" uint32_t wiiu_frame_texture_us;
-extern "C" uint32_t wiiu_frame_texture_updates;
-extern "C" uint64_t wiiu_frame_render_begin;
-extern "C" uint64_t wiiu_frame_render_end;
 extern "C" bool wiiu_log_overlay_visible(void);
 extern "C" void wiiu_log_overlay_toggle(void);
 extern "C" void wiiu_console_draw(void);
@@ -236,33 +227,8 @@ void OS_WiiU::run() {
 	main_loop->initialize();
 
 	while (true) {
-		wiiu_main_state = "ProcUI messages";
 		if (!wiiu_proc_is_running()) {
 			break;
-		}
-		wiiu_main_state = "frame";
-		// Debug (stutters): log frames over 100 ms (between two frame starts).
-		{
-			static OSTime last_frame_start = 0;
-			const OSTime now = OSGetSystemTime();
-			if (last_frame_start != 0) {
-				const uint32_t ms = (uint32_t)OSTicksToMilliseconds(now - last_frame_start);
-				if (ms >= 100 && wiiu_gx2_can_draw()) {
-					const bool phases = wiiu_frame_render_begin > (uint64_t)last_frame_start &&
-							wiiu_frame_render_end >= wiiu_frame_render_begin;
-					WHBLogPrintf("[frame] slow frame: %u ms (game %d, render %d, after %d); %u textures made, %u updated (%u ms uploading)",
-							(unsigned)ms,
-							phases ? (int)OSTicksToMilliseconds((OSTime)wiiu_frame_render_begin - last_frame_start) : -1,
-							phases ? (int)OSTicksToMilliseconds((OSTime)(wiiu_frame_render_end - wiiu_frame_render_begin)) : -1,
-							phases ? (int)OSTicksToMilliseconds(now - (OSTime)wiiu_frame_render_end) : -1,
-							(unsigned)wiiu_frame_textures, (unsigned)wiiu_frame_texture_updates,
-							(unsigned)(wiiu_frame_texture_us / 1000));
-				}
-			}
-			last_frame_start = now;
-			wiiu_frame_textures = 0;
-			wiiu_frame_texture_us = 0;
-			wiiu_frame_texture_updates = 0;
 		}
 		wiiu_stats_mark(0); // Frame start (stats overlay timing).
 		// Read every controller once per frame, before the engine runs the frame.
