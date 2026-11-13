@@ -24,6 +24,7 @@
 #include "core/templates/rid_owner.h"
 #include "servers/rendering/dummy/rasterizer_canvas_dummy.h"
 #include "servers/rendering/dummy/rasterizer_dummy.h"
+#include "servers/rendering/dummy/storage/material_storage.h"
 #include "servers/rendering/dummy/storage/mesh_storage.h"
 #include "servers/rendering/dummy/storage/texture_storage.h"
 #include "servers/rendering/dummy/storage/utilities.h"
@@ -223,6 +224,26 @@ public:
 	~MeshStorageWiiU();
 };
 
+// Shaders aren't compiled yet, but canvas_item shaders' blend mode (the
+// render_mode line, also what CanvasItemMaterial generates) is applied.
+class MaterialStorageWiiU : public RendererDummy::MaterialStorage {
+	static inline MaterialStorageWiiU *wiiu_singleton = nullptr;
+	HashMap<RID, WiiUBlend> shader_blend;
+	HashMap<RID, RID> material_shader;
+
+public:
+	static MaterialStorageWiiU *get_wiiu_singleton() { return wiiu_singleton; }
+	WiiUBlend get_material_blend(RID p_material) const;
+
+	void shader_free(RID p_rid) override;
+	void shader_set_code(RID p_shader, const String &p_code) override;
+	void material_free(RID p_rid) override;
+	void material_set_shader(RID p_material, RID p_shader) override;
+
+	MaterialStorageWiiU();
+	~MaterialStorageWiiU();
+};
+
 class UtilitiesWiiU : public RendererDummy::Utilities {
 public:
 	bool free(RID p_rid) override;
@@ -244,6 +265,8 @@ class RasterizerCanvasWiiU : public RasterizerCanvasDummy {
 	WiiUTexture *batch_texture = nullptr;
 	bool batch_linear = false;
 	bool batch_repeat = false;
+	WiiUBlend batch_blend = WIIU_BLEND_MIX;
+	WiiUBlend blend = WIIU_BLEND_MIX; // For the next _begin: the current item's material.
 	LocalVector<WiiUVertex> batch;
 
 	void _flush();

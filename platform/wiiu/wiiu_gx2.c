@@ -63,6 +63,11 @@ static uint64_t *gpu_ts = NULL; // [slot][top, bottom]
 static uint32_t gpu_ts_frame = 0;
 static float stat_gpu_ms = 0.0f;
 static float stat_flip_wait_ms = 0.0f;
+static WiiUBlend draw_blend = WIIU_BLEND_MIX;
+
+void wiiu_gx2_set_blend(WiiUBlend p_blend) {
+	draw_blend = p_blend;
+}
 // Draws since the last GX2Flush. GX2 keeps commands in its buffer until a
 // flush, so without these the GPU only started on a frame at present time and
 // CPU + GPU time added up (7.5 + 11.4 ms: every vblank missed, 30 fps).
@@ -668,11 +673,36 @@ void wiiu_gx2_draw(WiiUPrimitive p_primitive, WiiUTexture *p_texture, bool p_lin
 	GX2SetPixelSampler(&draw_samplers[p_linear ? 1 : 0][p_repeat ? 1 : 0], draw_sampler_location);
 	GX2SetDepthOnlyControl(FALSE, FALSE, GX2_COMPARE_FUNC_ALWAYS);
 	GX2SetCullOnlyControl(GX2_FRONT_FACE_CCW, FALSE, FALSE);
-	GX2SetColorControl(GX2_LOGIC_OP_COPY, 0xFF, FALSE, TRUE);
-	// Godot's default canvas blend ("mix"), straight alpha.
-	GX2SetBlendControl(GX2_RENDER_TARGET_0, GX2_BLEND_MODE_SRC_ALPHA, GX2_BLEND_MODE_INV_SRC_ALPHA,
-			GX2_BLEND_COMBINE_MODE_ADD, TRUE, GX2_BLEND_MODE_ONE, GX2_BLEND_MODE_INV_SRC_ALPHA,
-			GX2_BLEND_COMBINE_MODE_ADD);
+	GX2SetColorControl(GX2_LOGIC_OP_COPY, draw_blend == WIIU_BLEND_DISABLED ? 0x00 : 0xFF, FALSE, TRUE);
+	// The blend factors Godot's GLES3 renderer uses for each canvas blend mode
+	// (straight alpha; colour first, then alpha).
+	switch (draw_blend) {
+		case WIIU_BLEND_ADD:
+			GX2SetBlendControl(GX2_RENDER_TARGET_0, GX2_BLEND_MODE_SRC_ALPHA, GX2_BLEND_MODE_ONE,
+					GX2_BLEND_COMBINE_MODE_ADD, TRUE, GX2_BLEND_MODE_SRC_ALPHA, GX2_BLEND_MODE_ONE,
+					GX2_BLEND_COMBINE_MODE_ADD);
+			break;
+		case WIIU_BLEND_SUB: // dst - src * alpha.
+			GX2SetBlendControl(GX2_RENDER_TARGET_0, GX2_BLEND_MODE_SRC_ALPHA, GX2_BLEND_MODE_ONE,
+					GX2_BLEND_COMBINE_MODE_REV_SUB, TRUE, GX2_BLEND_MODE_SRC_ALPHA, GX2_BLEND_MODE_ONE,
+					GX2_BLEND_COMBINE_MODE_REV_SUB);
+			break;
+		case WIIU_BLEND_MUL:
+			GX2SetBlendControl(GX2_RENDER_TARGET_0, GX2_BLEND_MODE_DST_COLOR, GX2_BLEND_MODE_ZERO,
+					GX2_BLEND_COMBINE_MODE_ADD, TRUE, GX2_BLEND_MODE_DST_ALPHA, GX2_BLEND_MODE_ZERO,
+					GX2_BLEND_COMBINE_MODE_ADD);
+			break;
+		case WIIU_BLEND_PREMUL_ALPHA:
+			GX2SetBlendControl(GX2_RENDER_TARGET_0, GX2_BLEND_MODE_ONE, GX2_BLEND_MODE_INV_SRC_ALPHA,
+					GX2_BLEND_COMBINE_MODE_ADD, TRUE, GX2_BLEND_MODE_ONE, GX2_BLEND_MODE_INV_SRC_ALPHA,
+					GX2_BLEND_COMBINE_MODE_ADD);
+			break;
+		default: // Mix (and disabled, where the mask above turns blending off).
+			GX2SetBlendControl(GX2_RENDER_TARGET_0, GX2_BLEND_MODE_SRC_ALPHA, GX2_BLEND_MODE_INV_SRC_ALPHA,
+					GX2_BLEND_COMBINE_MODE_ADD, TRUE, GX2_BLEND_MODE_ONE, GX2_BLEND_MODE_INV_SRC_ALPHA,
+					GX2_BLEND_COMBINE_MODE_ADD);
+			break;
+	}
 	GX2DrawEx(p_primitive == WIIU_PRIM_LINES ? GX2_PRIMITIVE_MODE_LINES : GX2_PRIMITIVE_MODE_TRIANGLES,
 			p_count, 0, 1);
 	stat_draws++;

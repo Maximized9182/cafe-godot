@@ -115,6 +115,25 @@ func _ready() -> void:
 	add_child(sd)
 	_caption("draw_animation_slice (red/blue blink)", Vector2(760, 190))
 
+	# Blend modes: white-ish squares over a colour band (CanvasItemMaterial).
+	var band := ColorRect.new()
+	band.color = Color(0.2, 0.5, 0.9)
+	band.position = Vector2(760, 330)
+	band.size = Vector2(480, 130)
+	add_child(band)
+	var blends := [CanvasItemMaterial.BLEND_MODE_MIX, CanvasItemMaterial.BLEND_MODE_ADD, CanvasItemMaterial.BLEND_MODE_SUB, CanvasItemMaterial.BLEND_MODE_MUL, CanvasItemMaterial.BLEND_MODE_PREMULT_ALPHA]
+	var blend_names := ["mix", "add", "sub", "mul", "premul"]
+	for i in blends.size():
+		var sq := ColorRect.new()
+		sq.color = Color(1, 0.6, 0.2, 0.8)
+		sq.position = Vector2(775 + i * 92, 350)
+		sq.size = Vector2(70, 90)
+		var m := CanvasItemMaterial.new()
+		m.blend_mode = blends[i]
+		sq.material = m
+		add_child(sq)
+		_caption(blend_names[i], Vector2(775 + i * 92, 465))
+
 	fps_label = Label.new()
 	fps_label.position = Vector2(40, 640)
 	add_child(fps_label)

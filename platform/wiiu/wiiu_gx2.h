@@ -23,6 +23,16 @@ typedef enum {
 	WIIU_PRIM_LINES = 1,
 } WiiUPrimitive;
 
+// Canvas blend modes (Godot's render_mode blend_* / CanvasItemMaterial).
+typedef enum {
+	WIIU_BLEND_MIX = 0,
+	WIIU_BLEND_ADD,
+	WIIU_BLEND_SUB,
+	WIIU_BLEND_MUL,
+	WIIU_BLEND_PREMUL_ALPHA,
+	WIIU_BLEND_DISABLED,
+} WiiUBlend;
+
 typedef enum {
 	WIIU_SCREEN_TV = 0,
 	WIIU_SCREEN_DRC = 1,
@@ -64,6 +74,9 @@ void wiiu_gx2_bind_render_target(WiiURenderTarget *p_rt);
 void wiiu_gx2_bind_screen(WiiUScreen p_screen);
 void wiiu_gx2_clear(float p_r, float p_g, float p_b, float p_a);
 void wiiu_gx2_set_scissor(int32_t p_x, int32_t p_y, int32_t p_width, int32_t p_height);
+// Blend for the following wiiu_gx2_draw calls (WIIU_BLEND_MIX by default).
+// Whoever sets another mode sets it back to mix afterwards.
+void wiiu_gx2_set_blend(WiiUBlend p_blend);
 // Draws p_count vertices (pixel coordinates of the bound target).
 void wiiu_gx2_draw(WiiUPrimitive p_primitive, WiiUTexture *p_texture, bool p_linear, bool p_repeat,
 		const WiiUVertex *p_vertices, uint32_t p_count);

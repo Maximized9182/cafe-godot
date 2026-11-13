@@ -716,6 +716,83 @@ AABB MeshStorageWiiU::_multimesh_get_aabb(RID p_multimesh) {
 }
 
 // ===========================================================================
+// MaterialStorageWiiU
+// ===========================================================================
+
+MaterialStorageWiiU::MaterialStorageWiiU() {
+	wiiu_singleton = this;
+}
+
+MaterialStorageWiiU::~MaterialStorageWiiU() {
+	wiiu_singleton = nullptr;
+}
+
+// The blend_* word of a canvas_item shader's render_mode line.
+static WiiUBlend blend_from_shader_code(const String &p_code) {
+	if (!p_code.contains("canvas_item")) {
+		return WIIU_BLEND_MIX;
+	}
+	int at = p_code.find("render_mode");
+	while (at != -1) {
+		const int end = p_code.find(";", at);
+		if (end == -1) {
+			break;
+		}
+		const String modes = p_code.substr(at + 11, end - at - 11);
+		for (const String &m : modes.split(",")) {
+			const String mode = m.strip_edges();
+			if (mode == "blend_add") {
+				return WIIU_BLEND_ADD;
+			} else if (mode == "blend_sub") {
+				return WIIU_BLEND_SUB;
+			} else if (mode == "blend_mul") {
+				return WIIU_BLEND_MUL;
+			} else if (mode == "blend_premul_alpha") {
+				return WIIU_BLEND_PREMUL_ALPHA;
+			} else if (mode == "blend_disabled") {
+				return WIIU_BLEND_DISABLED;
+			}
+		}
+		at = p_code.find("render_mode", end);
+	}
+	return WIIU_BLEND_MIX;
+}
+
+void MaterialStorageWiiU::shader_free(RID p_rid) {
+	shader_blend.erase(p_rid);
+	RendererDummy::MaterialStorage::shader_free(p_rid);
+}
+
+void MaterialStorageWiiU::shader_set_code(RID p_shader, const String &p_code) {
+	RendererDummy::MaterialStorage::shader_set_code(p_shader, p_code);
+	const WiiUBlend b = blend_from_shader_code(p_code);
+	if (b == WIIU_BLEND_MIX) {
+		shader_blend.erase(p_shader);
+	} else {
+		shader_blend[p_shader] = b;
+	}
+}
+
+void MaterialStorageWiiU::material_free(RID p_rid) {
+	material_shader.erase(p_rid);
+	RendererDummy::MaterialStorage::material_free(p_rid);
+}
+
+void MaterialStorageWiiU::material_set_shader(RID p_material, RID p_shader) {
+	RendererDummy::MaterialStorage::material_set_shader(p_material, p_shader);
+	material_shader[p_material] = p_shader;
+}
+
+WiiUBlend MaterialStorageWiiU::get_material_blend(RID p_material) const {
+	const RID *shader = material_shader.getptr(p_material);
+	if (shader == nullptr) {
+		return WIIU_BLEND_MIX;
+	}
+	const WiiUBlend *b = shader_blend.getptr(*shader);
+	return b ? *b : WIIU_BLEND_MIX;
+}
+
+// ===========================================================================
 // RasterizerCanvasWiiU
 // ===========================================================================
 
@@ -757,18 +834,21 @@ void RasterizerCanvasWiiU::_flush() {
 	static constexpr uint32_t MAX_DRAW_VERTICES = 6 * 8192;
 	for (uint32_t start = 0; start < batch.size(); start += MAX_DRAW_VERTICES) {
 		const uint32_t count = MIN(MAX_DRAW_VERTICES, batch.size() - start);
+		wiiu_gx2_set_blend(batch_blend);
 		wiiu_gx2_draw(batch_primitive, batch_texture, batch_linear, batch_repeat, batch.ptr() + start, count);
+		wiiu_gx2_set_blend(WIIU_BLEND_MIX);
 	}
 	batch.clear();
 }
 
 void RasterizerCanvasWiiU::_begin(WiiUPrimitive p_primitive, WiiUTexture *p_texture, bool p_linear, bool p_repeat) {
-	if (p_primitive != batch_primitive || p_texture != batch_texture || p_linear != batch_linear || p_repeat != batch_repeat) {
+	if (p_primitive != batch_primitive || p_texture != batch_texture || p_linear != batch_linear || p_repeat != batch_repeat || blend != batch_blend) {
 		_flush();
 		batch_primitive = p_primitive;
 		batch_texture = p_texture;
 		batch_linear = p_linear;
 		batch_repeat = p_repeat;
+		batch_blend = blend;
 	}
 }
 
@@ -796,6 +876,7 @@ void RasterizerCanvasWiiU::_quad(const Transform2D &p_xform, const Vector2 p_pos
 }
 
 void RasterizerCanvasWiiU::draw_texture_rect(WiiUTexture *p_texture, const Rect2 &p_dst, const Rect2 &p_src_uv, bool p_linear) {
+	blend = WIIU_BLEND_MIX;
 	_begin(WIIU_PRIM_TRIANGLES, p_texture, p_linear, false);
 	const Vector2 pos[4] = {
 		p_dst.position,
@@ -862,6 +943,12 @@ void RasterizerCanvasWiiU::canvas_render_items(RID p_to_render_target, Item *p_i
 
 		const RSE::CanvasItemTextureFilter item_filter = ci->texture_filter == RSE::CANVAS_ITEM_TEXTURE_FILTER_DEFAULT ? p_default_filter : ci->texture_filter;
 		const RSE::CanvasItemTextureRepeat item_repeat = ci->texture_repeat == RSE::CANVAS_ITEM_TEXTURE_REPEAT_DEFAULT ? p_default_repeat : ci->texture_repeat;
+		// Blend mode of the item's material (render_mode blend_* / CanvasItemMaterial).
+		{
+			const RID material = ci->material_owner == nullptr ? ci->material : ci->material_owner->material;
+			MaterialStorageWiiU *mats = MaterialStorageWiiU::get_wiiu_singleton();
+			blend = (mats && material.is_valid()) ? mats->get_material_blend(material) : WIIU_BLEND_MIX;
+		}
 		// final_transform already maps the item into render-target pixels.
 		Transform2D base_xform = ci->final_transform;
 		Transform2D xform = base_xform;
@@ -1274,6 +1361,8 @@ RasterizerWiiU::RasterizerWiiU() {
 	utilities = memnew(UtilitiesWiiU);
 	memdelete(mesh_storage);
 	mesh_storage = memnew(MeshStorageWiiU);
+	memdelete(material_storage);
+	material_storage = memnew(MaterialStorageWiiU);
 }
 
 void RasterizerWiiU::begin_frame(double p_frame_step) {
