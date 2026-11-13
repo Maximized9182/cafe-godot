@@ -13,10 +13,16 @@
 
 #include "wiiu_gx2.h"
 
-// AXInit runs on core 2: AX's own CPU-side work (the "AXIST" thread)
-// presumably stays on the core that initialised it, and on core 1 it waited
-// behind long main-thread frames (red spikes in the stats graph), so AX
-// replayed its last block (a short buzz).
+// Where AXInit runs. AX keeps its own work (the "AXIST" thread) on that core,
+// and the system expects it on the main core: AXInit on core 2 (2f960b4,
+// against a buzz on long main-thread frames) made 1 in ~8 HOME presses stall
+// for exactly 2.09 s in the system's sound shutdown, then the HOME menu and
+// its applets stayed sluggish while the app sat half-released (2026-11-13).
+// AXQuit from another core is ignored ("AXQuit() called from core 1 (AXInit()
+// was on core 2)"). SDL2's Wii U port also keeps AX on core 1.
+// 1 = the main thread (init() runs there); 2 = a helper thread on core 2.
+#define WIIU_AX_INIT_CORE 1
+
 static int ax_init_entry(int p_argc, const char **p_argv) {
 	(void)p_argc;
 	(void)p_argv;
@@ -39,12 +45,11 @@ Error AudioDriverWiiU::init() {
 			ERR_FAIL_V(ERR_OUT_OF_MEMORY);
 		}
 		memset(init_thread, 0, sizeof(OSThread));
-		if (OSCreateThread(init_thread, ax_init_entry, 0, nullptr, stack + STACK_SIZE, STACK_SIZE, 16, OS_THREAD_ATTRIB_AFFINITY_CPU2)) {
+		if (WIIU_AX_INIT_CORE == 2 && OSCreateThread(init_thread, ax_init_entry, 0, nullptr, stack + STACK_SIZE, STACK_SIZE, 16, OS_THREAD_ATTRIB_AFFINITY_CPU2)) {
 			OSResumeThread(init_thread);
 			int result = 0;
 			OSJoinThread(init_thread, &result);
 		} else {
-			WHBLogPrint("Couldn't start the AX init thread; initialising AX here.");
 			ax_init_entry(0, nullptr);
 		}
 		MEMFreeToDefaultHeap(init_thread);
