@@ -596,3 +596,42 @@ Touches in the black bars are ignored. Events: InputEventScreenTouch / InputEven
 index 0; Godot's default emulate_mouse_from_touch turns them into clicks, so Controls work.
 Verified on the console with Godot Hello's counter button. Samples with an invalid axis
 (`validity != VPAD_VALID`) keep the previous position.
+
+## 18. Session 4 (2026-11-13): funkin_godot, memory, meshes and particles
+
+- **Names:** `OS.get_name()`, `get_distribution_name()` and `DisplayServer.get_name()` are all
+  `"Cafe OS"` (user choice). Feature tags unchanged: `wiiu`, `game_console`, `homebrew`.
+- **Build profile:** `profiles/cafe.py` is the general profile now (`build_lv.sh` uses it):
+  lvengine.py plus `disable_3d = "no"` (3D node classes exist so scripts naming them compile;
+  nothing 3D draws) and `module_interactive_music_enabled` (AudioStreamSynchronized, used by
+  funkin_godot for song stems). The .rpx grew ~2 MB to 21.7 MB.
+- **Texture memory:** `_upload` no longer duplicates images that are already RGBA8, and only
+  textures up to 512x512 keep the CPU `Image` (for `texture_2d_get` / `get_image()`); bigger ones
+  are GPU-only and `get_image()` returns null with a one-time warning. funkin_godot's art is
+  ~634 MB as RGBA8, so this halves what a song needs. Next step if memory runs out: GX2 BC/DXT
+  textures (game imports as VRAM compressed S3TC).
+- **MeshStorageWiiU** (rasterizer_wiiu.cpp): sits on the dummy storage (same RIDs) and decodes
+  each 2D surface once in `mesh_add_surface` via
+  `RenderingServer::mesh_create_arrays_from_surface_data`, plus multimesh instance buffers (2D: 8
+  floats, 3D: 12, then colour 4, custom 4). Real AABBs, so the canvas doesn't cull mesh items.
+  **ArrayMesh resources loaded from files keep their vertex bytes little-endian (not swapped)**;
+  run-time meshes (QuadMesh etc., CPUParticles2D, SurfaceTool) are native and fine.
+- **Drawn now:** MeshInstance2D, MultiMeshInstance2D, CPUParticles2D (instances with a zero
+  basis or zero alpha are skipped), nine-patch tile / tile fit (centre split into tiles, max 256
+  per axis), `draw_animation_slice` (TileMap animated tiles use it). `_flush` submits in chunks
+  of 49152 vertices so a batch never exceeds the 2 MB arena (wiiu_gx2_draw drops oversized draws).
+- **Still not drawn:** GPUParticles2D (TYPE_PARTICLES), skeletons/blend shapes, canvas shaders
+  (gdanimate uses `render_mode blend_add`/`blend_sub`: mapping render_mode blend lines and
+  CanvasItemMaterial blend modes to GX2 blend state is the cheap first shader step), canvas
+  groups, back-buffer copies, MSDF text, 2D lights, mipmaps (deferred: +1/3 memory).
+- **Render test:** `platform/wiiu/tests/render_test` (all-script scene): spinning QuadMesh,
+  ring of 16 multimesh quads, CPUParticles2D fountain, three nine-patches, red/blue slice blink,
+  footer with the OS and display server names. Export with `cafe-export`.
+- **funkin_godot** (`~/Projects/Godot/funkin_godot` on the host, the user's game; no game
+  changes made): exports with cafe-export (141 MB wuhb, preset "Linux x86_64"). First runs:
+  missing AnimatedSprite3D / AudioStreamSynchronized broke script compilation and softlocked song
+  load (fixed by cafe.py). Song playback on the new build not confirmed yet. "Failed to open mods
+  directory" is harmless (external mods only; `DirAccess.open("./")` fails on the Wii U).
+- **Console crash seen once (not reproduced):** the HOME Menu (process 5) died with `0xCAFEBADD`
+  in Aroma's homebrew_rpx_loader (`my_HBM_NN_ACP_ACPGetTitleMetaXmlByDevice` -> `snprintf` ->
+  `__wums_getreent`, DAR "_wut"). Not Godot code; HOME worked fine afterwards with the same wuhb.

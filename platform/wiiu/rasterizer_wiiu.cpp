@@ -4,6 +4,7 @@
 #include "core/math/math_funcs.h"
 #include "servers/rendering/rendering_server_globals.h"
 #include "servers/rendering/rendering_server.h"
+#include "servers/rendering/rendering_server_default.h"
 
 // ===========================================================================
 // TextureStorageWiiU
@@ -748,10 +749,14 @@ void RasterizerCanvasWiiU::free_polygon(PolygonID p_polygon) {
 }
 
 void RasterizerCanvasWiiU::_flush() {
-	if (batch.size() > 0) {
-		wiiu_gx2_draw(batch_primitive, batch_texture, batch_linear, batch_repeat, batch.ptr(), batch.size());
-		batch.clear();
+	// In chunks that fit the GX2 vertex arena (2 MB). A multiple of 6 splits
+	// cleanly for both triangles (3) and line pairs (2).
+	static constexpr uint32_t MAX_DRAW_VERTICES = 6 * 8192;
+	for (uint32_t start = 0; start < batch.size(); start += MAX_DRAW_VERTICES) {
+		const uint32_t count = MIN(MAX_DRAW_VERTICES, batch.size() - start);
+		wiiu_gx2_draw(batch_primitive, batch_texture, batch_linear, batch_repeat, batch.ptr() + start, count);
 	}
+	batch.clear();
 }
 
 void RasterizerCanvasWiiU::_begin(WiiUPrimitive p_primitive, WiiUTexture *p_texture, bool p_linear, bool p_repeat) {
@@ -1175,10 +1180,13 @@ void RasterizerCanvasWiiU::canvas_render_items(RID p_to_render_target, Item *p_i
 						const int count = mm->visible_instances < 0 ? mm->instances : MIN(mm->visible_instances, mm->instances);
 						for (int i = 0; i < count; i++) {
 							const Color col = MeshStorageWiiU::instance_color(*mm, i);
-							if (col.a <= 0.0f) {
-								continue; // CPUParticles2D hides inactive particles this way.
+							const Transform2D inst = MeshStorageWiiU::instance_transform(*mm, i);
+							// Nothing to draw: invisible, or a zero basis (CPUParticles2D
+							// zeroes the transform of inactive particles).
+							if (col.a <= 0.0f || (inst.columns[0] == Vector2() && inst.columns[1] == Vector2())) {
+								continue;
 							}
-							draw_mesh(mm->mesh, mmc->texture, xform * MeshStorageWiiU::instance_transform(*mm, i), base_color * col);
+							draw_mesh(mm->mesh, mmc->texture, xform * inst, base_color * col);
 						}
 					} break;
 
@@ -1186,6 +1194,7 @@ void RasterizerCanvasWiiU::canvas_render_items(RID p_to_render_target, Item *p_i
 						const Item::CommandAnimationSlice *as = static_cast<const Item::CommandAnimationSlice *>(c);
 						const double local_time = Math::fposmod(RSG::rasterizer->get_total_time() - as->offset, as->animation_length);
 						skipping = !(local_time >= as->slice_begin && local_time < as->slice_end);
+						RenderingServerDefault::redraw_request(); // A visible animation needs redraws.
 					} break;
 
 					default:
