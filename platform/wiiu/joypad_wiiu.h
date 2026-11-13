@@ -15,9 +15,10 @@
 //   Nunchuk, Classic Controller or Wii U Pro Controller (Bloopair-connected
 //   third-party pads show up as Pro Controllers).
 //
-// Buttons map by their printed label: the Wii U "A" button is JoyButton::A,
-// "B" is JoyButton::B and so on (the user's choice; note that the bottom face
-// button is B on Nintendo pads, unlike Xbox-style JoyButton::A). The GUIDs are
+// Face buttons map by position, like Godot's (SDL's) layout: the bottom button
+// (labelled B on Nintendo pads) is JoyButton::A, right (A) is B, left (Y) is
+// X, top (X) is Y (the user's choice, 2026-11-13; earlier builds mapped by
+// label). A Wii Remote on its own keeps A, B, 1, 2 = A, B, X, Y. The GUIDs are
 // not in Godot's mapping database, so Input passes the raw JoyButton/JoyAxis
 // values through unchanged.
 class JoypadWiiU {

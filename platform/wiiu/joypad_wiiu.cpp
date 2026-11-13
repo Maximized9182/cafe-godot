@@ -41,12 +41,13 @@ uint64_t map_buttons(uint32_t p_hold, const ButtonMap *p_map, int p_count) {
 	return buttons;
 }
 
-// By label: Wii U A = JoyButton::A, B = B, X = X, Y = Y.
+// By position, like Godot/SDL: bottom (Wii U B) = JoyButton::A, right (A) = B,
+// left (Y) = X, top (X) = Y.
 const ButtonMap GAMEPAD_BUTTONS[] = {
-	{ VPAD_BUTTON_A, JoyButton::A },
-	{ VPAD_BUTTON_B, JoyButton::B },
-	{ VPAD_BUTTON_X, JoyButton::X },
-	{ VPAD_BUTTON_Y, JoyButton::Y },
+	{ VPAD_BUTTON_B, JoyButton::A },
+	{ VPAD_BUTTON_A, JoyButton::B },
+	{ VPAD_BUTTON_Y, JoyButton::X },
+	{ VPAD_BUTTON_X, JoyButton::Y },
 	{ VPAD_BUTTON_MINUS, JoyButton::BACK },
 	{ VPAD_BUTTON_PLUS, JoyButton::START },
 	{ VPAD_BUTTON_STICK_L, JoyButton::LEFT_STICK },
@@ -61,10 +62,10 @@ const ButtonMap GAMEPAD_BUTTONS[] = {
 };
 
 const ButtonMap PRO_BUTTONS[] = {
-	{ WPAD_PRO_BUTTON_A, JoyButton::A },
-	{ WPAD_PRO_BUTTON_B, JoyButton::B },
-	{ WPAD_PRO_BUTTON_X, JoyButton::X },
-	{ WPAD_PRO_BUTTON_Y, JoyButton::Y },
+	{ WPAD_PRO_BUTTON_B, JoyButton::A },
+	{ WPAD_PRO_BUTTON_A, JoyButton::B },
+	{ WPAD_PRO_BUTTON_Y, JoyButton::X },
+	{ WPAD_PRO_BUTTON_X, JoyButton::Y },
 	{ WPAD_PRO_BUTTON_MINUS, JoyButton::BACK },
 	{ WPAD_PRO_BUTTON_PLUS, JoyButton::START },
 	{ WPAD_PRO_BUTTON_STICK_L, JoyButton::LEFT_STICK },
@@ -78,10 +79,10 @@ const ButtonMap PRO_BUTTONS[] = {
 };
 
 const ButtonMap CLASSIC_BUTTONS[] = {
-	{ WPAD_CLASSIC_BUTTON_A, JoyButton::A },
-	{ WPAD_CLASSIC_BUTTON_B, JoyButton::B },
-	{ WPAD_CLASSIC_BUTTON_X, JoyButton::X },
-	{ WPAD_CLASSIC_BUTTON_Y, JoyButton::Y },
+	{ WPAD_CLASSIC_BUTTON_B, JoyButton::A },
+	{ WPAD_CLASSIC_BUTTON_A, JoyButton::B },
+	{ WPAD_CLASSIC_BUTTON_Y, JoyButton::X },
+	{ WPAD_CLASSIC_BUTTON_X, JoyButton::Y },
 	{ WPAD_CLASSIC_BUTTON_MINUS, JoyButton::BACK },
 	{ WPAD_CLASSIC_BUTTON_PLUS, JoyButton::START },
 	{ WPAD_CLASSIC_BUTTON_L, JoyButton::LEFT_SHOULDER },
