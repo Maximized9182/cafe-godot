@@ -71,13 +71,20 @@ uint32_t AudioDriverWiiU::play_position() {
 
 void AudioDriverWiiU::thread_func(void *p_udata) {
 	AudioDriverWiiU *ad = static_cast<AudioDriverWiiU *>(p_udata);
-	// Debug (HOME hang hunt): while in the background, log once a second that
-	// this thread still runs, so a hang shows whether the app was alive.
 	OSTime last_beat = OSGetSystemTime();
 	while (!ad->exit_thread.is_set()) {
-		if (!wiiu_gx2_can_draw() && OSTicksToMilliseconds(OSGetSystemTime() - last_beat) >= 1000) {
-			last_beat = OSGetSystemTime();
-			WHBLogPrintf("[bg] audio thread alive, AX play %u, write %u", (unsigned)ad->play_position(), (unsigned)ad->write_pos);
+		// In the background (HOME menu, or on the way out after SYSLaunchMenu)
+		// the system stops AX and hands it over: don't touch AX until the app
+		// is back. Polling AXGetVoiceOffsets every 2 ms during the switch is
+		// the suspect for intermittent console hangs on HOME (2026-11-13).
+		if (!wiiu_gx2_can_draw()) {
+			// Debug (HOME hang hunt): once a second, note that this thread runs.
+			if (OSTicksToMilliseconds(OSGetSystemTime() - last_beat) >= 1000) {
+				last_beat = OSGetSystemTime();
+				WHBLogPrint("[bg] audio thread alive (AX untouched)");
+			}
+			OSSleepTicks(OSMillisecondsToTicks(20));
+			continue;
 		}
 		const uint32_t play = ad->play_position();
 		const uint32_t ahead = (ad->write_pos + RING_SAMPLES - play) % RING_SAMPLES;
