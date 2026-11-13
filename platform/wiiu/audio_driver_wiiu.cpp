@@ -7,6 +7,9 @@
 #include <sndcore2/core.h>
 #include <sndcore2/device.h>
 #include <string.h>
+#include <whb/log.h>
+
+#include "wiiu_gx2.h"
 
 Error AudioDriverWiiU::init() {
 	owns_ax = !AXIsInit();
@@ -68,7 +71,14 @@ uint32_t AudioDriverWiiU::play_position() {
 
 void AudioDriverWiiU::thread_func(void *p_udata) {
 	AudioDriverWiiU *ad = static_cast<AudioDriverWiiU *>(p_udata);
+	// Debug (HOME hang hunt): while in the background, log once a second that
+	// this thread still runs, so a hang shows whether the app was alive.
+	OSTime last_beat = OSGetSystemTime();
 	while (!ad->exit_thread.is_set()) {
+		if (!wiiu_gx2_can_draw() && OSTicksToMilliseconds(OSGetSystemTime() - last_beat) >= 1000) {
+			last_beat = OSGetSystemTime();
+			WHBLogPrintf("[bg] audio thread alive, AX play %u, write %u", (unsigned)ad->play_position(), (unsigned)ad->write_pos);
+		}
 		const uint32_t play = ad->play_position();
 		const uint32_t ahead = (ad->write_pos + RING_SAMPLES - play) % RING_SAMPLES;
 		if (ahead >= TARGET_AHEAD) {

@@ -170,6 +170,7 @@ static uint32_t gx2_proc_acquired(void *context) {
 		return 0;
 	}
 	gx2_acquired = true;
+	WHBLogPrint("[procui] foreground acquired");
 	return 0;
 }
 
@@ -185,6 +186,7 @@ static uint32_t gx2_proc_released(void *context) {
 		target_cb = NULL;
 	}
 	MEMFreeByStateToFrmHeap(MEMGetBaseHeapHandle(MEM_BASE_HEAP_MEM1), GX2_FRAME_HEAP_TAG);
+	WHBLogPrint("[procui] foreground released");
 	return 0;
 }
 
