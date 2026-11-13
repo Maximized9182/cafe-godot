@@ -12,13 +12,43 @@
 
 #include "wiiu_gx2.h"
 
+// AXInit runs on core 2: AX's own CPU-side work (the "AXIST" thread)
+// presumably stays on the core that initialised it, and on core 1 it waited
+// behind long main-thread frames (red spikes in the stats graph), so AX
+// replayed its last block (a short buzz).
+static int ax_init_entry(int p_argc, const char **p_argv) {
+	(void)p_argc;
+	(void)p_argv;
+	AXInitParams params = {};
+	params.renderer = AX_INIT_RENDERER_48KHZ;
+	params.pipeline = AX_INIT_PIPELINE_SINGLE;
+	AXInitWithParams(&params);
+	WHBLogPrintf("AX initialised on core %u.", (unsigned)OSGetCoreId());
+	return 0;
+}
+
 Error AudioDriverWiiU::init() {
 	owns_ax = !AXIsInit();
 	if (owns_ax) {
-		AXInitParams params = {};
-		params.renderer = AX_INIT_RENDERER_48KHZ;
-		params.pipeline = AX_INIT_PIPELINE_SINGLE;
-		AXInitWithParams(&params);
+		constexpr uint32_t STACK_SIZE = 64 * 1024;
+		uint8_t *stack = (uint8_t *)MEMAllocFromDefaultHeapEx(STACK_SIZE, 16);
+		ERR_FAIL_NULL_V(stack, ERR_OUT_OF_MEMORY);
+		OSThread *init_thread = (OSThread *)MEMAllocFromDefaultHeapEx(sizeof(OSThread), 16);
+		if (init_thread == nullptr) {
+			MEMFreeToDefaultHeap(stack);
+			ERR_FAIL_V(ERR_OUT_OF_MEMORY);
+		}
+		memset(init_thread, 0, sizeof(OSThread));
+		if (OSCreateThread(init_thread, ax_init_entry, 0, nullptr, stack + STACK_SIZE, STACK_SIZE, 16, OS_THREAD_ATTRIB_AFFINITY_CPU2)) {
+			OSResumeThread(init_thread);
+			int result = 0;
+			OSJoinThread(init_thread, &result);
+		} else {
+			WHBLogPrint("Couldn't start the AX init thread; initialising AX here.");
+			ax_init_entry(0, nullptr);
+		}
+		MEMFreeToDefaultHeap(init_thread);
+		MEMFreeToDefaultHeap(stack);
 	}
 	ERR_FAIL_COND_V_MSG(!AXIsInit(), ERR_CANT_OPEN, "AX (sndcore2) failed to initialise.");
 
