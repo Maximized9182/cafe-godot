@@ -56,7 +56,7 @@ void TextureStorageWiiU::_upload(Texture *p_texture, const Ref<Image> &p_image) 
 	if (p_texture->gpu) {
 		wiiu_gx2_texture_update(p_texture->gpu, data.ptr());
 	} else {
-		p_texture->gpu = wiiu_gx2_texture_create(w, h, data.ptr());
+		p_texture->gpu = wiiu_gx2_texture_create_tiled(w, h, data.ptr());
 	}
 	p_texture->width = w;
 	p_texture->height = h;

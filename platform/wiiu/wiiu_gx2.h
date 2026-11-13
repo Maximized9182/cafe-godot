@@ -41,6 +41,10 @@ void wiiu_gx2_screen_size(WiiUScreen p_screen, uint32_t *r_width, uint32_t *r_he
 
 // Textures: RGBA8, rows of p_width * 4 bytes.
 WiiUTexture *wiiu_gx2_texture_create(uint32_t p_width, uint32_t p_height, const uint8_t *p_rgba);
+// Tiled (GPU-native layout, much faster to sample); falls back to linear in
+// the background. Uploading waits for the GPU, so use it for game textures,
+// not for things made during a crash.
+WiiUTexture *wiiu_gx2_texture_create_tiled(uint32_t p_width, uint32_t p_height, const uint8_t *p_rgba);
 void wiiu_gx2_texture_update(WiiUTexture *p_texture, const uint8_t *p_rgba);
 void wiiu_gx2_texture_free(WiiUTexture *p_texture);
 // A 1x1 opaque white texture, for untextured drawing.
