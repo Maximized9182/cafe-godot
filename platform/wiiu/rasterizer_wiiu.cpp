@@ -26,15 +26,19 @@ void TextureStorageWiiU::_release_gpu(Texture *p_texture) {
 // the size changed.
 void TextureStorageWiiU::_upload(Texture *p_texture, const Ref<Image> &p_image) {
 	ERR_FAIL_COND(p_image.is_null() || p_image->is_empty());
-	Ref<Image> img = p_image->duplicate();
-	if (img->is_compressed()) {
-		img->decompress();
-	}
-	if (img->has_mipmaps()) {
-		img->clear_mipmaps();
-	}
-	if (img->get_format() != Image::FORMAT_RGBA8) {
-		img->convert(Image::FORMAT_RGBA8);
+	// Only copy when the image needs converting: big atlases are tens of MB.
+	Ref<Image> img = p_image;
+	if (img->is_compressed() || img->has_mipmaps() || img->get_format() != Image::FORMAT_RGBA8) {
+		img = p_image->duplicate();
+		if (img->is_compressed()) {
+			img->decompress();
+		}
+		if (img->has_mipmaps()) {
+			img->clear_mipmaps();
+		}
+		if (img->get_format() != Image::FORMAT_RGBA8) {
+			img->convert(Image::FORMAT_RGBA8);
+		}
 	}
 	const int w = img->get_width();
 	const int h = img->get_height();
@@ -51,7 +55,10 @@ void TextureStorageWiiU::_upload(Texture *p_texture, const Ref<Image> &p_image) 
 	p_texture->width = w;
 	p_texture->height = h;
 	p_texture->format = p_image->get_format();
-	p_texture->image = p_image;
+	// The CPU copy is only for texture_2d_get (Texture2D.get_image()). Keeping
+	// it for every texture doubles texture memory, so only small images keep
+	// one; the others are on the GPU only.
+	p_texture->image = (int64_t)w * h <= KEEP_IMAGE_MAX_PIXELS ? p_image : Ref<Image>();
 }
 
 TextureStorageWiiU::Resolved TextureStorageWiiU::resolve(RID p_texture) const {
@@ -164,6 +171,9 @@ void TextureStorageWiiU::texture_proxy_update(RID p_proxy, RID p_base) {
 Ref<Image> TextureStorageWiiU::texture_2d_get(RID p_texture) const {
 	Texture *t = textures.get_or_null(p_texture);
 	ERR_FAIL_NULL_V(t, Ref<Image>());
+	if (t->image.is_null() && t->gpu) {
+		WARN_PRINT_ONCE("Cafe Godot: get_image() on a texture larger than 512x512 returns null (its pixels are only on the GPU).");
+	}
 	return t->image;
 }
 

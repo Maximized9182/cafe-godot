@@ -31,7 +31,7 @@ public:
 
 	struct Texture {
 		WiiUTexture *gpu = nullptr;
-		Ref<Image> image; // Kept for texture_2d_get.
+		Ref<Image> image; // Kept for texture_2d_get, small textures only.
 		int width = 0;
 		int height = 0;
 		Image::Format format = Image::FORMAT_RGBA8;
@@ -61,6 +61,9 @@ public:
 
 private:
 	static inline TextureStorageWiiU *wiiu_singleton = nullptr;
+
+	// Textures up to this many pixels (512x512) keep a CPU copy for texture_2d_get.
+	static constexpr int64_t KEEP_IMAGE_MAX_PIXELS = 512 * 512;
 
 	mutable RID_PtrOwner<Texture> textures;
 	mutable RID_PtrOwner<RenderTarget> render_targets;
