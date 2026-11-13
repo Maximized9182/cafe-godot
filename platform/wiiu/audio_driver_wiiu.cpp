@@ -5,6 +5,7 @@
 #include <coreinit/memdefaultheap.h>
 #include <coreinit/thread.h>
 #include <coreinit/time.h>
+#include <proc_ui/procui.h>
 #include <sndcore2/core.h>
 #include <sndcore2/device.h>
 #include <string.h>
@@ -118,7 +119,7 @@ void AudioDriverWiiU::thread_func(void *p_udata) {
 		// the system stops AX and hands it over: don't touch AX until the app
 		// is back. Polling AXGetVoiceOffsets every 2 ms during the switch is
 		// the suspect for intermittent console hangs on HOME (2026-11-13).
-		if (!wiiu_gx2_can_draw()) {
+		if (!wiiu_gx2_can_draw() || ad->voices_paused) {
 			// Debug (HOME hang hunt): once a second, note that this thread runs.
 			if (OSTicksToMilliseconds(OSGetSystemTime() - last_beat) >= 1000) {
 				last_beat = OSGetSystemTime();
@@ -177,6 +178,46 @@ void AudioDriverWiiU::thread_func(void *p_udata) {
 	}
 }
 
+void AudioDriverWiiU::set_voices_playing(bool p_playing) {
+	for (int ch = 0; ch < 2; ch++) {
+		if (voices[ch]) {
+			AXVoiceBegin(voices[ch]);
+			AXSetVoiceState(voices[ch], p_playing ? AX_VOICE_STATE_PLAYING : AX_VOICE_STATE_STOPPED);
+			AXVoiceEnd(voices[ch]);
+		}
+	}
+}
+
+// HOME menu: stop our voices before the system takes the foreground. Left
+// looping through the switch, the system's sound shutdown ("AXIST thread has
+// stopped", then the SNDD driver on core 2) waited ~15 s for them (the HOME
+// menu stayed invisible; sometimes the console hung for good, with our last
+// block repeating). Runs on the main thread inside ProcUIProcessMessages.
+uint32_t AudioDriverWiiU::proc_released(void *p_context) {
+	AudioDriverWiiU *ad = static_cast<AudioDriverWiiU *>(p_context);
+	ad->voices_paused = true;
+	ad->set_voices_playing(false);
+	// Silence, so coming back doesn't replay the old ring.
+	for (int ch = 0; ch < 2; ch++) {
+		if (ad->rings[ch]) {
+			memset(ad->rings[ch], 0, RING_SAMPLES * sizeof(int16_t));
+			DCFlushRange(ad->rings[ch], RING_SAMPLES * sizeof(int16_t));
+		}
+	}
+	WHBLogPrint("[audio] voices stopped for the background");
+	return 0;
+}
+
+uint32_t AudioDriverWiiU::proc_acquired(void *p_context) {
+	AudioDriverWiiU *ad = static_cast<AudioDriverWiiU *>(p_context);
+	if (ad->voices_paused) {
+		ad->set_voices_playing(true);
+		ad->voices_paused = false;
+		WHBLogPrint("[audio] voices playing again");
+	}
+	return 0;
+}
+
 int AudioDriverWiiU::os_thread_entry(int p_argc, const char **p_argv) {
 	(void)p_argc;
 	thread_func((void *)p_argv);
@@ -206,11 +247,9 @@ void AudioDriverWiiU::start() {
 	OSResumeThread(&os_thread);
 	thread_started = true;
 	OSSleepTicks(OSMillisecondsToTicks(30));
-	for (int ch = 0; ch < 2; ch++) {
-		AXVoiceBegin(voices[ch]);
-		AXSetVoiceState(voices[ch], AX_VOICE_STATE_PLAYING);
-		AXVoiceEnd(voices[ch]);
-	}
+	set_voices_playing(true);
+	ProcUIRegisterCallback(PROCUI_CALLBACK_RELEASE, proc_released, this, 100);
+	ProcUIRegisterCallback(PROCUI_CALLBACK_ACQUIRE, proc_acquired, this, 100);
 }
 
 void AudioDriverWiiU::finish() {

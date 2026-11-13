@@ -37,6 +37,13 @@ class AudioDriverWiiU : public AudioDriver {
 	uint32_t write_pos = 0;
 	int32_t *mix_buffer = nullptr; // RING_CHUNK stereo frames from the AudioServer.
 
+	// Voices are stopped while the app is in the background (ProcUI release
+	// callback) and started again on acquire. See audio_driver_wiiu.cpp.
+	volatile bool voices_paused = false;
+	static uint32_t proc_released(void *p_context);
+	static uint32_t proc_acquired(void *p_context);
+	void set_voices_playing(bool p_playing);
+
 	static int os_thread_entry(int p_argc, const char **p_argv);
 	static void thread_func(void *p_udata);
 	uint32_t play_position();

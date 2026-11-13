@@ -191,6 +191,11 @@ static bool alloc_screen_memory(MEMHeapHandle heap, Screen *s, bool tv) {
 // Debug (HOME hang hunt): what the main thread is doing, for the background
 // heartbeat (audio_driver_wiiu.cpp). See wiiu_gx2_main_state().
 volatile const char *wiiu_main_state = "start";
+uint32_t wiiu_frame_textures = 0;
+uint32_t wiiu_frame_texture_us = 0;
+uint32_t wiiu_frame_texture_updates = 0;
+uint64_t wiiu_frame_render_begin = 0;
+uint64_t wiiu_frame_render_end = 0;
 
 static uint32_t gx2_proc_acquired(void *context) {
 	(void)context;
@@ -358,7 +363,15 @@ static WiiUTexture *texture_create(uint32_t p_width, uint32_t p_height, const ui
 	t->owns_image = true;
 	stat_textures++;
 	stat_texture_bytes += surface.imageSize;
+	const OSTime upload_start = OSGetSystemTime();
 	wiiu_gx2_texture_update(t, p_rgba);
+	// Debug (stutters): textures made this frame (read by the slow-frame log).
+	wiiu_frame_textures++;
+	wiiu_frame_texture_us += (uint32_t)OSTicksToMicroseconds(OSGetSystemTime() - upload_start);
+	if (p_width * p_height >= 512 * 512) {
+		WHBLogPrintf("[gx2] %ux%u %s texture: upload %u ms", (unsigned)p_width, (unsigned)p_height,
+				p_tiled ? "tiled" : "linear", (unsigned)OSTicksToMilliseconds(OSGetSystemTime() - upload_start));
+	}
 	return t;
 }
 
@@ -366,6 +379,7 @@ void wiiu_gx2_texture_update(WiiUTexture *p_texture, const uint8_t *p_rgba) {
 	if (p_texture == NULL || !p_texture->owns_image) {
 		return;
 	}
+	wiiu_frame_texture_updates++;
 	GX2Surface *s = &p_texture->texture.surface;
 	if (s->tileMode != GX2_TILE_MODE_LINEAR_ALIGNED) {
 		if (!upload_tiled(p_texture, p_rgba)) {
