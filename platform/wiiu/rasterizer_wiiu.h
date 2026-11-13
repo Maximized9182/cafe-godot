@@ -11,15 +11,20 @@
 // - RasterizerWiiU: fits the root render target onto the TV and the GamePad
 //   and presents.
 //
+// - MeshStorageWiiU: keeps 2D mesh surfaces (decoded to points, colours, UVs)
+//   and multimesh instance data, so MeshInstance2D, MultiMeshInstance2D and
+//   CPUParticles2D draw.
+//
 // Not supported yet: canvas shaders/materials (drawn with the default "mix"
-// blend), 2D lights and shadows, MSDF/LCD text effects, meshes, multimeshes,
-// particles, canvas groups, back-buffer copies, mipmaps.
+// blend), 2D lights and shadows, MSDF/LCD text effects, GPUParticles2D,
+// skeletons and blend shapes, canvas groups, back-buffer copies, mipmaps.
 
 #include "core/templates/hash_map.h"
 #include "core/templates/local_vector.h"
 #include "core/templates/rid_owner.h"
 #include "servers/rendering/dummy/rasterizer_canvas_dummy.h"
 #include "servers/rendering/dummy/rasterizer_dummy.h"
+#include "servers/rendering/dummy/storage/mesh_storage.h"
 #include "servers/rendering/dummy/storage/texture_storage.h"
 #include "servers/rendering/dummy/storage/utilities.h"
 
@@ -134,6 +139,88 @@ public:
 
 	TextureStorageWiiU();
 	~TextureStorageWiiU();
+};
+
+// Mesh and multimesh data the canvas renderer draws. The dummy storage keeps
+// the RIDs and raw surface data; this adds decoded 2D surfaces and multimesh
+// instances on the side, keyed by the same RIDs.
+class MeshStorageWiiU : public RendererDummy::MeshStorage {
+public:
+	struct Surface {
+		RSE::PrimitiveType primitive = RSE::PRIMITIVE_TRIANGLES;
+		LocalVector<Vector2> points;
+		LocalVector<Color> colors; // One per point, or none (white).
+		LocalVector<Vector2> uvs; // One per point, or none.
+		LocalVector<int> indices; // Empty: points in order.
+		Rect2 rect; // Bounds of the points.
+	};
+
+	struct MultiMesh {
+		RID mesh;
+		int instances = 0;
+		RSE::MultimeshTransformFormat format = RSE::MULTIMESH_TRANSFORM_2D;
+		bool use_colors = false;
+		bool use_custom_data = false;
+		int visible_instances = -1; // -1: all.
+		int stride = 0; // Floats per instance.
+		int color_offset = 0; // Float offset of the colour in an instance.
+		LocalVector<float> buffer;
+		AABB custom_aabb;
+	};
+
+private:
+	static inline MeshStorageWiiU *wiiu_singleton = nullptr;
+
+	HashMap<RID, LocalVector<Surface>> mesh_surfaces;
+	HashMap<RID, AABB> mesh_custom_aabbs;
+	HashMap<RID, MultiMesh> multimeshes;
+
+	void _decode_surface(RID p_mesh, const RenderingServerTypes::SurfaceData &p_surface);
+
+public:
+	static MeshStorageWiiU *get_wiiu_singleton() { return wiiu_singleton; }
+
+	// nullptr if the mesh has no surfaces.
+	const LocalVector<Surface> *get_surfaces(RID p_mesh) const { return mesh_surfaces.getptr(p_mesh); }
+	const MultiMesh *get_multimesh(RID p_multimesh) const { return multimeshes.getptr(p_multimesh); }
+	// An instance's 2D transform (the x/y part for 3D formats) and colour.
+	static Transform2D instance_transform(const MultiMesh &p_mm, int p_index);
+	static Color instance_color(const MultiMesh &p_mm, int p_index);
+
+	/* Meshes */
+	void mesh_free(RID p_rid) override;
+	void mesh_add_surface(RID p_mesh, const RenderingServerTypes::SurfaceData &p_surface) override;
+	void mesh_surface_remove(RID p_mesh, int p_surface) override;
+	void mesh_clear(RID p_mesh) override;
+	void mesh_set_custom_aabb(RID p_mesh, const AABB &p_aabb) override;
+	AABB mesh_get_custom_aabb(RID p_mesh) const override;
+	AABB mesh_get_aabb(RID p_mesh, RID p_skeleton = RID()) override;
+
+	/* Multimeshes */
+	void _multimesh_initialize(RID p_rid) override;
+	void _multimesh_free(RID p_rid) override;
+	void _multimesh_allocate_data(RID p_multimesh, int p_instances, RSE::MultimeshTransformFormat p_transform_format, bool p_use_colors = false, bool p_use_custom_data = false, bool p_use_indirect = false) override;
+	int _multimesh_get_instance_count(RID p_multimesh) const override;
+	void _multimesh_set_mesh(RID p_multimesh, RID p_mesh) override;
+	RID _multimesh_get_mesh(RID p_multimesh) const override;
+	void _multimesh_instance_set_transform(RID p_multimesh, int p_index, const Transform3D &p_transform) override;
+	void _multimesh_instance_set_transform_2d(RID p_multimesh, int p_index, const Transform2D &p_transform) override;
+	void _multimesh_instance_set_color(RID p_multimesh, int p_index, const Color &p_color) override;
+	void _multimesh_instance_set_custom_data(RID p_multimesh, int p_index, const Color &p_color) override;
+	Transform3D _multimesh_instance_get_transform(RID p_multimesh, int p_index) const override;
+	Transform2D _multimesh_instance_get_transform_2d(RID p_multimesh, int p_index) const override;
+	Color _multimesh_instance_get_color(RID p_multimesh, int p_index) const override;
+	Color _multimesh_instance_get_custom_data(RID p_multimesh, int p_index) const override;
+	void _multimesh_set_buffer(RID p_multimesh, const Vector<float> &p_buffer) override;
+	Vector<float> _multimesh_get_buffer(RID p_multimesh) const override;
+	void _multimesh_set_visible_instances(RID p_multimesh, int p_visible) override;
+	int _multimesh_get_visible_instances(RID p_multimesh) const override;
+	void _multimesh_set_custom_aabb(RID p_multimesh, const AABB &p_aabb) override;
+	AABB _multimesh_get_custom_aabb(RID p_multimesh) const override;
+	AABB _multimesh_get_aabb(RID p_multimesh) override;
+
+	MeshStorageWiiU();
+	~MeshStorageWiiU();
 };
 
 class UtilitiesWiiU : public RendererDummy::Utilities {

@@ -2,6 +2,8 @@
 
 #include "core/io/image.h"
 #include "core/math/math_funcs.h"
+#include "servers/rendering/rendering_server_globals.h"
+#include "servers/rendering/rendering_server.h"
 
 // ===========================================================================
 // TextureStorageWiiU
@@ -365,6 +367,351 @@ bool UtilitiesWiiU::free(RID p_rid) {
 }
 
 // ===========================================================================
+// MeshStorageWiiU
+// ===========================================================================
+
+MeshStorageWiiU::MeshStorageWiiU() {
+	wiiu_singleton = this;
+}
+
+MeshStorageWiiU::~MeshStorageWiiU() {
+	wiiu_singleton = nullptr;
+}
+
+// Decodes a surface into points/colours/UVs/indices once, when it is added.
+// Note: surfaces from ArrayMesh resources store their vertex bytes
+// little-endian and are not swapped; meshes built at run time (QuadMesh and
+// other primitive meshes, CPUParticles2D, SurfaceTool, ArrayMesh from arrays)
+// are native and draw correctly.
+void MeshStorageWiiU::_decode_surface(RID p_mesh, const RenderingServerTypes::SurfaceData &p_surface) {
+	const Array arrays = RenderingServer::get_singleton()->mesh_create_arrays_from_surface_data(p_surface);
+	Surface s;
+	s.primitive = p_surface.primitive;
+	if (arrays.size() == RSE::ARRAY_MAX) {
+		const Variant &verts = arrays[RSE::ARRAY_VERTEX];
+		if (verts.get_type() == Variant::PACKED_VECTOR2_ARRAY) {
+			const PackedVector2Array v = verts;
+			s.points.resize(v.size());
+			for (int i = 0; i < v.size(); i++) {
+				s.points[i] = v[i];
+			}
+		} else if (verts.get_type() == Variant::PACKED_VECTOR3_ARRAY) {
+			const PackedVector3Array v = verts;
+			s.points.resize(v.size());
+			for (int i = 0; i < v.size(); i++) {
+				s.points[i] = Vector2(v[i].x, v[i].y);
+			}
+		}
+		if (arrays[RSE::ARRAY_COLOR].get_type() == Variant::PACKED_COLOR_ARRAY) {
+			const PackedColorArray c = arrays[RSE::ARRAY_COLOR];
+			if (c.size() == (int)s.points.size()) {
+				s.colors.resize(c.size());
+				for (int i = 0; i < c.size(); i++) {
+					s.colors[i] = c[i];
+				}
+			}
+		}
+		if (arrays[RSE::ARRAY_TEX_UV].get_type() == Variant::PACKED_VECTOR2_ARRAY) {
+			const PackedVector2Array uv = arrays[RSE::ARRAY_TEX_UV];
+			if (uv.size() == (int)s.points.size()) {
+				s.uvs.resize(uv.size());
+				for (int i = 0; i < uv.size(); i++) {
+					s.uvs[i] = uv[i];
+				}
+			}
+		}
+		if (arrays[RSE::ARRAY_INDEX].get_type() == Variant::PACKED_INT32_ARRAY) {
+			const PackedInt32Array idx = arrays[RSE::ARRAY_INDEX];
+			s.indices.resize(idx.size());
+			for (int i = 0; i < idx.size(); i++) {
+				s.indices[i] = idx[i];
+			}
+		}
+	}
+	if (s.points.size() > 0) {
+		s.rect = Rect2(s.points[0], Size2());
+		for (uint32_t i = 1; i < s.points.size(); i++) {
+			s.rect.expand_to(s.points[i]);
+		}
+	}
+	mesh_surfaces[p_mesh].push_back(s);
+}
+
+void MeshStorageWiiU::mesh_free(RID p_rid) {
+	mesh_surfaces.erase(p_rid);
+	mesh_custom_aabbs.erase(p_rid);
+	RendererDummy::MeshStorage::mesh_free(p_rid);
+}
+
+void MeshStorageWiiU::mesh_add_surface(RID p_mesh, const RenderingServerTypes::SurfaceData &p_surface) {
+	RendererDummy::MeshStorage::mesh_add_surface(p_mesh, p_surface);
+	if (owns_mesh(p_mesh)) {
+		_decode_surface(p_mesh, p_surface);
+	}
+}
+
+void MeshStorageWiiU::mesh_surface_remove(RID p_mesh, int p_surface) {
+	RendererDummy::MeshStorage::mesh_surface_remove(p_mesh, p_surface);
+	LocalVector<Surface> *surfaces = mesh_surfaces.getptr(p_mesh);
+	if (surfaces && p_surface >= 0 && p_surface < (int)surfaces->size()) {
+		surfaces->remove_at(p_surface);
+	}
+}
+
+void MeshStorageWiiU::mesh_clear(RID p_mesh) {
+	RendererDummy::MeshStorage::mesh_clear(p_mesh);
+	mesh_surfaces.erase(p_mesh);
+}
+
+void MeshStorageWiiU::mesh_set_custom_aabb(RID p_mesh, const AABB &p_aabb) {
+	mesh_custom_aabbs[p_mesh] = p_aabb;
+}
+
+AABB MeshStorageWiiU::mesh_get_custom_aabb(RID p_mesh) const {
+	const AABB *aabb = mesh_custom_aabbs.getptr(p_mesh);
+	return aabb ? *aabb : AABB();
+}
+
+// The canvas culls mesh items by this, so it must cover the points.
+AABB MeshStorageWiiU::mesh_get_aabb(RID p_mesh, RID p_skeleton) {
+	const AABB *custom = mesh_custom_aabbs.getptr(p_mesh);
+	if (custom && custom->has_volume()) {
+		return *custom;
+	}
+	const LocalVector<Surface> *surfaces = mesh_surfaces.getptr(p_mesh);
+	if (surfaces == nullptr || surfaces->size() == 0) {
+		return AABB();
+	}
+	Rect2 r = (*surfaces)[0].rect;
+	for (uint32_t i = 1; i < surfaces->size(); i++) {
+		r = r.merge((*surfaces)[i].rect);
+	}
+	return AABB(Vector3(r.position.x, r.position.y, 0), Vector3(r.size.x, r.size.y, 0));
+}
+
+void MeshStorageWiiU::_multimesh_initialize(RID p_rid) {
+	RendererDummy::MeshStorage::_multimesh_initialize(p_rid);
+	multimeshes.insert(p_rid, MultiMesh());
+}
+
+void MeshStorageWiiU::_multimesh_free(RID p_rid) {
+	multimeshes.erase(p_rid);
+	RendererDummy::MeshStorage::_multimesh_free(p_rid);
+}
+
+// Instance layout, as in the other renderers: transform (8 floats for 2D,
+// 12 for 3D, row-major), then colour (4) if used, then custom data (4).
+void MeshStorageWiiU::_multimesh_allocate_data(RID p_multimesh, int p_instances, RSE::MultimeshTransformFormat p_transform_format, bool p_use_colors, bool p_use_custom_data, bool p_use_indirect) {
+	MultiMesh *mm = multimeshes.getptr(p_multimesh);
+	ERR_FAIL_NULL(mm);
+	mm->instances = MAX(p_instances, 0);
+	mm->format = p_transform_format;
+	mm->use_colors = p_use_colors;
+	mm->use_custom_data = p_use_custom_data;
+	mm->color_offset = p_transform_format == RSE::MULTIMESH_TRANSFORM_2D ? 8 : 12;
+	mm->stride = mm->color_offset + (p_use_colors ? 4 : 0) + (p_use_custom_data ? 4 : 0);
+	mm->visible_instances = -1;
+	mm->buffer.resize(mm->instances * mm->stride);
+	for (int i = 0; i < mm->instances; i++) {
+		// Identity transforms, white colours.
+		float *d = mm->buffer.ptr() + i * mm->stride;
+		for (int k = 0; k < mm->stride; k++) {
+			d[k] = 0.0f;
+		}
+		if (mm->format == RSE::MULTIMESH_TRANSFORM_2D) {
+			d[0] = d[5] = 1.0f;
+		} else {
+			d[0] = d[5] = d[10] = 1.0f;
+		}
+		if (mm->use_colors) {
+			d[mm->color_offset] = d[mm->color_offset + 1] = d[mm->color_offset + 2] = d[mm->color_offset + 3] = 1.0f;
+		}
+	}
+}
+
+int MeshStorageWiiU::_multimesh_get_instance_count(RID p_multimesh) const {
+	const MultiMesh *mm = multimeshes.getptr(p_multimesh);
+	return mm ? mm->instances : 0;
+}
+
+void MeshStorageWiiU::_multimesh_set_mesh(RID p_multimesh, RID p_mesh) {
+	MultiMesh *mm = multimeshes.getptr(p_multimesh);
+	ERR_FAIL_NULL(mm);
+	mm->mesh = p_mesh;
+}
+
+RID MeshStorageWiiU::_multimesh_get_mesh(RID p_multimesh) const {
+	const MultiMesh *mm = multimeshes.getptr(p_multimesh);
+	return mm ? mm->mesh : RID();
+}
+
+void MeshStorageWiiU::_multimesh_instance_set_transform(RID p_multimesh, int p_index, const Transform3D &p_transform) {
+	MultiMesh *mm = multimeshes.getptr(p_multimesh);
+	ERR_FAIL_NULL(mm);
+	ERR_FAIL_INDEX(p_index, mm->instances);
+	ERR_FAIL_COND(mm->format != RSE::MULTIMESH_TRANSFORM_3D);
+	float *d = mm->buffer.ptr() + p_index * mm->stride;
+	for (int row = 0; row < 3; row++) {
+		d[row * 4 + 0] = p_transform.basis.rows[row][0];
+		d[row * 4 + 1] = p_transform.basis.rows[row][1];
+		d[row * 4 + 2] = p_transform.basis.rows[row][2];
+		d[row * 4 + 3] = p_transform.origin[row];
+	}
+}
+
+void MeshStorageWiiU::_multimesh_instance_set_transform_2d(RID p_multimesh, int p_index, const Transform2D &p_transform) {
+	MultiMesh *mm = multimeshes.getptr(p_multimesh);
+	ERR_FAIL_NULL(mm);
+	ERR_FAIL_INDEX(p_index, mm->instances);
+	ERR_FAIL_COND(mm->format != RSE::MULTIMESH_TRANSFORM_2D);
+	float *d = mm->buffer.ptr() + p_index * mm->stride;
+	d[0] = p_transform.columns[0][0];
+	d[1] = p_transform.columns[1][0];
+	d[2] = 0.0f;
+	d[3] = p_transform.columns[2][0];
+	d[4] = p_transform.columns[0][1];
+	d[5] = p_transform.columns[1][1];
+	d[6] = 0.0f;
+	d[7] = p_transform.columns[2][1];
+}
+
+void MeshStorageWiiU::_multimesh_instance_set_color(RID p_multimesh, int p_index, const Color &p_color) {
+	MultiMesh *mm = multimeshes.getptr(p_multimesh);
+	ERR_FAIL_NULL(mm);
+	ERR_FAIL_INDEX(p_index, mm->instances);
+	ERR_FAIL_COND(!mm->use_colors);
+	float *d = mm->buffer.ptr() + p_index * mm->stride + mm->color_offset;
+	d[0] = p_color.r;
+	d[1] = p_color.g;
+	d[2] = p_color.b;
+	d[3] = p_color.a;
+}
+
+void MeshStorageWiiU::_multimesh_instance_set_custom_data(RID p_multimesh, int p_index, const Color &p_color) {
+	MultiMesh *mm = multimeshes.getptr(p_multimesh);
+	ERR_FAIL_NULL(mm);
+	ERR_FAIL_INDEX(p_index, mm->instances);
+	ERR_FAIL_COND(!mm->use_custom_data);
+	float *d = mm->buffer.ptr() + p_index * mm->stride + mm->color_offset + (mm->use_colors ? 4 : 0);
+	d[0] = p_color.r;
+	d[1] = p_color.g;
+	d[2] = p_color.b;
+	d[3] = p_color.a;
+}
+
+Transform3D MeshStorageWiiU::_multimesh_instance_get_transform(RID p_multimesh, int p_index) const {
+	const MultiMesh *mm = multimeshes.getptr(p_multimesh);
+	ERR_FAIL_NULL_V(mm, Transform3D());
+	ERR_FAIL_INDEX_V(p_index, mm->instances, Transform3D());
+	ERR_FAIL_COND_V(mm->format != RSE::MULTIMESH_TRANSFORM_3D, Transform3D());
+	const float *d = mm->buffer.ptr() + p_index * mm->stride;
+	Transform3D t;
+	for (int row = 0; row < 3; row++) {
+		t.basis.rows[row] = Vector3(d[row * 4 + 0], d[row * 4 + 1], d[row * 4 + 2]);
+		t.origin[row] = d[row * 4 + 3];
+	}
+	return t;
+}
+
+Transform2D MeshStorageWiiU::instance_transform(const MultiMesh &p_mm, int p_index) {
+	const float *d = p_mm.buffer.ptr() + p_index * p_mm.stride;
+	// Rows x (floats 0-3) and y (4-7) in both formats; 3D keeps the x/y part.
+	return Transform2D(d[0], d[4], d[1], d[5], d[3], d[7]);
+}
+
+Color MeshStorageWiiU::instance_color(const MultiMesh &p_mm, int p_index) {
+	if (!p_mm.use_colors) {
+		return Color(1, 1, 1, 1);
+	}
+	const float *d = p_mm.buffer.ptr() + p_index * p_mm.stride + p_mm.color_offset;
+	return Color(d[0], d[1], d[2], d[3]);
+}
+
+Transform2D MeshStorageWiiU::_multimesh_instance_get_transform_2d(RID p_multimesh, int p_index) const {
+	const MultiMesh *mm = multimeshes.getptr(p_multimesh);
+	ERR_FAIL_NULL_V(mm, Transform2D());
+	ERR_FAIL_INDEX_V(p_index, mm->instances, Transform2D());
+	ERR_FAIL_COND_V(mm->format != RSE::MULTIMESH_TRANSFORM_2D, Transform2D());
+	return instance_transform(*mm, p_index);
+}
+
+Color MeshStorageWiiU::_multimesh_instance_get_color(RID p_multimesh, int p_index) const {
+	const MultiMesh *mm = multimeshes.getptr(p_multimesh);
+	ERR_FAIL_NULL_V(mm, Color());
+	ERR_FAIL_INDEX_V(p_index, mm->instances, Color());
+	return instance_color(*mm, p_index);
+}
+
+Color MeshStorageWiiU::_multimesh_instance_get_custom_data(RID p_multimesh, int p_index) const {
+	const MultiMesh *mm = multimeshes.getptr(p_multimesh);
+	ERR_FAIL_NULL_V(mm, Color());
+	ERR_FAIL_INDEX_V(p_index, mm->instances, Color());
+	if (!mm->use_custom_data) {
+		return Color();
+	}
+	const float *d = mm->buffer.ptr() + p_index * mm->stride + mm->color_offset + (mm->use_colors ? 4 : 0);
+	return Color(d[0], d[1], d[2], d[3]);
+}
+
+void MeshStorageWiiU::_multimesh_set_buffer(RID p_multimesh, const Vector<float> &p_buffer) {
+	MultiMesh *mm = multimeshes.getptr(p_multimesh);
+	ERR_FAIL_NULL(mm);
+	ERR_FAIL_COND(p_buffer.size() != mm->instances * mm->stride);
+	memcpy(mm->buffer.ptr(), p_buffer.ptr(), p_buffer.size() * sizeof(float));
+}
+
+Vector<float> MeshStorageWiiU::_multimesh_get_buffer(RID p_multimesh) const {
+	const MultiMesh *mm = multimeshes.getptr(p_multimesh);
+	ERR_FAIL_NULL_V(mm, Vector<float>());
+	Vector<float> out;
+	out.resize(mm->buffer.size());
+	if (mm->buffer.size() > 0) {
+		memcpy(out.ptrw(), mm->buffer.ptr(), mm->buffer.size() * sizeof(float));
+	}
+	return out;
+}
+
+void MeshStorageWiiU::_multimesh_set_visible_instances(RID p_multimesh, int p_visible) {
+	MultiMesh *mm = multimeshes.getptr(p_multimesh);
+	ERR_FAIL_NULL(mm);
+	mm->visible_instances = p_visible;
+}
+
+int MeshStorageWiiU::_multimesh_get_visible_instances(RID p_multimesh) const {
+	const MultiMesh *mm = multimeshes.getptr(p_multimesh);
+	return mm ? mm->visible_instances : 0;
+}
+
+void MeshStorageWiiU::_multimesh_set_custom_aabb(RID p_multimesh, const AABB &p_aabb) {
+	MultiMesh *mm = multimeshes.getptr(p_multimesh);
+	ERR_FAIL_NULL(mm);
+	mm->custom_aabb = p_aabb;
+}
+
+AABB MeshStorageWiiU::_multimesh_get_custom_aabb(RID p_multimesh) const {
+	const MultiMesh *mm = multimeshes.getptr(p_multimesh);
+	return mm ? mm->custom_aabb : AABB();
+}
+
+// Union of the mesh's bounds under every visible instance (the canvas culls by it).
+AABB MeshStorageWiiU::_multimesh_get_aabb(RID p_multimesh) {
+	MultiMesh *mm = multimeshes.getptr(p_multimesh);
+	ERR_FAIL_NULL_V(mm, AABB());
+	if (mm->custom_aabb.has_volume()) {
+		return mm->custom_aabb;
+	}
+	const AABB mesh_aabb = mesh_get_aabb(mm->mesh);
+	const Rect2 mesh_rect(mesh_aabb.position.x, mesh_aabb.position.y, mesh_aabb.size.x, mesh_aabb.size.y);
+	const int count = mm->visible_instances < 0 ? mm->instances : MIN(mm->visible_instances, mm->instances);
+	Rect2 r;
+	for (int i = 0; i < count; i++) {
+		const Rect2 ir = instance_transform(*mm, i).xform(mesh_rect);
+		r = i == 0 ? ir : r.merge(ir);
+	}
+	return AABB(Vector3(r.position.x, r.position.y, 0), Vector3(r.size.x, r.size.y, 0));
+}
+
+// ===========================================================================
 // RasterizerCanvasWiiU
 // ===========================================================================
 
@@ -466,6 +813,7 @@ static bool filter_is_linear(RSE::CanvasItemTextureFilter p_filter) {
 
 void RasterizerCanvasWiiU::canvas_render_items(RID p_to_render_target, Item *p_item_list, const Color &p_modulate, Light *p_light_list, Light *p_directional_list, const Transform2D &p_canvas_transform, RSE::CanvasItemTextureFilter p_default_filter, RSE::CanvasItemTextureRepeat p_default_repeat, bool p_snap_2d_vertices_to_pixel, bool &r_sdf_used, RenderingServerTypes::RenderInfo *r_render_info) {
 	TextureStorageWiiU *ts = TextureStorageWiiU::get_wiiu_singleton();
+	MeshStorageWiiU *ms = MeshStorageWiiU::get_wiiu_singleton();
 	TextureStorageWiiU::RenderTarget *rt = ts->get_render_target(p_to_render_target);
 	if (rt == nullptr || rt->gpu == nullptr || !wiiu_gx2_can_draw()) {
 		return;
@@ -521,6 +869,63 @@ void RasterizerCanvasWiiU::canvas_render_items(RID p_to_render_target, Item *p_i
 			return res.texture != nullptr;
 		};
 
+		// Draws a mesh's surfaces (MeshInstance2D, multimesh instances).
+		auto draw_mesh = [&](RID p_mesh, RID p_texture, const Transform2D &p_xform, const Color &p_color) {
+			const LocalVector<MeshStorageWiiU::Surface> *surfaces = ms ? ms->get_surfaces(p_mesh) : nullptr;
+			if (surfaces == nullptr) {
+				return;
+			}
+			for (const MeshStorageWiiU::Surface &surf : *surfaces) {
+				const bool lines = surf.primitive == RSE::PRIMITIVE_LINES || surf.primitive == RSE::PRIMITIVE_LINE_STRIP;
+				if (surf.primitive == RSE::PRIMITIVE_POINTS || surf.points.size() == 0) {
+					continue;
+				}
+				Size2 tsize;
+				use_texture(p_texture, lines ? WIIU_PRIM_LINES : WIIU_PRIM_TRIANGLES, tsize);
+				const bool indexed = surf.indices.size() > 0;
+				const uint32_t count = indexed ? surf.indices.size() : surf.points.size();
+				auto vertex_at = [&](uint32_t p_i) {
+					int idx = indexed ? surf.indices[p_i] : (int)p_i;
+					if (idx < 0 || idx >= (int)surf.points.size()) {
+						idx = 0; // Keep the primitive count right.
+					}
+					const Color col = surf.colors.size() > 0 ? surf.colors[idx] * p_color : p_color;
+					const Vector2 uv = surf.uvs.size() > 0 ? surf.uvs[idx] : Vector2();
+					_vertex(p_xform.xform(surf.points[idx]), uv, col);
+				};
+				switch (surf.primitive) {
+					case RSE::PRIMITIVE_TRIANGLES:
+						for (uint32_t i = 0; i + 2 < count; i += 3) {
+							vertex_at(i);
+							vertex_at(i + 1);
+							vertex_at(i + 2);
+						}
+						break;
+					case RSE::PRIMITIVE_LINES:
+						for (uint32_t i = 0; i + 1 < count; i += 2) {
+							vertex_at(i);
+							vertex_at(i + 1);
+						}
+						break;
+					case RSE::PRIMITIVE_TRIANGLE_STRIP:
+						for (uint32_t i = 2; i < count; i++) {
+							vertex_at(i - 2);
+							vertex_at(i - 1);
+							vertex_at(i);
+						}
+						break;
+					case RSE::PRIMITIVE_LINE_STRIP:
+						for (uint32_t i = 1; i < count; i++) {
+							vertex_at(i - 1);
+							vertex_at(i);
+						}
+						break;
+					default:
+						break;
+				}
+			}
+		};
+
 		// Draws the item's commands once, shifted by p_offset (Parallax2D repeats).
 		auto record_commands = [&](const Point2 &p_offset) {
 			base_xform = ci->final_transform;
@@ -529,7 +934,12 @@ void RasterizerCanvasWiiU::canvas_render_items(RID p_to_render_target, Item *p_i
 				base_xform.columns[2] += ci->repeat_source_item->final_transform.basis_xform(p_offset);
 			}
 			xform = base_xform;
+			// Inside an animation slice that is not playing now (draw_animation_slice).
+			bool skipping = false;
 			for (const Item::Command *c = ci->commands; c; c = c->next) {
+				if (skipping && c->type != Item::Command::TYPE_ANIMATION_SLICE) {
+					continue;
+				}
 				switch (c->type) {
 					case Item::Command::TYPE_TRANSFORM: {
 						const Item::CommandTransform *t = static_cast<const Item::CommandTransform *>(c);
@@ -625,19 +1035,48 @@ void RasterizerCanvasWiiU::canvas_render_items(RID p_to_render_target, Item *p_i
 								us[i] = vs[i] = 0.5f;
 							}
 						}
-						// Tile modes are drawn stretched for now.
-						for (int y = 0; y < 3; y++) {
-							for (int x = 0; x < 3; x++) {
-								if (x == 1 && y == 1 && !np->draw_center) {
+						// Each axis as segments: the margins, and the centre stretched,
+						// tiled (partial last tile) or tiled to fit (whole tiles), like
+						// the other renderers' map_ninepatch_axis.
+						struct Segment {
+							float p0, p1, t0, t1;
+							int cell;
+						};
+						auto axis_segments = [](const float p_pos[4], const float p_uv[4], float p_src_center, RSE::NinePatchAxisMode p_mode, LocalVector<Segment> &r_out) {
+							r_out.clear();
+							r_out.push_back({ p_pos[0], p_pos[1], p_uv[0], p_uv[1], 0 });
+							const float center = p_pos[2] - p_pos[1];
+							if (p_mode == RSE::NINE_PATCH_STRETCH || p_src_center <= 0.0f || center <= 0.0f) {
+								r_out.push_back({ p_pos[1], p_pos[2], p_uv[1], p_uv[2], 1 });
+							} else {
+								float tile = p_src_center;
+								if (p_mode == RSE::NINE_PATCH_TILE_FIT) {
+									tile = center / MAX(1.0f, Math::floor(center / p_src_center + 0.5f));
+								}
+								tile = MAX(tile, center / 256.0f); // At most 256 tiles.
+								for (float at = p_pos[1]; at < p_pos[2] - 0.001f; at += tile) {
+									const float len = MIN(tile, p_pos[2] - at);
+									const float frac = len / tile;
+									r_out.push_back({ at, at + len, p_uv[1], p_uv[1] + (p_uv[2] - p_uv[1]) * frac, 1 });
+								}
+							}
+							r_out.push_back({ p_pos[2], p_pos[3], p_uv[2], p_uv[3], 2 });
+						};
+						LocalVector<Segment> seg_x, seg_y;
+						axis_segments(xs, us, src.size.x - ml - mr, np->axis_x, seg_x);
+						axis_segments(ys, vs, src.size.y - mt - mb, np->axis_y, seg_y);
+						for (const Segment &sy : seg_y) {
+							for (const Segment &sx : seg_x) {
+								if (sx.cell == 1 && sy.cell == 1 && !np->draw_center) {
 									continue;
 								}
 								const Vector2 pos[4] = {
-									Vector2(xs[x], ys[y]), Vector2(xs[x + 1], ys[y]),
-									Vector2(xs[x + 1], ys[y + 1]), Vector2(xs[x], ys[y + 1])
+									Vector2(sx.p0, sy.p0), Vector2(sx.p1, sy.p0),
+									Vector2(sx.p1, sy.p1), Vector2(sx.p0, sy.p1)
 								};
 								const Vector2 uv[4] = {
-									Vector2(us[x], vs[y]), Vector2(us[x + 1], vs[y]),
-									Vector2(us[x + 1], vs[y + 1]), Vector2(us[x], vs[y + 1])
+									Vector2(sx.t0, sy.t0), Vector2(sx.t1, sy.t0),
+									Vector2(sx.t1, sy.t1), Vector2(sx.t0, sy.t1)
 								};
 								_quad(xform, pos, uv, color);
 							}
@@ -722,8 +1161,35 @@ void RasterizerCanvasWiiU::canvas_render_items(RID p_to_render_target, Item *p_i
 						}
 					} break;
 
+					case Item::Command::TYPE_MESH: {
+						const Item::CommandMesh *m = static_cast<const Item::CommandMesh *>(c);
+						draw_mesh(m->mesh, m->texture, xform * m->transform, base_color * m->modulate);
+					} break;
+
+					case Item::Command::TYPE_MULTIMESH: {
+						const Item::CommandMultiMesh *mmc = static_cast<const Item::CommandMultiMesh *>(c);
+						const MeshStorageWiiU::MultiMesh *mm = ms ? ms->get_multimesh(mmc->multimesh) : nullptr;
+						if (mm == nullptr || mm->mesh.is_null()) {
+							break;
+						}
+						const int count = mm->visible_instances < 0 ? mm->instances : MIN(mm->visible_instances, mm->instances);
+						for (int i = 0; i < count; i++) {
+							const Color col = MeshStorageWiiU::instance_color(*mm, i);
+							if (col.a <= 0.0f) {
+								continue; // CPUParticles2D hides inactive particles this way.
+							}
+							draw_mesh(mm->mesh, mmc->texture, xform * MeshStorageWiiU::instance_transform(*mm, i), base_color * col);
+						}
+					} break;
+
+					case Item::Command::TYPE_ANIMATION_SLICE: {
+						const Item::CommandAnimationSlice *as = static_cast<const Item::CommandAnimationSlice *>(c);
+						const double local_time = Math::fposmod(RSG::rasterizer->get_total_time() - as->offset, as->animation_length);
+						skipping = !(local_time >= as->slice_begin && local_time < as->slice_end);
+					} break;
+
 					default:
-						// Meshes, multimeshes, particles, animation slices: not supported yet.
+						// GPUParticles2D (TYPE_PARTICLES): not supported yet.
 						break;
 				}
 			}
@@ -789,6 +1255,8 @@ RasterizerWiiU::RasterizerWiiU() {
 	texture_storage = memnew(TextureStorageWiiU);
 	memdelete(utilities);
 	utilities = memnew(UtilitiesWiiU);
+	memdelete(mesh_storage);
+	mesh_storage = memnew(MeshStorageWiiU);
 }
 
 void RasterizerWiiU::begin_frame(double p_frame_step) {
