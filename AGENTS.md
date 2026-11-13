@@ -635,3 +635,8 @@ Verified on the console with Godot Hello's counter button. Samples with an inval
 - **Console crash seen once (not reproduced):** the HOME Menu (process 5) died with `0xCAFEBADD`
   in Aroma's homebrew_rpx_loader (`my_HBM_NN_ACP_ACPGetTitleMetaXmlByDevice` -> `snprintf` ->
   `__wums_getreent`, DAR "_wut"). Not Godot code; HOME worked fine afterwards with the same wuhb.
+- **GDScript analyzer (core patch, modules/gdscript/gdscript_analyzer.cpp):** autoload constants
+  are read with `get_validated_object()` (3 places). funkin_godot's TouchControls autoload
+  `queue_free()`s itself off mobile; scripts naming it then made the analyzer read the freed
+  node's vtable (DSI in `reduce_identifier` entering Freeplay). Desktop survives the same
+  use-after-free only because the memory isn't reused yet.

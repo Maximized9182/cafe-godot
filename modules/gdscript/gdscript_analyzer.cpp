@@ -810,7 +810,7 @@ GDScriptParser::DataType GDScriptAnalyzer::resolve_datatype(GDScriptParser::Type
 				// Try to get script from scene if possible.
 				if (GDScriptLanguage::get_singleton()->has_any_global_constant(autoload.name)) {
 					Variant constant = GDScriptLanguage::get_singleton()->get_any_global_constant(autoload.name);
-					Node *node = Object::cast_to<Node>(constant);
+					Node *node = Object::cast_to<Node>(constant.get_validated_object()); // Wii U: an autoload may have freed itself.
 					if (node != nullptr) {
 						Ref<GDScript> scr = node->get_script();
 						if (scr.is_valid()) {
@@ -4596,7 +4596,7 @@ void GDScriptAnalyzer::reduce_identifier(GDScriptParser::IdentifierNode *p_ident
 			} else if (ResourceLoader::get_resource_type(autoload.path) == "PackedScene") {
 				if (GDScriptLanguage::get_singleton()->has_any_global_constant(name)) {
 					Variant constant = GDScriptLanguage::get_singleton()->get_any_global_constant(name);
-					Node *node = Object::cast_to<Node>(constant);
+					Node *node = Object::cast_to<Node>(constant.get_validated_object()); // Wii U: an autoload may have freed itself.
 					if (node != nullptr) {
 						Ref<GDScript> scr = node->get_script();
 						if (scr.is_valid()) {
@@ -5767,7 +5767,8 @@ GDScriptParser::DataType GDScriptAnalyzer::type_from_variant(const Variant &p_va
 		// Object is treated as a native type, not a builtin type.
 		result.kind = GDScriptParser::DataType::NATIVE;
 
-		Object *obj = p_value;
+		// Wii U: freed objects (e.g. a self-freed autoload) read as null.
+		Object *obj = p_value.get_validated_object();
 		if (!obj) {
 			return GDScriptParser::DataType();
 		}
