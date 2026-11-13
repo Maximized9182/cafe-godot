@@ -71,13 +71,13 @@ uint32_t AudioDriverWiiU::play_position() {
 
 void AudioDriverWiiU::thread_func(void *p_udata) {
 	AudioDriverWiiU *ad = static_cast<AudioDriverWiiU *>(p_udata);
-	// Off the main thread's core (1) and above normal priority (16; lower is
-	// higher): Cafe OS doesn't time-slice, so on core 1 this thread waited for
-	// the main thread's whole frame and the ring ran dry (crackling).
-	OSThread *self = OSGetCurrentThread();
-	const BOOL affinity_ok = OSSetThreadAffinity(self, OS_THREAD_ATTRIB_AFFINITY_CPU2);
-	const BOOL priority_ok = OSSetThreadPriority(self, 12);
-	WHBLogPrintf("Audio thread: core 2 %s, priority 12 %s.", affinity_ok ? "ok" : "failed", priority_ok ? "ok" : "failed");
+	// Above the main thread's priority (16; lower is higher): Cafe OS doesn't
+	// time-slice equal priorities, so this thread waited for the main thread's
+	// whole frame and the ring ran dry (crackling). (Moving it to another core
+	// with OSSetThreadAffinity fails on a running thread.)
+	const BOOL priority_ok = OSSetThreadPriority(OSGetCurrentThread(), 12);
+	WHBLogPrintf("Audio thread: priority 12 %s.", priority_ok ? "ok" : "failed");
+	uint32_t underruns = 0;
 	OSTime last_beat = OSGetSystemTime();
 	while (!ad->exit_thread.is_set()) {
 		// In the background (HOME menu, or on the way out after SYSLaunchMenu)
@@ -94,7 +94,17 @@ void AudioDriverWiiU::thread_func(void *p_udata) {
 			continue;
 		}
 		const uint32_t play = ad->play_position();
-		const uint32_t ahead = (ad->write_pos + RING_SAMPLES - play) % RING_SAMPLES;
+		uint32_t ahead = (ad->write_pos + RING_SAMPLES - play) % RING_SAMPLES;
+		if (ahead > TARGET_AHEAD + RING_CHUNK) {
+			// Never this far ahead normally: the voices passed write_pos (an
+			// underrun) and "ahead" wrapped. Without this the thread slept while
+			// AX looped stale samples for most of the ring (a buzz). Restart
+			// writing just ahead of the play position.
+			underruns++;
+			WHBLogPrintf("[audio] underrun %u (play %u, write %u)", (unsigned)underruns, (unsigned)play, (unsigned)ad->write_pos);
+			ad->write_pos = (play + RING_CHUNK) % RING_SAMPLES;
+			ahead = RING_CHUNK;
+		}
 		if (ahead >= TARGET_AHEAD) {
 			OSSleepTicks(OSMillisecondsToTicks(2));
 			continue;

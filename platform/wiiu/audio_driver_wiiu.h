@@ -18,7 +18,7 @@
 // the CPU's native (big-endian) order.
 class AudioDriverWiiU : public AudioDriver {
 	static constexpr int MIX_RATE = 48000;
-	static constexpr uint32_t RING_SAMPLES = 4096; // Per channel, ~85 ms.
+	static constexpr uint32_t RING_SAMPLES = 8192; // Per channel, ~171 ms.
 	static constexpr uint32_t RING_CHUNK = 256; // Frames mixed per step.
 	static constexpr uint32_t TARGET_AHEAD = 2048; // ~43 ms of latency (1024 crackled in FNF).
 
