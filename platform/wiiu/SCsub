@@ -19,6 +19,7 @@ wiiu_files = [
     "crash_log.c",
     "tls_keys.c",
     "wiiu_console.c",
+    "wiiu_threaddump.c",
 ]
 
 # wut.specs links with --emit-relocs (elf2rpl needs the relocations), which ld can't

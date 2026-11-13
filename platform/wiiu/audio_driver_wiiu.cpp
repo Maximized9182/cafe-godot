@@ -12,6 +12,9 @@
 
 #include "wiiu_gx2.h"
 
+// Debug (HOME hang hunt): wiiu_threaddump.c.
+extern "C" void wiiu_thread_dump(const char *p_reason);
+
 // AXInit runs on core 2: AX's own CPU-side work (the "AXIST" thread)
 // presumably stays on the core that initialised it, and on core 1 it waited
 // behind long main-thread frames (red spikes in the stats graph), so AX
@@ -109,6 +112,7 @@ void AudioDriverWiiU::thread_func(void *p_udata) {
 	WHBLogPrintf("Audio thread on core %u, priority %d.", (unsigned)OSGetCoreId(), (int)OSGetThreadPriority(OSGetCurrentThread()));
 	uint32_t underruns = 0;
 	OSTime last_beat = OSGetSystemTime();
+	uint32_t bg_beats = 0; // Seconds in the background, for the thread dumps.
 	while (!ad->exit_thread.is_set()) {
 		// In the background (HOME menu, or on the way out after SYSLaunchMenu)
 		// the system stops AX and hands it over: don't touch AX until the app
@@ -119,10 +123,18 @@ void AudioDriverWiiU::thread_func(void *p_udata) {
 			if (OSTicksToMilliseconds(OSGetSystemTime() - last_beat) >= 1000) {
 				last_beat = OSGetSystemTime();
 				WHBLogPrintf("[bg] audio thread alive (AX untouched); main thread: %s", (const char *)wiiu_main_state);
+				bg_beats++;
+				// A normal HOME switch finishes within a second or two; still
+				// here (and the main thread maybe stuck in ProcUI): show where
+				// every thread is.
+				if (bg_beats == 3 || bg_beats % 15 == 0) {
+					wiiu_thread_dump("background");
+				}
 			}
 			OSSleepTicks(OSMillisecondsToTicks(20));
 			continue;
 		}
+		bg_beats = 0;
 		const uint32_t play = ad->play_position();
 		uint32_t ahead = (ad->write_pos + RING_SAMPLES - play) % RING_SAMPLES;
 		if (ahead > TARGET_AHEAD + RING_CHUNK) {

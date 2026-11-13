@@ -670,3 +670,9 @@ Verified on the console with Godot Hello's counter button. Samples with an inval
   that the hangs come from Godot reading its pack through Aroma's bundle code
   (ContentRedirection/WUHBUtils) from several threads, while a background thread mid-read holds
   something the HOME menu needs. FNF exported this way on 2026-11-13 for the user to test.
+
+### 2026-11-13 (late): tiled-texture garbage, HOME hang with the pack on SD
+
+- Tiled textures (092ee2b) showed noise around FNF's health icons, notes and stage props; the 17:24 pre-tiling screenshot was clean. A GPU readback check after each upload (copy tiled back to linear, memcmp with the source) found random failures (the same 150x150 icon ok once, bad once): stale GPU cache, not a size rule. upload_tiled now invalidates CPU+TEXTURE on the staging buffer and TEXTURE+COLOR_BUFFER on the destination before and after GX2CopySurface. The readback check still runs for every texture (logs `[gx2] tiled check`; remove once confirmed clean, it costs a copy + GX2DrawDone per texture).
+- The hybrid .wuhb (pack on SD, godot.pckdir) survived ~30 HOME rounds, then hung once. So bundle reads are not the (only) cause. In the hang: our release callback finished (GX2DrawDone 0 ms, MEM1 freed, "foreground released"), the audio heartbeat kept running for 40+ s, but the Mocha syslog never printed ProcUI's "Releasing foreground" and went silent. The main thread is stuck inside ProcUI's release after our callback.
+- wiiu_threaddump.c: the audio thread's background heartbeat dumps every thread of the process (name, state, priority, PC/LR with OSGetSymbolName, mutex waited on + owner, queue, 10-frame back chain) after 3 s in the background and every 15 s. Next hang: read the `[threads]` lines in udp.log; the main thread is OSGetDefaultThread(1).

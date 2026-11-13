@@ -290,15 +290,61 @@ static bool upload_tiled(WiiUTexture *p_texture, const uint8_t *p_rgba) {
 			memcpy(image + y * staging.pitch * 4, p_rgba + y * row, row);
 		}
 	}
-	GX2Invalidate(GX2_INVALIDATE_MODE_CPU, staging.image, staging.imageSize);
+	// The copy reads the staging memory through the GPU texture cache, which can
+	// still hold lines of an earlier staging buffer at the same address, and
+	// writes the texture through the colour buffer cache: flush both ways.
+	GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, staging.image, staging.imageSize);
+	GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE | GX2_INVALIDATE_MODE_COLOR_BUFFER,
+			p_texture->texture.surface.image, p_texture->texture.surface.imageSize);
 	GX2CopySurface(&staging, 0, 0, &p_texture->texture.surface, 0, 0);
-	GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE, p_texture->texture.surface.image, p_texture->texture.surface.imageSize);
+	GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER | GX2_INVALIDATE_MODE_TEXTURE,
+			p_texture->texture.surface.image, p_texture->texture.surface.imageSize);
 	// GX2CopySurface changes GPU state: put ours back (target, viewport, scissor).
 	GX2SetContextState(gx2_context);
 	if (target_cb != NULL) {
 		apply_target();
 	}
 	GX2DrawDone();
+	// Debug: copy the tiled result back to linear and compare (first textures only).
+	static int checks = 0;
+	if (p_rgba != NULL) {
+		checks++;
+		memset(staging.image, 0xCD, staging.imageSize);
+		GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE | GX2_INVALIDATE_MODE_COLOR_BUFFER, staging.image, staging.imageSize);
+		GX2CopySurface(&p_texture->texture.surface, 0, 0, &staging, 0, 0);
+		GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER, staging.image, staging.imageSize);
+		GX2SetContextState(gx2_context);
+		if (target_cb != NULL) {
+			apply_target();
+		}
+		GX2DrawDone();
+		GX2Invalidate(GX2_INVALIDATE_MODE_CPU, staging.image, staging.imageSize);
+		uint32_t bad_rows = 0, first_x = 0, first_y = 0;
+		for (uint32_t y = 0; y < p_texture->height; y++) {
+			const uint8_t *a = image + y * staging.pitch * 4;
+			const uint8_t *b = p_rgba + y * row;
+			if (memcmp(a, b, row) != 0) {
+				if (bad_rows == 0) {
+					first_y = y;
+					for (uint32_t x = 0; x < p_texture->width; x++) {
+						if (memcmp(a + x * 4, b + x * 4, 4) != 0) {
+							first_x = x;
+							break;
+						}
+					}
+				}
+				bad_rows++;
+			}
+		}
+		static int bad_total = 0;
+		bad_total += bad_rows ? 1 : 0;
+		const GX2Surface *ts = &p_texture->texture.surface;
+		if (bad_rows || checks <= 10 || checks % 50 == 0) WHBLogPrintf("[gx2] tiled check #%d, %d bad so far", checks, bad_total);
+		if (bad_rows || checks <= 10) WHBLogPrintf("[gx2] tiled check %ux%u tile %d pitch %u swz %08x | staging pitch %u: %s (%u bad rows, first %u,%u)",
+				(unsigned)p_texture->width, (unsigned)p_texture->height, (int)ts->tileMode, (unsigned)ts->pitch,
+				(unsigned)ts->swizzle, (unsigned)staging.pitch, bad_rows ? "BAD" : "ok", (unsigned)bad_rows,
+				(unsigned)first_x, (unsigned)first_y);
+	}
 	MEMFreeToDefaultHeap(staging.image);
 	return true;
 }
