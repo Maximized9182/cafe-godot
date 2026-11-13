@@ -172,7 +172,7 @@ void update_lines() {
 
 	// Memory. No MEMGetTotalFreeSizeForExpHeap / MEMGetAllocatableSizeForExpHeapEx
 	// on MEM2: they walk the heap with interrupts off, and calling them 4 times
-	// a second made the console's audio buzz (and they read 0 anyway, since
+	// a second is the suspect for the audio buzz with the panel open (and they read 0 anyway, since
 	// wut's malloc reserves MEM2 at start-up). mallinfo walks malloc's bins,
 	// so it's read once a second.
 	static struct mallinfo mi = {};
