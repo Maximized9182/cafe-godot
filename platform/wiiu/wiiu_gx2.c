@@ -176,19 +176,28 @@ static bool alloc_screen_memory(MEMHeapHandle heap, Screen *s, bool tv) {
 	return true;
 }
 
+// Debug (HOME hang hunt): what the main thread is doing, for the background
+// heartbeat (audio_driver_wiiu.cpp). See wiiu_gx2_main_state().
+volatile const char *wiiu_main_state = "start";
+
 static uint32_t gx2_proc_acquired(void *context) {
 	(void)context;
+	WHBLogPrint("[procui] acquire callback: start");
 	if (!gx2_active) {
 		return 0;
 	}
+	wiiu_main_state = "acquire: MEM1";
 	MEMHeapHandle heap = MEMGetBaseHeapHandle(MEM_BASE_HEAP_MEM1);
 	MEMRecordStateForFrmHeap(heap, GX2_FRAME_HEAP_TAG);
+	WHBLogPrintf("[procui] acquire: MEM1 free %u", (unsigned)MEMGetAllocatableSizeForFrmHeapEx(heap, 4));
+	wiiu_main_state = "acquire: screen buffers";
 	if (!alloc_screen_memory(heap, &gx2_tv, true) || !alloc_screen_memory(heap, &gx2_drc, false)) {
 		WHBLogPrint("[gx2] out of MEM1 for the scan/colour buffers");
 		MEMFreeByStateToFrmHeap(heap, GX2_FRAME_HEAP_TAG);
 		return 0;
 	}
 	gx2_acquired = true;
+	wiiu_main_state = "acquired";
 	WHBLogPrint("[procui] foreground acquired");
 	return 0;
 }
@@ -199,12 +208,18 @@ static uint32_t gx2_proc_released(void *context) {
 		return 0;
 	}
 	// Let the GPU finish with the buffers before they go back to the system.
-	GX2DrawDone();
+	// GX2DrawDone gives up (FALSE) after the GPU timeout: then the GPU hung.
+	wiiu_main_state = "release: GX2DrawDone";
+	const OSTime dd_start = OSGetSystemTime();
+	const BOOL dd = GX2DrawDone();
+	WHBLogPrintf("[procui] release: GX2DrawDone %s after %u ms", dd ? "ok" : "TIMED OUT (GPU hung)",
+			(unsigned)OSTicksToMilliseconds(OSGetSystemTime() - dd_start));
 	gx2_acquired = false;
 	if (target_cb == &gx2_tv.color_buffer || target_cb == &gx2_drc.color_buffer) {
 		target_cb = NULL;
 	}
 	MEMFreeByStateToFrmHeap(MEMGetBaseHeapHandle(MEM_BASE_HEAP_MEM1), GX2_FRAME_HEAP_TAG);
+	wiiu_main_state = "released";
 	WHBLogPrint("[procui] foreground released");
 	return 0;
 }

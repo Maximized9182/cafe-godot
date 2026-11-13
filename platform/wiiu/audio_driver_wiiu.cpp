@@ -81,7 +81,7 @@ void AudioDriverWiiU::thread_func(void *p_udata) {
 			// Debug (HOME hang hunt): once a second, note that this thread runs.
 			if (OSTicksToMilliseconds(OSGetSystemTime() - last_beat) >= 1000) {
 				last_beat = OSGetSystemTime();
-				WHBLogPrint("[bg] audio thread alive (AX untouched)");
+				WHBLogPrintf("[bg] audio thread alive (AX untouched); main thread: %s", (const char *)wiiu_main_state);
 			}
 			OSSleepTicks(OSMillisecondsToTicks(20));
 			continue;
