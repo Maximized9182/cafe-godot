@@ -1,6 +1,7 @@
 #include "audio_driver_wiiu.h"
 
 #include <coreinit/cache.h>
+#include <coreinit/core.h>
 #include <coreinit/memdefaultheap.h>
 #include <coreinit/thread.h>
 #include <coreinit/time.h>
@@ -71,12 +72,11 @@ uint32_t AudioDriverWiiU::play_position() {
 
 void AudioDriverWiiU::thread_func(void *p_udata) {
 	AudioDriverWiiU *ad = static_cast<AudioDriverWiiU *>(p_udata);
-	// Above the main thread's priority (16; lower is higher): Cafe OS doesn't
-	// time-slice equal priorities, so this thread waited for the main thread's
-	// whole frame and the ring ran dry (crackling). (Moving it to another core
-	// with OSSetThreadAffinity fails on a running thread.)
-	const BOOL priority_ok = OSSetThreadPriority(OSGetCurrentThread(), 12);
-	WHBLogPrintf("Audio thread: priority 12 %s.", priority_ok ? "ok" : "failed");
+	// Runs on core 2 at normal priority (see start()): on core 1 at equal
+	// priority it waited out the main thread's frames (crackling); above the
+	// main thread's priority it starved the system's own audio work there
+	// (a short buzz every frame).
+	WHBLogPrintf("Audio thread on core %u, priority %d.", (unsigned)OSGetCoreId(), (int)OSGetThreadPriority(OSGetCurrentThread()));
 	uint32_t underruns = 0;
 	OSTime last_beat = OSGetSystemTime();
 	while (!ad->exit_thread.is_set()) {
@@ -135,6 +135,12 @@ void AudioDriverWiiU::thread_func(void *p_udata) {
 	}
 }
 
+int AudioDriverWiiU::os_thread_entry(int p_argc, const char **p_argv) {
+	(void)p_argc;
+	thread_func((void *)p_argv);
+	return 0;
+}
+
 void AudioDriverWiiU::start() {
 	if (voices[0] == nullptr || voices[1] == nullptr) {
 		return;
@@ -142,7 +148,21 @@ void AudioDriverWiiU::start() {
 	exit_thread.clear();
 	// Fill the first TARGET_AHEAD samples before the voices start.
 	write_pos = 0;
-	thread.start(thread_func, this);
+	constexpr uint32_t STACK_SIZE = 256 * 1024;
+	os_thread_stack = (uint8_t *)MEMAllocFromDefaultHeapEx(STACK_SIZE, 16);
+	ERR_FAIL_NULL_MSG(os_thread_stack, "Couldn't allocate the audio thread's stack.");
+	memset(&os_thread, 0, sizeof(os_thread));
+	// Core 2, priority 16 (the default): away from the main thread (core 1).
+	if (!OSCreateThread(&os_thread, os_thread_entry, 0, (char *)this, os_thread_stack + STACK_SIZE, STACK_SIZE, 16,
+				OS_THREAD_ATTRIB_AFFINITY_CPU2)) {
+		ERR_PRINT("Couldn't create the audio thread.");
+		MEMFreeToDefaultHeap(os_thread_stack);
+		os_thread_stack = nullptr;
+		return;
+	}
+	OSSetThreadName(&os_thread, "Cafe Godot audio");
+	OSResumeThread(&os_thread);
+	thread_started = true;
 	OSSleepTicks(OSMillisecondsToTicks(30));
 	for (int ch = 0; ch < 2; ch++) {
 		AXVoiceBegin(voices[ch]);
@@ -153,8 +173,14 @@ void AudioDriverWiiU::start() {
 
 void AudioDriverWiiU::finish() {
 	exit_thread.set();
-	if (thread.is_started()) {
-		thread.wait_to_finish();
+	if (thread_started) {
+		int result = 0;
+		OSJoinThread(&os_thread, &result);
+		thread_started = false;
+	}
+	if (os_thread_stack) {
+		MEMFreeToDefaultHeap(os_thread_stack);
+		os_thread_stack = nullptr;
 	}
 	for (int ch = 0; ch < 2; ch++) {
 		if (voices[ch]) {

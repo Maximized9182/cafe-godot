@@ -5,6 +5,7 @@
 #include "core/templates/safe_refcount.h"
 #include "servers/audio/audio_server.h"
 
+#include <coreinit/thread.h>
 #include <sndcore2/voice.h>
 
 // Audio output for Cafe Godot through AX (sndcore2), modelled on Love Potion's
@@ -22,7 +23,11 @@ class AudioDriverWiiU : public AudioDriver {
 	static constexpr uint32_t RING_CHUNK = 256; // Frames mixed per step.
 	static constexpr uint32_t TARGET_AHEAD = 2048; // ~43 ms of latency (1024 crackled in FNF).
 
-	Thread thread;
+	// A Cafe OS thread rather than Godot's Thread: the core can only be chosen
+	// at creation (OSSetThreadAffinity fails on a running thread).
+	OSThread os_thread;
+	uint8_t *os_thread_stack = nullptr;
+	bool thread_started = false;
 	Mutex mutex;
 	SafeFlag exit_thread;
 	bool owns_ax = false;
@@ -32,6 +37,7 @@ class AudioDriverWiiU : public AudioDriver {
 	uint32_t write_pos = 0;
 	int32_t *mix_buffer = nullptr; // RING_CHUNK stereo frames from the AudioServer.
 
+	static int os_thread_entry(int p_argc, const char **p_argv);
 	static void thread_func(void *p_udata);
 	uint32_t play_position();
 
