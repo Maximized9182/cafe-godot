@@ -11,6 +11,7 @@
 #include <coreinit/debug.h>
 #include <coreinit/systeminfo.h>
 #include <coreinit/time.h>
+#include <sys/stat.h>
 #include <whb/log.h>
 #include <vpad/input.h>
 #include <whb/proc.h>
@@ -106,8 +107,22 @@ String OS_WiiU::get_unique_id() const {
 	return "";
 }
 
+// Godot looks for the game's pack next to the executable (godot.pck).
+// - As a .wuhb, the pack is in the bundle: fs:/vol/content/godot.pck.
+// - As a plain .rpx (no bundle), it's a file next to the .rpx on the SD card:
+//   sd:/wiiu/apps/godot/godot.pck for sd:/wiiu/apps/godot/godot.rpx.
 String OS_WiiU::get_executable_path() const {
-	return "fs:/vol/content/godot.rpx";
+	static String path;
+	if (path.is_empty()) {
+		struct stat st;
+		if (::stat("fs:/vol/content/godot.pck", &st) == 0) {
+			path = "fs:/vol/content/godot.rpx";
+		} else {
+			path = "fs:/vol/external01/wiiu/apps/godot/godot.rpx";
+		}
+		WHBLogPrintf("Executable path: %s", path.utf8().get_data());
+	}
+	return path;
 }
 
 String OS_WiiU::get_user_data_dir(const String &p_user_dir) const {

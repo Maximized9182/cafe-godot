@@ -648,3 +648,7 @@ Verified on the console with Godot Hello's counter button. Samples with an inval
   (`GX2SampleTop/BottomGPUCycle` around each frame, read 2 frames later), draws/vertices, MEM2
   used/largest free, MEM1 free, Godot heap and peak, GX2 texture/render-target bytes, object/node/
   orphan counts, GamePad battery, uptime. Counters live in wiiu_gx2.c (`wiiu_gx2_get_stats`).
+- **Plain .rpx mode (2026-11-13):** without a bundle (no fs:/vol/content/godot.pck) the pack is
+  read from sd:/wiiu/apps/godot/godot.pck next to sd:/wiiu/apps/godot/godot.rpx
+  (`OS_WiiU::get_executable_path`). Used to test whether the app-switch hangs come from Aroma's
+  .wuhb handling.
