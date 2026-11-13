@@ -635,6 +635,3 @@ Verified on the console with Godot Hello's counter button. Samples with an inval
 - **Console crash seen once (not reproduced):** the HOME Menu (process 5) died with `0xCAFEBADD`
   in Aroma's homebrew_rpx_loader (`my_HBM_NN_ACP_ACPGetTitleMetaXmlByDevice` -> `snprintf` ->
   `__wums_getreent`, DAR "_wut"). Not Godot code; HOME worked fine afterwards with the same wuhb.
-- **Button layout (2026-11-13, user):** face buttons map by position like Godot/SDL: Wii U B
-  (bottom) = JoyButton::A (0), A (right) = B (1), Y (left) = X (2), X (top) = Y (3), on the
-  GamePad, Pro and Classic Controllers. A lone Wii Remote keeps A, B, 1, 2 = A, B, X, Y.
