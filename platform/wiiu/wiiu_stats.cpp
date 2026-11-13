@@ -170,16 +170,19 @@ void update_lines() {
 	add("GPU %.2f ms (%.0f%% of frame)", (double)gx2.gpu_ms, avg > 0.0f ? (double)(gx2.gpu_ms * 100.0f / avg) : 0.0);
 	add("Draws %u   vertices %u", (unsigned)gx2.draws, (unsigned)gx2.vertices);
 
-	// Memory.
-	uint32_t mem2_start = 0, mem2_size = 0;
-	OSGetMemBound(OS_MEM2, &mem2_start, &mem2_size);
-	MEMHeapHandle mem2 = MEMGetBaseHeapHandle(MEM_BASE_HEAP_MEM2);
-	const uint32_t mem2_free = MEMGetTotalFreeSizeForExpHeap(mem2);
-	const uint32_t mem2_largest = MEMGetAllocatableSizeForExpHeapEx(mem2, 4);
-	(void)mem2_free;
-	// wut's malloc takes its arena from MEM2 up front; mallinfo shows its use.
-	const struct mallinfo mi = mallinfo();
-	add("malloc %.1f / %.1f MB used (MEM2 %.1f MB, free %.1f MB)", mb(mi.uordblks), mb(mi.arena), mb(mem2_size), mb(mem2_largest));
+	// Memory. No MEMGetTotalFreeSizeForExpHeap / MEMGetAllocatableSizeForExpHeapEx
+	// on MEM2: they walk the heap with interrupts off, and calling them 4 times
+	// a second made the console's audio buzz (and they read 0 anyway, since
+	// wut's malloc reserves MEM2 at start-up). mallinfo walks malloc's bins,
+	// so it's read once a second.
+	static struct mallinfo mi = {};
+	static OSTime mi_time = 0;
+	const OSTime now_mi = OSGetSystemTime();
+	if (!mi_time || OSTicksToMilliseconds(now_mi - mi_time) >= 1000) {
+		mi = mallinfo();
+		mi_time = now_mi;
+	}
+	add("malloc %.1f / %.1f MB used", mb(mi.uordblks), mb(mi.arena));
 	MEMHeapHandle mem1 = MEMGetBaseHeapHandle(MEM_BASE_HEAP_MEM1);
 	add("MEM1 free %.2f MB", mb(MEMGetAllocatableSizeForFrmHeapEx(mem1, 4)));
 	add("Godot heap %.1f MB (peak %.1f MB)", mb(Memory::get_mem_usage()), mb(Memory::get_mem_max_usage()));
