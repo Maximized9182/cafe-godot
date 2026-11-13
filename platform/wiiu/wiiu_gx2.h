@@ -64,6 +64,19 @@ void wiiu_gx2_set_scissor(int32_t p_x, int32_t p_y, int32_t p_width, int32_t p_h
 void wiiu_gx2_draw(WiiUPrimitive p_primitive, WiiUTexture *p_texture, bool p_linear, bool p_repeat,
 		const WiiUVertex *p_vertices, uint32_t p_count);
 
+// Numbers for the stats overlay (wiiu_stats.cpp). Draws/vertices are from the
+// last finished frame; GPU time is the frame's span on the GPU, two frames late.
+typedef struct {
+	uint32_t draws;
+	uint32_t vertices;
+	uint32_t textures;
+	uint64_t texture_bytes;
+	uint32_t render_targets;
+	uint64_t render_target_bytes;
+	float gpu_ms;
+} WiiUGX2Stats;
+void wiiu_gx2_get_stats(WiiUGX2Stats *r_stats);
+
 // Text and rectangles drawn with GX2 alone (crash overlay, log), using the
 // built-in 10x20 bitmap font (crash_font_data.c, ASCII 32-126).
 #define WIIU_FONT_CELL_W 10

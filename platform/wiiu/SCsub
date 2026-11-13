@@ -13,6 +13,7 @@ wiiu_files = [
     "wiiu_gx2.c",
     "crash_font_data.c",
     "wiiu_system_font.cpp",
+    "wiiu_stats.cpp",
     "atomic64.c",
     "posix_stubs.c",
     "crash_log.c",

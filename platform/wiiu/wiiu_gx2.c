@@ -25,6 +25,7 @@
 #include <coreinit/memdefaultheap.h>
 #include <coreinit/memfrmheap.h>
 #include <coreinit/memheap.h>
+#include <coreinit/time.h>
 #include <gx2/clear.h>
 #include <gx2/context.h>
 #include <gx2/display.h>
@@ -44,6 +45,23 @@
 #include <string.h>
 #include <whb/gfx.h>
 #include <whb/log.h>
+
+// GPU timestamps (gx2.rpl exports these; wut has no header for them).
+extern void GX2SampleTopGPUCycle(uint64_t *result);
+extern void GX2SampleBottomGPUCycle(uint64_t *result);
+extern uint64_t GX2GPUTimeToCPUTime(uint64_t time);
+
+// Counters for the stats overlay (wiiu_stats.cpp).
+static uint32_t stat_draws, stat_vertices; // This frame so far.
+static uint32_t stat_last_draws, stat_last_vertices; // Last finished frame.
+static uint32_t stat_textures, stat_render_targets;
+static uint64_t stat_texture_bytes, stat_render_target_bytes;
+// GPU time per frame: top-of-pipe at frame start, bottom-of-pipe after the
+// last draw; read back two frames later (the GPU writes them).
+#define GPU_TS_SLOTS 4
+static uint64_t *gpu_ts = NULL; // [slot][top, bottom]
+static uint32_t gpu_ts_frame = 0;
+static float stat_gpu_ms = 0.0f;
 
 #define GX2_FRAME_HEAP_TAG 0x47583242 // "GX2B"
 
@@ -244,6 +262,8 @@ WiiUTexture *wiiu_gx2_texture_create(uint32_t p_width, uint32_t p_height, const 
 	}
 	init_texture_view(t, &surface);
 	t->owns_image = true;
+	stat_textures++;
+	stat_texture_bytes += surface.imageSize;
 	wiiu_gx2_texture_update(t, p_rgba);
 	return t;
 }
@@ -277,6 +297,8 @@ void wiiu_gx2_texture_free(WiiUTexture *p_texture) {
 		GX2DrawDone();
 	}
 	if (p_texture->owns_image) {
+		stat_textures--;
+		stat_texture_bytes -= p_texture->texture.surface.imageSize;
 		MEMFreeToDefaultHeap(p_texture->texture.surface.image);
 	}
 	free(p_texture);
@@ -302,6 +324,8 @@ WiiURenderTarget *wiiu_gx2_render_target_create(uint32_t p_width, uint32_t p_hei
 	}
 	init_texture_view(&rt->texture, &rt->color_buffer.surface);
 	rt->texture.owns_image = false;
+	stat_render_targets++;
+	stat_render_target_bytes += rt->color_buffer.surface.imageSize;
 	return rt;
 }
 
@@ -317,6 +341,8 @@ void wiiu_gx2_render_target_free(WiiURenderTarget *p_rt) {
 		target_rt = NULL;
 		target_cb = NULL;
 	}
+	stat_render_targets--;
+	stat_render_target_bytes -= p_rt->color_buffer.surface.imageSize;
 	MEMFreeToDefaultHeap(p_rt->color_buffer.surface.image);
 	free(p_rt);
 }
@@ -569,6 +595,8 @@ void wiiu_gx2_draw(WiiUPrimitive p_primitive, WiiUTexture *p_texture, bool p_lin
 			GX2_BLEND_COMBINE_MODE_ADD);
 	GX2DrawEx(p_primitive == WIIU_PRIM_LINES ? GX2_PRIMITIVE_MODE_LINES : GX2_PRIMITIVE_MODE_TRIANGLES,
 			p_count, 0, 1);
+	stat_draws++;
+	stat_vertices += p_count;
 }
 
 // ---------------------------------------------------------------------------
@@ -674,6 +702,43 @@ void wiiu_gx2_draw_saved_frame(WiiUScreen p_screen) {
 void wiiu_gx2_frame_begin(void) {
 	arena_index ^= 1;
 	arena_used = 0;
+	stat_last_draws = stat_draws;
+	stat_last_vertices = stat_vertices;
+	stat_draws = 0;
+	stat_vertices = 0;
+	if (!wiiu_gx2_can_draw()) {
+		return;
+	}
+	if (gpu_ts == NULL) {
+		gpu_ts = (uint64_t *)MEMAllocFromDefaultHeapEx(GPU_TS_SLOTS * 2 * sizeof(uint64_t), 64);
+		if (gpu_ts == NULL) {
+			return;
+		}
+		memset(gpu_ts, 0, GPU_TS_SLOTS * 2 * sizeof(uint64_t));
+		DCFlushRange(gpu_ts, GPU_TS_SLOTS * 2 * sizeof(uint64_t));
+	}
+	gpu_ts_frame++;
+	// Two frames back: the GPU has finished it by now.
+	uint64_t *old = gpu_ts + ((gpu_ts_frame + GPU_TS_SLOTS - 2) % GPU_TS_SLOTS) * 2;
+	DCInvalidateRange(old, 2 * sizeof(uint64_t));
+	if (old[0] != 0 && old[1] > old[0]) {
+		const uint64_t ticks = GX2GPUTimeToCPUTime(old[1]) - GX2GPUTimeToCPUTime(old[0]);
+		stat_gpu_ms = (float)((double)ticks * 1000.0 / (double)OSTimerClockSpeed);
+	}
+	uint64_t *cur = gpu_ts + (gpu_ts_frame % GPU_TS_SLOTS) * 2;
+	cur[0] = cur[1] = 0;
+	DCFlushRange(cur, 2 * sizeof(uint64_t));
+	GX2SampleTopGPUCycle(&cur[0]);
+}
+
+void wiiu_gx2_get_stats(WiiUGX2Stats *r_stats) {
+	r_stats->draws = stat_last_draws;
+	r_stats->vertices = stat_last_vertices;
+	r_stats->textures = stat_textures;
+	r_stats->texture_bytes = stat_texture_bytes;
+	r_stats->render_targets = stat_render_targets;
+	r_stats->render_target_bytes = stat_render_target_bytes;
+	r_stats->gpu_ms = stat_gpu_ms;
 }
 
 void wiiu_gx2_frame_present(void) {
@@ -681,6 +746,9 @@ void wiiu_gx2_frame_present(void) {
 		return;
 	}
 	finish_target();
+	if (gpu_ts != NULL) {
+		GX2SampleBottomGPUCycle(&gpu_ts[(gpu_ts_frame % GPU_TS_SLOTS) * 2 + 1]);
+	}
 	GX2CopyColorBufferToScanBuffer(&gx2_tv.color_buffer, GX2_SCAN_TARGET_TV);
 	GX2CopyColorBufferToScanBuffer(&gx2_drc.color_buffer, GX2_SCAN_TARGET_DRC);
 	GX2SwapScanBuffers();

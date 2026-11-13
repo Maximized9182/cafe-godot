@@ -218,6 +218,10 @@ void JoypadWiiU::update_axis(int p_device, JoyAxis p_axis, float p_value) {
 	input->joy_axis(p_device, p_axis, p_value);
 }
 
+// Defined in wiiu_stats.cpp.
+extern "C" bool wiiu_stats_touch(bool p_down, bool p_have_point, float p_x, float p_y, bool p_game_touching);
+extern "C" void wiiu_stats_set_battery(uint8_t p_level);
+
 void JoypadWiiU::process_gamepad() {
 	VPADStatus status;
 	VPADReadError error = VPAD_READ_SUCCESS;
@@ -241,6 +245,7 @@ void JoypadWiiU::process_gamepad() {
 	// }
 
 	process_touch(status.tpNormal);
+	wiiu_stats_set_battery(status.battery);
 
 	uint64_t buttons = map_buttons(status.hold, GAMEPAD_BUTTONS, COUNT(GAMEPAD_BUTTONS));
 	update_buttons(GAMEPAD_DEVICE, buttons);
@@ -256,10 +261,16 @@ void JoypadWiiU::process_gamepad() {
 void JoypadWiiU::process_touch(const VPADTouchData &p_touch) {
 	bool down = p_touch.touched != 0;
 	Vector2 position = touch_position;
+	VPADTouchData calibrated = {};
 	if (down) {
-		VPADTouchData calibrated;
 		// Calibrated to GamePad screen pixels (854x480).
 		VPADGetTPCalibratedPointEx(VPAD_CHAN_0, VPAD_TP_854X480, &calibrated, &p_touch);
+	}
+	// Touches on the stats overlay move it and don't reach the game.
+	if (wiiu_stats_touch(down, down && p_touch.validity == VPAD_VALID, calibrated.x, calibrated.y, touching)) {
+		return;
+	}
+	if (down) {
 		if (p_touch.validity != VPAD_VALID) {
 			// One axis is unreliable this sample: keep the last position.
 			if (!touching) {

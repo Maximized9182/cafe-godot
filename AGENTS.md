@@ -640,3 +640,11 @@ Verified on the console with Godot Hello's counter button. Samples with an inval
   `queue_free()`s itself off mobile; scripts naming it then made the analyzer read the freed
   node's vtable (DSI in `reduce_identifier` entering Freeplay). Desktop survives the same
   use-after-free only because the memory isn't reused yet.
+- **Stats overlay (wiiu_stats.cpp):** ZR+R+LEFT+Y+B+L toggles a panel (top right; drag it on
+  the GamePad, it snaps to the nearest corner on release; touches starting on it never reach the
+  game). Shows FPS, frame time avg/min/max + 90-frame graph, Godot process/physics time, CPU
+  (main thread % of a core and the process across 3 cores, from `OSThread::coreTimeConsumedNs`
+  over the active-thread list, plus the busiest other thread), GPU time
+  (`GX2SampleTop/BottomGPUCycle` around each frame, read 2 frames later), draws/vertices, MEM2
+  used/largest free, MEM1 free, Godot heap and peak, GX2 texture/render-target bytes, object/node/
+  orphan counts, GamePad battery, uptime. Counters live in wiiu_gx2.c (`wiiu_gx2_get_stats`).

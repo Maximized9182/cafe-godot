@@ -178,6 +178,9 @@ extern "C" bool wiiu_proc_is_running(void);
 extern "C" void wiiu_console_handle_buttons(uint32_t hold, uint32_t trigger);
 // Defined in crash_log.c.
 extern "C" bool wiiu_chord_update(uint32_t hold, uint32_t trigger);
+// Defined in wiiu_stats.cpp.
+extern "C" bool wiiu_stats_chord_update(uint32_t hold, uint32_t trigger);
+extern "C" void wiiu_stats_toggle(void);
 extern "C" bool wiiu_log_overlay_visible(void);
 extern "C" void wiiu_log_overlay_toggle(void);
 extern "C" void wiiu_console_draw(void);
@@ -197,6 +200,10 @@ void OS_WiiU::run() {
 			joypad->process();
 			const uint32_t hold = joypad->get_gamepad_hold();
 			const uint32_t trigger = joypad->get_gamepad_trigger();
+			// ZR+R+LEFT+Y+B+L toggles the stats overlay (wiiu_stats.cpp).
+			if (wiiu_stats_chord_update(hold, trigger)) {
+				wiiu_stats_toggle();
+			}
 			if (wiiu_chord_update(hold, trigger)) {
 				wiiu_log_overlay_toggle();
 			} else if (wiiu_log_overlay_visible() && (trigger & VPAD_BUTTON_B)) {

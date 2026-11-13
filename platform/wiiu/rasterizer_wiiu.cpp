@@ -1327,10 +1327,22 @@ void RasterizerWiiU::blit_render_targets_to_screen(int p_screen, const Rendering
 // crash_log.c: the log overlay toggled by ZL+L+RIGHT+X+Y+TV.
 extern "C" bool wiiu_log_overlay_visible(void);
 extern "C" void wiiu_draw_log_gx2(WiiUScreen p_screen, float p_r, float p_g, float p_b, float p_a, const char *p_footer);
+// wiiu_stats.cpp: the stats overlay toggled by ZR+R+LEFT+Y+B+L.
+extern "C" void wiiu_stats_frame(void);
+extern "C" bool wiiu_stats_visible(void);
+extern "C" void wiiu_stats_draw(WiiUScreen p_screen);
 
 void RasterizerWiiU::end_frame(bool p_present) {
 	if (!wiiu_gx2_can_draw()) {
 		return;
+	}
+	wiiu_stats_frame();
+	if (wiiu_stats_visible() && blitted) {
+		for (int s = 0; s < 2; s++) {
+			const WiiUScreen screen = s == 0 ? WIIU_SCREEN_TV : WIIU_SCREEN_DRC;
+			wiiu_gx2_bind_screen(screen);
+			wiiu_stats_draw(screen);
+		}
 	}
 	if (wiiu_log_overlay_visible()) {
 		for (int s = 0; s < 2; s++) {
