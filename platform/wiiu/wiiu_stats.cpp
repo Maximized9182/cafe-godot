@@ -45,12 +45,7 @@ const uint32_t chord_buttons[6] = {
 };
 int chord_step = 0;
 bool visible = false;
-// Debug (audio buzz with the panel open): tap the panel to cycle.
-// 0 = full, 1 = text frozen (no data collected), 2 = data collected, only the header drawn.
-int debug_mode = 0;
-const char *const DEBUG_MODE_NAMES[3] = { "full", "frozen text", "header only" };
-bool tap_moved = false;
-float tap_x = 0.0f, tap_y = 0.0f;
+float update_cost_ms = 0.0f; // Time the last text refresh took (shown in the header).
 
 // ---------------------------------------------------------------------------
 // Placement
@@ -86,9 +81,6 @@ int line_count = 0;
 
 float panel_height(float p_scale) {
 	const float line = wiiu_sysfont_line_height(FONT_PX * p_scale) * 1.08f;
-	if (debug_mode == 2) {
-		return PAD * p_scale * 2.0f + line;
-	}
 	return PAD * p_scale * 2.0f + line * (float)line_count + (GRAPH_H + 6.0f) * p_scale;
 }
 
@@ -265,18 +257,7 @@ extern "C" bool wiiu_stats_touch(bool p_down, bool p_have_point, float p_x, floa
 			if (p_have_point) {
 				drag_x = p_x / 854.0f - grab_dx;
 				drag_y = p_y / 480.0f - grab_dy;
-				if (Math::abs(p_x - tap_x) > 8.0f || Math::abs(p_y - tap_y) > 8.0f) {
-					tap_moved = true;
-				}
 			}
-			return true;
-		}
-		if (!tap_moved) {
-			// A tap (no drag): next debug mode, panel stays where it was.
-			debug_mode = (debug_mode + 1) % 3;
-			text_last_update = 0;
-			WHBLogPrintf("[stats] debug mode %d (%s)", debug_mode, DEBUG_MODE_NAMES[debug_mode]);
-			dragging = false;
 			return true;
 		}
 		// Released: snap to the corner nearest the panel's centre.
@@ -297,9 +278,6 @@ extern "C" bool wiiu_stats_touch(bool p_down, bool p_have_point, float p_x, floa
 		return false;
 	}
 	dragging = true;
-	tap_moved = false;
-	tap_x = p_x;
-	tap_y = p_y;
 	drag_x = x / 854.0f;
 	drag_y = y / 480.0f;
 	grab_dx = p_x / 854.0f - drag_x;
@@ -336,9 +314,12 @@ extern "C" void wiiu_stats_frame(void) {
 	if (!visible) {
 		return;
 	}
-	if (debug_mode != 1 && (!text_last_update || OSTicksToMilliseconds(now - text_last_update) >= 250)) {
+	// Twice a second: collecting everything each refresh plus drawing the panel
+	// made red spikes in the graph at 4 refreshes a second.
+	if (!text_last_update || OSTicksToMilliseconds(now - text_last_update) >= 500) {
 		text_last_update = now;
 		update_lines();
+		update_cost_ms = (float)((double)OSTicksToMicroseconds(OSGetSystemTime() - now) / 1000.0);
 	}
 }
 
@@ -350,35 +331,38 @@ extern "C" void wiiu_stats_draw(WiiUScreen p_screen) {
 	const float s = screen_scale(p_screen);
 	float x, y, w, h;
 	panel_rect(p_screen, x, y, w, h);
-	wiiu_gx2_draw_rect(x, y, w, h, 0.0f, 0.0f, 0.0f, dragging ? 0.85f : 0.7f);
+
+	// Every rectangle (background, graph backdrop, bars, 16.7 ms line) goes
+	// into one untextured draw; the text is one draw per line.
+	static WiiUVertex quads[6 * (FRAME_HISTORY + 4)];
+	uint32_t n = 0;
+	auto quad = [&](float p_x, float p_y, float p_w, float p_h, float p_r, float p_g, float p_b, float p_a) {
+		const float xs[6] = { p_x, p_x + p_w, p_x + p_w, p_x, p_x + p_w, p_x };
+		const float ys[6] = { p_y, p_y, p_y + p_h, p_y, p_y + p_h, p_y + p_h };
+		for (int k = 0; k < 6; k++) {
+			WiiUVertex &v = quads[n++];
+			v.x = xs[k];
+			v.y = ys[k];
+			v.z = 0.0f;
+			v.u = v.v = 0.5f;
+			v.r = p_r;
+			v.g = p_g;
+			v.b = p_b;
+			v.a = p_a;
+		}
+	};
+	quad(x, y, w, h, 0.0f, 0.0f, 0.0f, dragging ? 0.85f : 0.7f);
 
 	const float px = FONT_PX * s;
 	const float line = wiiu_sysfont_line_height(px) * 1.08f;
-	float ty = y + PAD * s;
-	for (int i = 0; i < line_count; i++) {
-		if (i == 0) {
-			wiiu_sysfont_draw(x + PAD * s, ty, px, lines[i], 1.0f, 0.85f, 0.3f, 1.0f);
-			char hint_buf[64];
-			snprintf(hint_buf, sizeof(hint_buf), "tap: mode %d %s", debug_mode, DEBUG_MODE_NAMES[debug_mode]);
-			const char *hint = dragging ? "release to snap" : hint_buf;
-			const float hw = wiiu_sysfont_measure(hint, px * 0.8f);
-			wiiu_sysfont_draw(x + w - PAD * s - hw, ty + px * 0.15f, px * 0.8f, hint, 0.7f, 0.7f, 0.7f, 1.0f);
-		} else {
-			wiiu_sysfont_draw(x + PAD * s, ty, px, lines[i], 1.0f, 1.0f, 1.0f, 1.0f);
-		}
-		ty += line;
-		if (debug_mode == 2) {
-			return; // Header only.
-		}
-	}
+	const float gy = y + PAD * s + line * (float)line_count + 4.0f * s;
 
 	// Frame time graph: one bar per frame, newest on the right, up to 33.3 ms
 	// (two frames at 60 Hz); the line marks 16.7 ms.
 	const float gx = x + PAD * s;
 	const float gw = w - PAD * s * 2.0f;
 	const float gh = GRAPH_H * s;
-	const float gy = ty + 4.0f * s;
-	wiiu_gx2_draw_rect(gx, gy, gw, gh, 1.0f, 1.0f, 1.0f, 0.08f);
+	quad(gx, gy, gw, gh, 1.0f, 1.0f, 1.0f, 0.08f);
 	const float bar_w = gw / (float)FRAME_HISTORY;
 	for (int i = 0; i < frame_filled; i++) {
 		const float v = frame_ms[(frame_head - frame_filled + i + FRAME_HISTORY) % FRAME_HISTORY];
@@ -390,7 +374,23 @@ extern "C" void wiiu_stats_draw(WiiUScreen p_screen) {
 		} else if (v > 17.5f) {
 			r = 1.0f, g = 0.8f, b = 0.2f;
 		}
-		wiiu_gx2_draw_rect(gx + (float)slot * bar_w, gy + gh - bh, MAX(bar_w - 1.0f, 1.0f), bh, r, g, b, 0.9f);
+		quad(gx + (float)slot * bar_w, gy + gh - bh, MAX(bar_w - 1.0f, 1.0f), bh, r, g, b, 0.9f);
 	}
-	wiiu_gx2_draw_rect(gx, gy + gh * 0.5f, gw, MAX(1.0f, s), 1.0f, 1.0f, 1.0f, 0.5f);
+	quad(gx, gy + gh * 0.5f, gw, MAX(1.0f, s), 1.0f, 1.0f, 1.0f, 0.5f);
+	wiiu_gx2_draw(WIIU_PRIM_TRIANGLES, nullptr, false, false, quads, n);
+
+	float ty = y + PAD * s;
+	for (int i = 0; i < line_count; i++) {
+		if (i == 0) {
+			wiiu_sysfont_draw(x + PAD * s, ty, px, lines[i], 1.0f, 0.85f, 0.3f, 1.0f);
+			char hint_buf[48];
+			snprintf(hint_buf, sizeof(hint_buf), "refresh %.1f ms", (double)update_cost_ms);
+			const char *hint = dragging ? "release to snap" : hint_buf;
+			const float hw = wiiu_sysfont_measure(hint, px * 0.8f);
+			wiiu_sysfont_draw(x + w - PAD * s - hw, ty + px * 0.15f, px * 0.8f, hint, 0.7f, 0.7f, 0.7f, 1.0f);
+		} else {
+			wiiu_sysfont_draw(x + PAD * s, ty, px, lines[i], 1.0f, 1.0f, 1.0f, 1.0f);
+		}
+		ty += line;
+	}
 }
