@@ -181,6 +181,7 @@ extern "C" bool wiiu_chord_update(uint32_t hold, uint32_t trigger);
 // Defined in wiiu_stats.cpp.
 extern "C" bool wiiu_stats_chord_update(uint32_t hold, uint32_t trigger);
 extern "C" void wiiu_stats_toggle(void);
+extern "C" void wiiu_stats_mark(int p_mark);
 extern "C" bool wiiu_log_overlay_visible(void);
 extern "C" void wiiu_log_overlay_toggle(void);
 extern "C" void wiiu_console_draw(void);
@@ -193,6 +194,7 @@ void OS_WiiU::run() {
 	main_loop->initialize();
 
 	while (wiiu_proc_is_running()) {
+		wiiu_stats_mark(0); // Frame start (stats overlay timing).
 		// Read every controller once per frame, before the engine runs the frame.
 		// The same GamePad sample drives the log overlay: ZL+L+RIGHT+X+Y+TV
 		// toggles it, and while it's shown D-pad / L / R scroll it.

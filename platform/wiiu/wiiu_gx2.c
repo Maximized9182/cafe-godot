@@ -62,6 +62,7 @@ static uint64_t stat_texture_bytes, stat_render_target_bytes;
 static uint64_t *gpu_ts = NULL; // [slot][top, bottom]
 static uint32_t gpu_ts_frame = 0;
 static float stat_gpu_ms = 0.0f;
+static float stat_flip_wait_ms = 0.0f;
 
 #define GX2_FRAME_HEAP_TAG 0x47583242 // "GX2B"
 
@@ -739,6 +740,7 @@ void wiiu_gx2_get_stats(WiiUGX2Stats *r_stats) {
 	r_stats->render_targets = stat_render_targets;
 	r_stats->render_target_bytes = stat_render_target_bytes;
 	r_stats->gpu_ms = stat_gpu_ms;
+	r_stats->flip_wait_ms = stat_flip_wait_ms;
 }
 
 void wiiu_gx2_frame_present(void) {
@@ -759,7 +761,9 @@ void wiiu_gx2_frame_present(void) {
 	GX2SetTVEnable(TRUE);
 	GX2SetDRCEnable(TRUE);
 	// Paces the loop to the display (60 Hz).
+	const OSTime wait_start = OSGetSystemTime();
 	GX2WaitForFlip();
+	stat_flip_wait_ms = (float)((double)OSTicksToMicroseconds(OSGetSystemTime() - wait_start) / 1000.0);
 	// The next frame starts with no target bound.
 	target_cb = NULL;
 	target_rt = NULL;

@@ -6,6 +6,9 @@
 #include "servers/rendering/rendering_server.h"
 #include "servers/rendering/rendering_server_default.h"
 
+// wiiu_stats.cpp: frame timing marks for the stats overlay.
+extern "C" void wiiu_stats_mark(int p_mark);
+
 // ===========================================================================
 // TextureStorageWiiU
 // ===========================================================================
@@ -1275,6 +1278,7 @@ RasterizerWiiU::RasterizerWiiU() {
 
 void RasterizerWiiU::begin_frame(double p_frame_step) {
 	RasterizerDummy::begin_frame(p_frame_step);
+	wiiu_stats_mark(1); // Rendering starts.
 	wiiu_gx2_frame_begin();
 	blitted = false;
 }
@@ -1336,6 +1340,7 @@ void RasterizerWiiU::end_frame(bool p_present) {
 	if (!wiiu_gx2_can_draw()) {
 		return;
 	}
+	wiiu_stats_mark(2); // Rendering done, presenting next.
 	wiiu_stats_frame();
 	if (wiiu_stats_visible() && blitted) {
 		for (int s = 0; s < 2; s++) {

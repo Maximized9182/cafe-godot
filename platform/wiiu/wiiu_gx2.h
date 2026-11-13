@@ -74,6 +74,7 @@ typedef struct {
 	uint32_t render_targets;
 	uint64_t render_target_bytes;
 	float gpu_ms;
+	float flip_wait_ms; // Last frame, in GX2WaitForFlip (vsync).
 } WiiUGX2Stats;
 void wiiu_gx2_get_stats(WiiUGX2Stats *r_stats);
 

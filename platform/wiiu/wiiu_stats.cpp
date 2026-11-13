@@ -23,6 +23,7 @@
 #include <coreinit/time.h>
 #include <vpad/input.h>
 
+#include <malloc.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -108,71 +109,12 @@ OSTime last_frame_time = 0;
 
 uint8_t battery = 0xFF;
 
-// Per-thread CPU time (OSThread::coreTimeConsumedNs) between samples.
-struct ThreadSample {
-	OSThread *thread;
-	uint64_t ns;
-};
-constexpr int MAX_THREADS = 64;
-ThreadSample thread_prev[MAX_THREADS];
-int thread_prev_count = 0;
-OSTime cpu_last_sample = 0;
-float cpu_total_pct = -1.0f; // Of all three cores; -1: not measured yet.
-float cpu_main_pct = -1.0f; // Of one core.
-char cpu_busiest[48] = "";
-
-uint64_t prev_ns_for(OSThread *p_thread) {
-	for (int i = 0; i < thread_prev_count; i++) {
-		if (thread_prev[i].thread == p_thread) {
-			return thread_prev[i].ns;
-		}
-	}
-	return UINT64_MAX;
-}
-
-void sample_cpu() {
-	const OSTime now = OSGetSystemTime();
-	const uint64_t elapsed_ns = cpu_last_sample ? (uint64_t)OSTicksToNanoseconds(now - cpu_last_sample) : 0;
-
-	// Walk this process's active threads (activeLink is a list through all of them).
-	OSThread *first = OSGetCurrentThread();
-	for (int guard = 0; guard < MAX_THREADS && first->activeLink.prev; guard++) {
-		first = first->activeLink.prev;
-	}
-	ThreadSample cur[MAX_THREADS];
-	int count = 0;
-	uint64_t total_delta = 0, main_delta = 0, best_delta = 0;
-	const char *best_name = nullptr;
-	OSThread *main_thread = OSGetDefaultThread(1);
-	for (OSThread *t = first; t && count < MAX_THREADS; t = t->activeLink.next) {
-		cur[count].thread = t;
-		cur[count].ns = t->coreTimeConsumedNs;
-		const uint64_t prev = prev_ns_for(t);
-		if (elapsed_ns && prev != UINT64_MAX && cur[count].ns >= prev) {
-			const uint64_t d = cur[count].ns - prev;
-			total_delta += d;
-			if (t == main_thread) {
-				main_delta = d;
-			} else if (d > best_delta) {
-				best_delta = d;
-				best_name = t->name;
-			}
-		}
-		count++;
-	}
-	memcpy(thread_prev, cur, sizeof(ThreadSample) * count);
-	thread_prev_count = count;
-	cpu_last_sample = now;
-	if (elapsed_ns) {
-		cpu_total_pct = (float)((double)total_delta * 100.0 / ((double)elapsed_ns * 3.0));
-		cpu_main_pct = (float)((double)main_delta * 100.0 / (double)elapsed_ns);
-		if (best_name && best_delta > 0) {
-			snprintf(cpu_busiest, sizeof(cpu_busiest), "%.20s %.0f%%", best_name, (double)best_delta * 100.0 / (double)elapsed_ns);
-		} else {
-			cpu_busiest[0] = '\0';
-		}
-	}
-}
+// Frame breakdown from the marks: 0 = loop start, 1 = rendering starts,
+// 2 = rendering done. Summed over the text update interval, then averaged.
+OSTime mark_time[3] = {};
+double sum_game_ms = 0.0, sum_render_ms = 0.0, sum_wait_ms = 0.0;
+int sum_frames = 0;
+float avg_game_ms = 0.0f, avg_render_ms = 0.0f, avg_wait_ms = 0.0f;
 
 double mb(uint64_t p_bytes) {
 	return (double)p_bytes / (1024.0 * 1024.0);
@@ -206,19 +148,25 @@ void update_lines() {
 	add("%s", "Cafe Godot stats");
 	add("FPS %.0f   frame %.2f ms (%.2f-%.2f)", (double)Engine::get_singleton()->get_frames_per_second(), (double)avg, (double)mn, (double)mx);
 	if (perf) {
-		add("Process %.2f ms   physics %.2f ms",
-				perf->get_monitor(Performance::TIME_PROCESS) * 1000.0,
-				perf->get_monitor(Performance::TIME_PHYSICS_PROCESS) * 1000.0);
+		// TIME_PROCESS includes rendering and the vsync wait here, so only physics.
+		add("Physics %.2f ms per step", perf->get_monitor(Performance::TIME_PHYSICS_PROCESS) * 1000.0);
 	}
 
 	WiiUGX2Stats gx2;
 	wiiu_gx2_get_stats(&gx2);
-	if (cpu_total_pct >= 0.0f) {
-		add("CPU main %.0f%%   all 3 cores %.0f%%", (double)cpu_main_pct, (double)cpu_total_pct);
-		if (cpu_busiest[0]) {
-			add("    busiest other thread: %s", cpu_busiest);
-		}
+	if (sum_frames > 0) {
+		avg_game_ms = (float)(sum_game_ms / sum_frames);
+		avg_render_ms = (float)(sum_render_ms / sum_frames);
+		avg_wait_ms = (float)(sum_wait_ms / sum_frames);
+		sum_game_ms = sum_render_ms = sum_wait_ms = 0.0;
+		sum_frames = 0;
 	}
+	// Main thread (core 1): game = input, scripts, physics, animation, UI;
+	// render = walking the canvas and building GX2 draws; vsync = waiting.
+	add("Main: game %.2f + render %.2f ms, vsync wait %.2f", (double)avg_game_ms, (double)avg_render_ms, (double)avg_wait_ms);
+	const float busy = avg_game_ms + avg_render_ms;
+	add("Main thread busy %.0f%% of frame (%s 16.7 ms budget)", avg > 0.0f ? (double)(busy * 100.0f / avg) : 0.0,
+			busy > 16.7f ? "over" : "within");
 	add("GPU %.2f ms (%.0f%% of frame)", (double)gx2.gpu_ms, avg > 0.0f ? (double)(gx2.gpu_ms * 100.0f / avg) : 0.0);
 	add("Draws %u   vertices %u", (unsigned)gx2.draws, (unsigned)gx2.vertices);
 
@@ -228,8 +176,10 @@ void update_lines() {
 	MEMHeapHandle mem2 = MEMGetBaseHeapHandle(MEM_BASE_HEAP_MEM2);
 	const uint32_t mem2_free = MEMGetTotalFreeSizeForExpHeap(mem2);
 	const uint32_t mem2_largest = MEMGetAllocatableSizeForExpHeapEx(mem2, 4);
-	add("MEM2 %.1f / %.1f MB used, largest free %.1f MB",
-			mb(mem2_size > mem2_free ? mem2_size - mem2_free : 0), mb(mem2_size), mb(mem2_largest));
+	(void)mem2_free;
+	// wut's malloc takes its arena from MEM2 up front; mallinfo shows its use.
+	const struct mallinfo mi = mallinfo();
+	add("malloc %.1f / %.1f MB used (MEM2 %.1f MB, free %.1f MB)", mb(mi.uordblks), mb(mi.arena), mb(mem2_size), mb(mem2_largest));
 	MEMHeapHandle mem1 = MEMGetBaseHeapHandle(MEM_BASE_HEAP_MEM1);
 	add("MEM1 free %.2f MB", mb(MEMGetAllocatableSizeForFrmHeapEx(mem1, 4)));
 	add("Godot heap %.1f MB (peak %.1f MB)", mb(Memory::get_mem_usage()), mb(Memory::get_mem_max_usage()));
@@ -279,8 +229,8 @@ extern "C" void wiiu_stats_toggle(void) {
 	visible = !visible;
 	dragging = false;
 	text_last_update = 0;
-	cpu_last_sample = 0;
-	thread_prev_count = 0;
+	sum_frames = 0;
+	sum_game_ms = sum_render_ms = sum_wait_ms = 0.0;
 }
 
 extern "C" bool wiiu_stats_visible(void) {
@@ -329,6 +279,23 @@ extern "C" bool wiiu_stats_touch(bool p_down, bool p_have_point, float p_x, floa
 	return true;
 }
 
+extern "C" void wiiu_stats_mark(int p_mark) {
+	const OSTime now = OSGetSystemTime();
+	if (p_mark == 0 && mark_time[0] && mark_time[1] && mark_time[2]) {
+		// One whole frame is marked: add it up.
+		WiiUGX2Stats gx2;
+		wiiu_gx2_get_stats(&gx2);
+		sum_game_ms += (double)OSTicksToMicroseconds(mark_time[1] - mark_time[0]) / 1000.0;
+		sum_render_ms += (double)OSTicksToMicroseconds(mark_time[2] - mark_time[1]) / 1000.0;
+		sum_wait_ms += gx2.flip_wait_ms;
+		sum_frames++;
+		mark_time[1] = mark_time[2] = 0;
+	}
+	if (p_mark >= 0 && p_mark < 3) {
+		mark_time[p_mark] = now;
+	}
+}
+
 // Once per presented frame, before drawing.
 extern "C" void wiiu_stats_frame(void) {
 	const OSTime now = OSGetSystemTime();
@@ -340,9 +307,6 @@ extern "C" void wiiu_stats_frame(void) {
 	last_frame_time = now;
 	if (!visible) {
 		return;
-	}
-	if (!cpu_last_sample || OSTicksToMilliseconds(now - cpu_last_sample) >= 500) {
-		sample_cpu();
 	}
 	if (!text_last_update || OSTicksToMilliseconds(now - text_last_update) >= 250) {
 		text_last_update = now;
