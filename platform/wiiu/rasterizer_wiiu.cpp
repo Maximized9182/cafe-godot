@@ -876,7 +876,9 @@ void RasterizerCanvasWiiU::_quad(const Transform2D &p_xform, const Vector2 p_pos
 }
 
 void RasterizerCanvasWiiU::draw_texture_rect(WiiUTexture *p_texture, const Rect2 &p_dst, const Rect2 &p_src_uv, bool p_linear) {
-	blend = WIIU_BLEND_MIX;
+	// The blit to the screen is a plain copy: blending it with the render
+	// target's alpha darkened whatever blend_sub had left alpha below 1.
+	blend = WIIU_BLEND_DISABLED;
 	_begin(WIIU_PRIM_TRIANGLES, p_texture, p_linear, false);
 	const Vector2 pos[4] = {
 		p_dst.position,

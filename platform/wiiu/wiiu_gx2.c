@@ -273,6 +273,7 @@ static bool upload_tiled(WiiUTexture *p_texture, const uint8_t *p_rgba) {
 	}
 	GX2Surface staging = p_texture->texture.surface;
 	staging.tileMode = GX2_TILE_MODE_LINEAR_ALIGNED;
+	staging.swizzle = 0; // The tiled surface's swizzle scrambles a linear one.
 	staging.image = NULL;
 	staging.mipmaps = NULL;
 	GX2CalcSurfaceSizeAndAlignment(&staging);
