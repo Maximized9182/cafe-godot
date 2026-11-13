@@ -652,3 +652,9 @@ Verified on the console with Godot Hello's counter button. Samples with an inval
   read from sd:/wiiu/apps/godot/godot.pck next to sd:/wiiu/apps/godot/godot.rpx
   (`OS_WiiU::get_executable_path`). Used to test whether the app-switch hangs come from Aroma's
   .wuhb handling.
+- **Audio threading (2026-11-13, verified on console):** the mixer is its own OSThread created on
+  core 2 at priority 16, and AXInit runs from a short-lived thread on core 2 too. Before:
+  mixer on core 1 at priority 16 crackled (waited out main-thread frames); at priority 12 it
+  buzzed; with AX initialised from the main thread, every main-thread frame over ~34 ms gave a
+  short AX buzz with no ring underrun (AX's CPU-side work presumably waits behind the main thread
+  on core 1). Cores: 0 and 2 have 512 KB L2, core 1 (main thread) 2 MB.
