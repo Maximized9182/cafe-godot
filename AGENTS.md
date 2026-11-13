@@ -664,3 +664,9 @@ Verified on the console with Godot Hello's counter button. Samples with an inval
   sd:/wiiu/apps/godot/) the user opened and closed the HOME menu ~19 times with no hang. The one
   stack trace (0xCAFEBADD) was in Aroma's homebrew_rpx_loader. Suspect Aroma's bundle handling;
   ship big games as .rpx + pack until that's understood (cafe-export only makes .wuhb so far).
+- **Pack on the SD card, bundle for icon/name (`cafe-export --pack-on-sd DIR`):** the .wuhb
+  holds the .rpx, icon, name and `godot.pckdir` (one line, e.g.
+  `fs:/vol/external01/wiiu/apps/funkin`); `godot.pck` lives in that folder. Test of the theory
+  that the hangs come from Godot reading its pack through Aroma's bundle code
+  (ContentRedirection/WUHBUtils) from several threads, while a background thread mid-read holds
+  something the HOME menu needs. FNF exported this way on 2026-11-13 for the user to test.

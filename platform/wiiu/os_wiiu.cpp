@@ -108,9 +108,13 @@ String OS_WiiU::get_unique_id() const {
 }
 
 // Godot looks for the game's pack next to the executable (godot.pck).
-// - As a .wuhb, the pack is in the bundle: fs:/vol/content/godot.pck.
-// - As a plain .rpx (no bundle), it's a file next to the .rpx on the SD card:
-//   sd:/wiiu/apps/godot/godot.pck for sd:/wiiu/apps/godot/godot.rpx.
+// - .wuhb with the pack inside: fs:/vol/content/godot.pck.
+// - .wuhb with the pack on the SD card (cafe-export --pack-on-sd): the bundle
+//   only has fs:/vol/content/godot.pckdir, one line naming the folder, e.g.
+//   fs:/vol/external01/wiiu/apps/funkin. Keeps the bundle's icon and name
+//   while the game's reads bypass Aroma's bundle code (suspected in the
+//   console hangs on HOME with .wuhb games, AGENTS.md section 18).
+// - Plain .rpx: sd:/wiiu/apps/godot/godot.pck next to sd:/wiiu/apps/godot/godot.rpx.
 String OS_WiiU::get_executable_path() const {
 	static String path;
 	if (path.is_empty()) {
@@ -118,7 +122,22 @@ String OS_WiiU::get_executable_path() const {
 		if (::stat("fs:/vol/content/godot.pck", &st) == 0) {
 			path = "fs:/vol/content/godot.rpx";
 		} else {
-			path = "fs:/vol/external01/wiiu/apps/godot/godot.rpx";
+			FILE *f = fopen("fs:/vol/content/godot.pckdir", "r");
+			if (f) {
+				char dir[256] = {};
+				if (fgets(dir, sizeof(dir), f)) {
+					String d = String::utf8(dir).strip_edges();
+					if (!d.is_empty() && ::stat((d + "/godot.pck").utf8().get_data(), &st) == 0) {
+						path = d + "/godot.rpx";
+					} else {
+						WHBLogPrintf("godot.pckdir names %s, but there's no godot.pck there.", d.utf8().get_data());
+					}
+				}
+				fclose(f);
+			}
+			if (path.is_empty()) {
+				path = "fs:/vol/external01/wiiu/apps/godot/godot.rpx";
+			}
 		}
 		WHBLogPrintf("Executable path: %s", path.utf8().get_data());
 	}

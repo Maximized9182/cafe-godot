@@ -20,6 +20,12 @@
 #   -t, --template FILE    Cafe Godot template .rpx
 #                          (default: $CAFE_GODOT_HOME/templates/4.7.2/wiiu_template_debug.rpx)
 #   -u, --upload HOST      Upload to the Wii U at HOST (FTP, empty credentials)
+#       --pack-on-sd DIR   Keep the pack out of the bundle: the .wuhb gets only the
+#                          program, icon and name, and godot.pck goes to DIR on the
+#                          SD card (e.g. wiiu/apps/funkin; uploaded there with
+#                          --upload, else written next to the .wuhb). Avoids the
+#                          console hangs on HOME seen with big games read through
+#                          the bundle (suspected, see AGENTS.md section 18).
 #       --godot PATH       Godot editor binary (default: $GODOT or "godot")
 #   -h, --help             Show this help
 #
@@ -38,7 +44,7 @@ usage() { sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; }
 die() { echo "cafe-export: $*" >&2; exit 1; }
 
 project="" out="" preset="" name="" short_name="" author="Cafe Godot"
-icon="" tv="" drc="" upload=""
+icon="" tv="" drc="" upload="" pack_on_sd=""
 while [[ $# -gt 0 ]]; do
 	case "$1" in
 		-p|--preset) preset="$2"; shift 2 ;;
@@ -50,6 +56,7 @@ while [[ $# -gt 0 ]]; do
 		--drc-image) drc="$2"; shift 2 ;;
 		-t|--template) TEMPLATE="$2"; shift 2 ;;
 		-u|--upload) upload="$2"; shift 2 ;;
+		--pack-on-sd) pack_on_sd="${2#/}"; pack_on_sd="${pack_on_sd%/}"; shift 2 ;;
 		--godot) GODOT_BIN="$2"; shift 2 ;;
 		-h|--help) usage; exit 0 ;;
 		-*) die "unknown option $1 (see --help)" ;;
@@ -131,6 +138,12 @@ if ! "$GODOT_BIN" --headless --path "$project" --export-pack "$preset" "$work/co
 	die "pack export failed (full log above)"
 fi
 
+if [[ -n "$pack_on_sd" ]]; then
+	# The bundle only says where the pack is; the pack goes to the SD card.
+	mv "$work/content/godot.pck" "$work/godot.pck"
+	echo "fs:/vol/external01/$pack_on_sd" > "$work/content/godot.pckdir"
+fi
+
 # Scales an image to WxH: pixel-perfect for small pixel art, fitted on black otherwise.
 fit_image() { # src dst W H
 	local src="$1" dst="$2" w="$3" h="$4" sw
@@ -172,6 +185,18 @@ fi
 "$WUHBTOOL" "${args[@]}" > "$work/wuhb.log" 2>&1 || { cat "$work/wuhb.log" >&2; die "wuhbtool failed"; }
 mv "$work/out.wuhb" "$out"
 echo "cafe-export: wrote $out ($(du -h "$out" | cut -f1))"
+
+if [[ -n "$pack_on_sd" ]]; then
+	if [[ -n "$upload" ]]; then
+		echo "cafe-export: uploading the pack to sd:/$pack_on_sd/godot.pck..."
+		curl -sS --connect-timeout 10 -u : --ftp-create-dirs -T "$work/godot.pck" "ftp://$upload:21/fs/vol/external01/$pack_on_sd/" ||
+			die "pack upload failed (a running app can't have its pack replaced; close it first)"
+	else
+		pack_out="$(dirname "$out")/godot.pck"
+		mv "$work/godot.pck" "$pack_out"
+		echo "cafe-export: wrote $pack_out; copy it to sd:/$pack_on_sd/godot.pck"
+	fi
+fi
 
 if [[ -n "$upload" ]]; then
 	echo "cafe-export: uploading to $upload..."
