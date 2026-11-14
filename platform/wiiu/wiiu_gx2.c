@@ -880,9 +880,22 @@ void wiiu_gx2_frame_present(void) {
 	// off again while it finishes the launch.
 	GX2SetTVEnable(TRUE);
 	GX2SetDRCEnable(TRUE);
-	// Paces the loop to the display (60 Hz).
+	// Paces the loop to the display (60 Hz), with one frame in flight: wait
+	// only while an earlier swap is still pending, not for this one. Waiting
+	// for this frame's own flip made the CPU (game logic) and the GPU take
+	// turns, so ~7 ms of CPU + ~11 ms of GPU missed the 16.7 ms frame (FNF ran
+	// at ~35 fps with both under budget). The vertex arenas are double
+	// buffered for this (arena_index flips each frame).
 	const OSTime wait_start = OSGetSystemTime();
-	GX2WaitForFlip();
+	for (;;) {
+		uint32_t swap_count = 0, flip_count = 0;
+		OSTime last_flip = 0, last_vsync = 0;
+		GX2GetSwapStatus(&swap_count, &flip_count, &last_flip, &last_vsync);
+		if (swap_count <= flip_count + 1) {
+			break;
+		}
+		GX2WaitForFlip();
+	}
 	stat_flip_wait_ms = (float)((double)OSTicksToMicroseconds(OSGetSystemTime() - wait_start) / 1000.0);
 	// The next frame starts with no target bound.
 	target_cb = NULL;
