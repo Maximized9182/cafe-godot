@@ -216,9 +216,13 @@ void AudioDriverWiiU::start() {
 	os_thread_stack = (uint8_t *)MEMAllocFromDefaultHeapEx(STACK_SIZE, 16);
 	ERR_FAIL_NULL_MSG(os_thread_stack, "Couldn't allocate the audio thread's stack.");
 	memset(&os_thread, 0, sizeof(os_thread));
-	// Core 2, priority 16 (the default): away from the main thread (core 1).
+	// Core 0, priority 16 (the default): away from the main thread (core 1),
+	// where at equal priority it waited out long frames (crackling). It was
+	// on core 2 until 2026-11-14; HOME freezes hang in OSReleaseForeground
+	// waiting for core 2, and it was the only app thread pinned there (SDL2
+	// apps, which don't freeze, pin nothing).
 	if (!OSCreateThread(&os_thread, os_thread_entry, 0, (char *)this, os_thread_stack + STACK_SIZE, STACK_SIZE, 16,
-				OS_THREAD_ATTRIB_AFFINITY_CPU2)) {
+				OS_THREAD_ATTRIB_AFFINITY_CPU0)) {
 		ERR_PRINT("Couldn't create the audio thread.");
 		MEMFreeToDefaultHeap(os_thread_stack);
 		os_thread_stack = nullptr;
