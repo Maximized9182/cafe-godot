@@ -9,8 +9,8 @@ It is not an emulator or a reimplementation: it's Godot itself, compiled for the
 PowerPC CPU, with new backends for the display, GPU (GX2), input, audio (AX), file system and
 the HOME menu.
 
-> Status: early but playable. Several full 2D games run, including a Friday Night Funkin'
-> engine and an Undertale-style RPG engine. Expect rough edges.
+> Status: early but playable. Several full 2D games run, including a [Friday Night Funkin'
+> engine](https://github.com/cherrythecool/funkin_godot) and an [Undertale-style RPG engine](https://github.com/Maximized9182/LVENGINE). Expect rough edges.
 
 ## What works
 
