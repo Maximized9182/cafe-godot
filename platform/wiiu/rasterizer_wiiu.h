@@ -268,8 +268,8 @@ class RasterizerCanvasWiiU : public RasterizerCanvasDummy {
 	WiiUBlend batch_blend = WIIU_BLEND_MIX;
 	// MSDF text (CANVAS_RECT_MSDF): px range (0: off) and outline of the batch,
 	// and of the next _begin.
-	float batch_msdf_range = 0.0f, batch_msdf_outline = 0.0f;
-	float msdf_range = 0.0f, msdf_outline = 0.0f;
+	float batch_msdf_range = 0.0f, batch_msdf_outline = 0.0f, batch_msdf_px_size = 1.0f;
+	float msdf_range = 0.0f, msdf_outline = 0.0f, msdf_px_size = 1.0f;
 	WiiUBlend blend = WIIU_BLEND_MIX; // For the next _begin: the current item's material.
 	LocalVector<WiiUVertex> batch;
 

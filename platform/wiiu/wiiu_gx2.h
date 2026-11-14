@@ -84,7 +84,8 @@ void wiiu_gx2_set_scissor(int32_t p_x, int32_t p_y, int32_t p_width, int32_t p_h
 // MSDF text for the following wiiu_gx2_draw calls: the texture is a
 // multichannel signed distance field (Godot's FontFile MSDF mode). p_px_range
 // 0 turns it off; p_outline is the outline size in pixels (0: fill).
-void wiiu_gx2_set_msdf(float p_px_range, float p_outline);
+// p_px_size: screen pixels per distance-field unit (sharpness).
+void wiiu_gx2_set_msdf(float p_px_range, float p_outline, float p_px_size);
 // Blend for the following wiiu_gx2_draw calls (WIIU_BLEND_MIX by default).
 // Whoever sets another mode sets it back to mix afterwards.
 void wiiu_gx2_set_blend(WiiUBlend p_blend);

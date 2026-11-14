@@ -10,7 +10,9 @@ layout (location = 0) out vec4 VaryingColor;
 
 uniform sampler2D texture0;
 
-// x: px_range, y: outline size, zw: texture size in pixels.
+// x: px_range, y: outline size, z: px_size (screen pixels per distance-field
+// unit, computed on the CPU from the glyph's on-screen scale: fwidth() gave
+// a wrong scale on GX2 and left fills half transparent).
 layout(std140) uniform MsdfParams
 {
     vec4 params;
@@ -26,8 +28,7 @@ void main()
     vec4 msdf_sample = texture(texture0, VertexTexCoord);
     float px_range = m.params.x;
     float outline_thickness = m.params.y;
-    vec2 dest_size = vec2(1.0) / fwidth(VertexTexCoord);
-    float px_size = max(0.5 * dot(vec2(px_range) / m.params.zw, dest_size), 1.0);
+    float px_size = max(m.params.z, 1.0);
     float d = msdf_median(msdf_sample.r, msdf_sample.g, msdf_sample.b);
     float a;
     if (outline_thickness > 0.0) {

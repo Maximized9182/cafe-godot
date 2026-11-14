@@ -843,9 +843,9 @@ void RasterizerCanvasWiiU::_flush() {
 	for (uint32_t start = 0; start < batch.size(); start += MAX_DRAW_VERTICES) {
 		const uint32_t count = MIN(MAX_DRAW_VERTICES, batch.size() - start);
 		wiiu_gx2_set_blend(batch_blend);
-		wiiu_gx2_set_msdf(batch_msdf_range, batch_msdf_outline);
+		wiiu_gx2_set_msdf(batch_msdf_range, batch_msdf_outline, batch_msdf_px_size);
 		wiiu_gx2_draw(batch_primitive, batch_texture, batch_linear, batch_repeat, batch.ptr() + start, count);
-		wiiu_gx2_set_msdf(0.0f, 0.0f);
+		wiiu_gx2_set_msdf(0.0f, 0.0f, 1.0f);
 		wiiu_gx2_set_blend(WIIU_BLEND_MIX);
 	}
 	batch.clear();
@@ -853,7 +853,7 @@ void RasterizerCanvasWiiU::_flush() {
 
 void RasterizerCanvasWiiU::_begin(WiiUPrimitive p_primitive, WiiUTexture *p_texture, int p_linear, bool p_repeat) {
 	if (p_primitive != batch_primitive || p_texture != batch_texture || p_linear != batch_linear || p_repeat != batch_repeat || blend != batch_blend ||
-			msdf_range != batch_msdf_range || msdf_outline != batch_msdf_outline) {
+			msdf_range != batch_msdf_range || msdf_outline != batch_msdf_outline || msdf_px_size != batch_msdf_px_size) {
 		_flush();
 		batch_primitive = p_primitive;
 		batch_texture = p_texture;
@@ -862,6 +862,7 @@ void RasterizerCanvasWiiU::_begin(WiiUPrimitive p_primitive, WiiUTexture *p_text
 		batch_blend = blend;
 		batch_msdf_range = msdf_range;
 		batch_msdf_outline = msdf_outline;
+		batch_msdf_px_size = msdf_px_size;
 	}
 }
 
@@ -894,6 +895,7 @@ void RasterizerCanvasWiiU::draw_texture_rect(WiiUTexture *p_texture, const Rect2
 	blend = WIIU_BLEND_DISABLED;
 	msdf_range = 0.0f;
 	msdf_outline = 0.0f;
+	msdf_px_size = 1.0f;
 	_begin(WIIU_PRIM_TRIANGLES, p_texture, p_linear, false);
 	const Vector2 pos[4] = {
 		p_dst.position,
@@ -1064,6 +1066,7 @@ void RasterizerCanvasWiiU::canvas_render_items(RID p_to_render_target, Item *p_i
 				}
 				msdf_range = 0.0f; // Only TYPE_RECT with CANVAS_RECT_MSDF sets it.
 				msdf_outline = 0.0f;
+				msdf_px_size = 1.0f;
 				switch (c->type) {
 					case Item::Command::TYPE_TRANSFORM: {
 						const Item::CommandTransform *t = static_cast<const Item::CommandTransform *>(c);
@@ -1125,6 +1128,17 @@ void RasterizerCanvasWiiU::canvas_render_items(RID p_to_render_target, Item *p_i
 								SWAP(bx, by);
 							}
 							uv[k] = Vector2(bx ? u1 : u0, by ? v1 : v0);
+						}
+						if (msdf_range > 0.0f && textured) {
+							// Screen pixels per texel along each axis (GLES3 gets
+							// this from fwidth(uv) in the shader).
+							const float tex_w = MAX(Math::abs(u1 - u0) * tsize.x, 0.0001f);
+							const float tex_h = MAX(Math::abs(v1 - v0) * tsize.y, 0.0001f);
+							const float sx = xform.columns[0].length() * dst.size.x / tex_w;
+							const float sy = xform.columns[1].length() * dst.size.y / tex_h;
+							// Quantized so neighbouring glyphs share a batch.
+							msdf_px_size = Math::snapped(MAX(0.5f * msdf_range * (sx + sy), 1.0f), 0.25f);
+							_begin(WIIU_PRIM_TRIANGLES, batch_texture, batch_linear, batch_repeat);
 						}
 						_quad(xform, pos, uv, rect->modulate * base_color);
 					} break;

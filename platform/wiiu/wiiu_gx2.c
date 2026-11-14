@@ -135,10 +135,12 @@ static uint32_t msdf_ps_uniform_location = 0;
 static uint32_t msdf_sampler_location = 0;
 static float msdf_px_range = 0.0f;
 static float msdf_outline = 0.0f;
+static float msdf_px_size = 1.0f;
 
-void wiiu_gx2_set_msdf(float p_px_range, float p_outline) {
+void wiiu_gx2_set_msdf(float p_px_range, float p_outline, float p_px_size) {
 	msdf_px_range = p_px_range;
 	msdf_outline = p_outline;
+	msdf_px_size = p_px_size;
 }
 static uint32_t draw_uniform_location = 0;
 static uint32_t draw_sampler_location = 0;
@@ -811,7 +813,7 @@ void wiiu_gx2_draw(WiiUPrimitive p_primitive, WiiUTexture *p_texture, int p_filt
 		// Per-draw parameters live in the arena (the GPU reads them later).
 		arena_used = (arena_used + GX2_UNIFORM_BLOCK_ALIGNMENT - 1) & ~(uint32_t)(GX2_UNIFORM_BLOCK_ALIGNMENT - 1);
 		uint32_t *params = (uint32_t *)(arena[arena_index] + arena_used);
-		const float values[4] = { msdf_px_range, msdf_outline, (float)texture->width, (float)texture->height };
+		const float values[4] = { msdf_px_range, msdf_outline, msdf_px_size, 0.0f };
 		for (int i = 0; i < 4; i++) {
 			uint32_t bits;
 			memcpy(&bits, &values[i], 4);
