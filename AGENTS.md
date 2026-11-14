@@ -344,7 +344,7 @@ crashed" means the console is hung and needs `iosu reboot` over the Mocha TCP sh
 The VM is started with `~/archvm.sh` on the host (qemu; ports 2222->22, 2121->21). If it was
 launched as a background task of a Claude session, it stops when that session ends.
 
-The local working copies of the platform files are in `~/Projects/wiiu-godot/tools/staging/`
+The local working copies of the platform files are in `~/Projects/Vibecoded/wiiu-godot/tools/staging/`
 on the host. The VM tree is the source of truth.
 
 ### 10.1 Correction: the real root cause was that static constructors never ran
@@ -575,7 +575,7 @@ from project.godot (config/name, config/icon, including uid:// icons via the .im
 icons of 64 px or smaller are scaled with nearest-neighbour; splash images are fitted on black.
 
 On the user's PC it's installed as `~/.local/bin/cafe-export` (symlink to
-`~/Projects/wiiu-godot/tools/cafe-export.sh`). Files in `~/.local/share/cafe-godot/`:
+`~/Projects/Vibecoded/wiiu-godot/tools/cafe-export.sh`). Files in `~/.local/share/cafe-godot/`:
 `bin/wuhbtool` (copied from the VM's devkitPro) and
 `templates/4.7.2/wiiu_template_debug.rpx`. **After rebuilding the engine, copy the new
 `bin/godot.wiiu.template_debug.ppc32.rpx` there** (it's the lvengine profile build: GDScript,
@@ -691,9 +691,9 @@ Verified on the console with Godot Hello's counter button. Samples with an inval
 - Also from this session: 60 fps in FNF from one frame in flight (595336b); stats-overlay buzz was mallinfo (~20 ms under the allocator lock), replaced by an sbrk counter (e743bb4); HOME now sends focus out/in and paused/resumed (b41df8f); the audio mixer thread is on core 0 at priority 15; the [home] breadcrumbs (b83c321) are still in and temporary.
 - Mipmaps (78e844b): textures whose Image has mipmaps upload every level (tiled only: one linear staging surface per level, GX2CopySurface(src, 0, 0, dst, level, 0); the GX2Surface gets mipLevels and a separate `mipmaps` allocation; viewNumMips follows). wiiu_gx2_draw's filter is now WIIU_FILTER_* bits (linear, mipmaps); samplers [4][2] with mip filter LINEAR and LOD 0-14 for the *_WITH_MIPMAPS canvas filters, NONE otherwise. Verified on the console with the render test's coloured-level texture (quarter size shows level 2, blue). FNF imports without mipmaps, so it doesn't use them. Same screenshot verified the five blend modes and the nine-patch tiling.
 
-- Side port (2026-11-14): "Deltarune Lightners Live Plus" (Godot 4.6.0) runs with nlaha/godot-midi built in as a custom module, kept outside this repo in /home/user/wiiu/lightners (host: ~/Projects/wiiu-godot/lightners, README there). Build with custom_modules=... extra_suffix=midi; the regular template is untouched.
+- Side port (2026-11-14): "Deltarune Lightners Live Plus" (Godot 4.6.0) runs with nlaha/godot-midi built in as a custom module, kept outside this repo in /home/user/wiiu/lightners (host: ~/Projects/Vibecoded/wiiu-godot/lightners, README there). Build with custom_modules=... extra_suffix=midi; the regular template is untouched.
 
-- MSDF text works on hardware (a955142, verified 2026-11-14 16:21): shaders/msdf_vsh.glsl + msdf_fsh.glsl compiled with CafeGLSL (third_party/cafeglsl on the host, `glslcompiler --uniform-mode register`), msdfgen module enabled in profiles/cafe.py, px_size computed on the CPU from the glyph scale. **Lesson for canvas shaders:** a per-draw uniform block written into the vertex arena read as zeros on the real GPU (Cemu was fine); per-draw parameters as pixel uniform registers (GX2SetPixelUniformReg, register shader mode) work. Shader sources: host ~/Projects/wiiu-godot/shaders_src (need `#extension GL_ARB_separate_shader_objects : enable` for CafeGLSL).
+- MSDF text works on hardware (a955142, verified 2026-11-14 16:21): shaders/msdf_vsh.glsl + msdf_fsh.glsl compiled with CafeGLSL (third_party/cafeglsl on the host, `glslcompiler --uniform-mode register`), msdfgen module enabled in profiles/cafe.py, px_size computed on the CPU from the glyph scale. **Lesson for canvas shaders:** a per-draw uniform block written into the vertex arena read as zeros on the real GPU (Cemu was fine); per-draw parameters as pixel uniform registers (GX2SetPixelUniformReg, register shader mode) work. Shader sources: host ~/Projects/Vibecoded/wiiu-godot/shaders_src (need `#extension GL_ARB_separate_shader_objects : enable` for CafeGLSL).
 
 - GPUParticles2D (b3b22ce): on WIIU_ENABLED builds the node creates an internal CPUParticles2D twin via convert_from_particles on ENTER_TREE and forwards set_emitting/restart/speed_scale/amount/texture/process_material (core patch in scene/2d/gpu_particles_2d.*). Only ParticleProcessMaterial particles; custom particle shaders draw nothing. Verified on the console (render test, 16:27).
 
