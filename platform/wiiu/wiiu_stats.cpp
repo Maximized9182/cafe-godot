@@ -30,6 +30,8 @@
 #include <string.h>
 
 // wiiu_system_font.cpp: CafeStd (the Wii U system font).
+// Defined in audio_driver_wiiu.cpp.
+extern "C" volatile uint32_t wiiu_audio_underruns;
 extern "C" float wiiu_sysfont_measure(const char *p_text, float p_px);
 extern "C" float wiiu_sysfont_line_height(float p_px);
 extern "C" void wiiu_sysfont_draw(float p_x, float p_y, float p_px, const char *p_text, float p_r, float p_g, float p_b, float p_a);
@@ -172,6 +174,7 @@ void update_lines() {
 			busy > 16.7f ? "over" : "within");
 	add("GPU %.2f ms (%.0f%% of frame)", (double)gx2.gpu_ms, avg > 0.0f ? (double)(gx2.gpu_ms * 100.0f / avg) : 0.0);
 	add("Draws %u   vertices %u", (unsigned)gx2.draws, (unsigned)gx2.vertices);
+	add("Audio underruns %u", (unsigned)wiiu_audio_underruns);
 
 	// Memory. No MEMGetTotalFreeSizeForExpHeap / MEMGetAllocatableSizeForExpHeapEx
 	// on MEM2: they walk the heap with interrupts off, and calling them 4 times

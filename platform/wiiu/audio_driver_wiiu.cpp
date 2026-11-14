@@ -13,6 +13,12 @@
 
 #include "wiiu_gx2.h"
 
+// Underruns since start (the voices caught up with write_pos), shown by the
+// stats overlay (wiiu_stats.cpp).
+extern "C" {
+volatile uint32_t wiiu_audio_underruns = 0;
+}
+
 // Where AXInit runs. AX keeps its own work (the "AXIST" thread) on that core,
 // and the system expects it on the main core: AXInit on core 2 (2f960b4,
 // against a buzz on long main-thread frames) made 1 in ~8 HOME presses stall
@@ -120,12 +126,17 @@ void AudioDriverWiiU::thread_func(void *p_udata) {
 			continue;
 		}
 		const uint32_t play = ad->play_position();
+		if (ad->resync_pending) {
+			ad->resync_pending = false;
+			ad->write_pos = (play + RING_CHUNK) % RING_SAMPLES;
+		}
 		uint32_t ahead = (ad->write_pos + RING_SAMPLES - play) % RING_SAMPLES;
 		if (ahead > TARGET_AHEAD + RING_CHUNK) {
 			// Never this far ahead normally: the voices passed write_pos (an
 			// underrun) and "ahead" wrapped. Without this the thread slept while
 			// AX looped stale samples for most of the ring (a buzz). Restart
 			// writing just ahead of the play position.
+			wiiu_audio_underruns = wiiu_audio_underruns + 1;
 			ad->write_pos = (play + RING_CHUNK) % RING_SAMPLES;
 			ahead = RING_CHUNK;
 		}
@@ -193,6 +204,7 @@ uint32_t AudioDriverWiiU::proc_released(void *p_context) {
 uint32_t AudioDriverWiiU::proc_acquired(void *p_context) {
 	AudioDriverWiiU *ad = static_cast<AudioDriverWiiU *>(p_context);
 	if (ad->voices_paused) {
+		ad->resync_pending = true;
 		ad->set_voices_playing(true);
 		ad->voices_paused = false;
 	}
@@ -216,12 +228,15 @@ void AudioDriverWiiU::start() {
 	os_thread_stack = (uint8_t *)MEMAllocFromDefaultHeapEx(STACK_SIZE, 16);
 	ERR_FAIL_NULL_MSG(os_thread_stack, "Couldn't allocate the audio thread's stack.");
 	memset(&os_thread, 0, sizeof(os_thread));
-	// Core 0, priority 16 (the default): away from the main thread (core 1),
-	// where at equal priority it waited out long frames (crackling). It was
-	// on core 2 until 2026-11-14; HOME freezes hang in OSReleaseForeground
-	// waiting for core 2, and it was the only app thread pinned there (SDL2
-	// apps, which don't freeze, pin nothing).
-	if (!OSCreateThread(&os_thread, os_thread_entry, 0, (char *)this, os_thread_stack + STACK_SIZE, STACK_SIZE, 16,
+	// Core 0, priority 15 (one above the default 16, as SDL2 does for its
+	// audio thread): away from the main thread (core 1), where at equal
+	// priority it waited out long frames (crackling), and ahead of Godot's
+	// worker threads (priority 16, any core; no time slicing between equal
+	// priorities, so a busy worker held the mixer off: short buzzes with the
+	// stats overlay open). It was on core 2 until 2026-11-14; HOME freezes
+	// hang in OSReleaseForeground waiting for core 2, and it was the only app
+	// thread pinned there (SDL2 apps, which don't freeze, pin nothing).
+	if (!OSCreateThread(&os_thread, os_thread_entry, 0, (char *)this, os_thread_stack + STACK_SIZE, STACK_SIZE, 15,
 				OS_THREAD_ATTRIB_AFFINITY_CPU0)) {
 		ERR_PRINT("Couldn't create the audio thread.");
 		MEMFreeToDefaultHeap(os_thread_stack);

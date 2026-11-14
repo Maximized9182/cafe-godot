@@ -40,6 +40,9 @@ class AudioDriverWiiU : public AudioDriver {
 	// Voices are stopped while the app is in the background (ProcUI release
 	// callback) and started again on acquire. See audio_driver_wiiu.cpp.
 	volatile bool voices_paused = false;
+	// Set on acquire: realign write_pos with the voices before mixing again
+	// (they restart at the offset where they stopped; not an underrun).
+	volatile bool resync_pending = false;
 	static uint32_t proc_released(void *p_context);
 	static uint32_t proc_acquired(void *p_context);
 	void set_voices_playing(bool p_playing);
