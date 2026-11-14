@@ -176,6 +176,7 @@ void AudioDriverWiiU::set_voices_playing(bool p_playing) {
 // block repeating). Runs on the main thread inside ProcUIProcessMessages.
 uint32_t AudioDriverWiiU::proc_released(void *p_context) {
 	AudioDriverWiiU *ad = static_cast<AudioDriverWiiU *>(p_context);
+	WHBLogPrint("[home] audio: stopping voices"); // Debug (HOME freeze), temporary.
 	ad->voices_paused = true;
 	ad->set_voices_playing(false);
 	// Silence, so coming back doesn't replay the old ring.
@@ -185,6 +186,7 @@ uint32_t AudioDriverWiiU::proc_released(void *p_context) {
 			DCFlushRange(ad->rings[ch], RING_SAMPLES * sizeof(int16_t));
 		}
 	}
+	WHBLogPrint("[home] audio: stopped");
 	return 0;
 }
 
