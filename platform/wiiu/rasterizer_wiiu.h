@@ -28,6 +28,7 @@
 #include "servers/rendering/dummy/storage/mesh_storage.h"
 #include "servers/rendering/dummy/storage/texture_storage.h"
 #include "servers/rendering/dummy/storage/utilities.h"
+#include "servers/rendering/shader_compiler.h"
 
 #include "wiiu_gx2.h"
 
@@ -224,21 +225,76 @@ public:
 	~MeshStorageWiiU();
 };
 
-// Shaders aren't compiled yet, but canvas_item shaders' blend mode (the
-// render_mode line, also what CanvasItemMaterial generates) is applied.
+// canvas_item shaders: the blend mode (the render_mode line, also what
+// CanvasItemMaterial generates) is always applied. A shader with only a
+// fragment() (no vertex() code, no screen texture, SDF, global/instance
+// uniforms or uniform arrays) is also translated to GLSL with Godot's
+// ShaderCompiler and compiled with CafeGLSL (cafeglsl.rpl) at runtime; its
+// uniforms go into pixel uniform registers. Anything else draws as before.
 class MaterialStorageWiiU : public RendererDummy::MaterialStorage {
 	static inline MaterialStorageWiiU *wiiu_singleton = nullptr;
 	HashMap<RID, WiiUBlend> shader_blend;
 	HashMap<RID, RID> material_shader;
+	HashMap<RID, String> shader_paths;
+
+	// A compiled canvas_item shader.
+	struct CanvasProgram {
+		WiiUProgram *program = nullptr;
+		String source; // Key into program_cache.
+		uint64_t serial = 0; // Tells MaterialData a shader was recompiled.
+		struct Param {
+			StringName name;
+			ShaderLanguage::DataType type = ShaderLanguage::TYPE_VOID;
+			Variant default_value;
+			int32_t location = -1; // Register word offset (uniforms) or sampler location (textures).
+			ShaderLanguage::ShaderNode::Uniform::Hint hint = ShaderLanguage::ShaderNode::Uniform::HINT_NONE;
+			ShaderLanguage::TextureFilter filter = ShaderLanguage::FILTER_DEFAULT;
+			ShaderLanguage::TextureRepeat repeat = ShaderLanguage::REPEAT_DEFAULT;
+		};
+		LocalVector<Param> uniforms;
+		LocalVector<Param> textures;
+		uint32_t reg_words = 0;
+	};
+	HashMap<RID, CanvasProgram *> shader_programs;
+	// Shaders with the same GLSL share one GX2 program.
+	struct CachedProgram {
+		WiiUProgram *program = nullptr;
+		int refs = 0;
+	};
+	HashMap<String, CachedProgram> program_cache;
+	uint64_t program_serial = 0;
+
+	struct MaterialData {
+		HashMap<StringName, Variant> params;
+		LocalVector<uint32_t> regs; // Packed uniforms of the current shader.
+		uint64_t built_serial = 0; // 0: regs need packing.
+		LocalVector<WiiUProgramTexture> textures;
+	};
+	HashMap<RID, MaterialData> material_data;
+
+	ShaderCompiler canvas_compiler;
+	bool canvas_compiler_ready = false;
+
+	void _init_canvas_compiler();
+	void _free_canvas_program(RID p_shader);
+	CanvasProgram *_compile_canvas_program(RID p_shader, const String &p_code);
 
 public:
 	static MaterialStorageWiiU *get_wiiu_singleton() { return wiiu_singleton; }
 	WiiUBlend get_material_blend(RID p_material) const;
+	// The material's compiled shader for a draw, with its registers and extra
+	// textures (valid until the material changes); nullptr: draw normally.
+	WiiUProgram *get_material_program(RID p_material, int p_filter, bool p_repeat, const uint32_t *&r_regs,
+			uint32_t &r_reg_words, const WiiUProgramTexture *&r_textures, uint32_t &r_texture_count);
+	bool material_has_program(RID p_material) const;
 
 	void shader_free(RID p_rid) override;
 	void shader_set_code(RID p_shader, const String &p_code) override;
+	void shader_set_path_hint(RID p_shader, const String &p_path) override;
 	void material_free(RID p_rid) override;
 	void material_set_shader(RID p_material, RID p_shader) override;
+	void material_set_param(RID p_material, const StringName &p_param, const Variant &p_value) override;
+	Variant material_get_param(RID p_material, const StringName &p_param) const override;
 
 	MaterialStorageWiiU();
 	~MaterialStorageWiiU();
@@ -271,6 +327,10 @@ class RasterizerCanvasWiiU : public RasterizerCanvasDummy {
 	float batch_msdf_range = 0.0f, batch_msdf_outline = 0.0f, batch_msdf_px_size = 1.0f;
 	float msdf_range = 0.0f, msdf_outline = 0.0f, msdf_px_size = 1.0f;
 	WiiUBlend blend = WIIU_BLEND_MIX; // For the next _begin: the current item's material.
+	// The material whose compiled shader draws the batch (invalid: none), and
+	// the one for the next _begin.
+	RID batch_material;
+	RID shader_material;
 	LocalVector<WiiUVertex> batch;
 
 	void _flush();

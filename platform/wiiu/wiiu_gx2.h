@@ -89,6 +89,29 @@ typedef struct WiiUProgram WiiUProgram;
 bool wiiu_gx2_glsl_available(void);
 WiiUProgram *wiiu_gx2_program_compile(const char *p_vs, const char *p_ps, char *r_log, int p_log_size);
 void wiiu_gx2_program_free(WiiUProgram *p_program);
+// Pixel shader lookups: a uniform's register offset (32-bit words, as
+// GX2SetPixelUniformReg takes it) or a sampler's location. -1 if the shader
+// doesn't have it (or the compiler optimized it out).
+int32_t wiiu_gx2_program_uniform_offset(const WiiUProgram *p_program, const char *p_name);
+int32_t wiiu_gx2_program_sampler_location(const WiiUProgram *p_program, const char *p_name);
+
+// A canvas_item shader program for the following wiiu_gx2_draw calls (NULL:
+// the built-in shaders). p_regs: the pixel uniform registers from word 0
+// (material parameters); the draw adds the built-ins it knows (time,
+// color_texture_pixel_size, screen_pixel_size). The draw's texture goes to
+// the color_texture sampler, p_textures to theirs. The pointers must stay
+// valid until the draws are done; whoever sets a program sets NULL afterwards.
+typedef struct {
+	WiiUTexture *texture;
+	int32_t location;
+	int filter; // WIIU_FILTER_* bits.
+	bool repeat;
+} WiiUProgramTexture;
+void wiiu_gx2_set_program(WiiUProgram *p_program, const uint32_t *p_regs, uint32_t p_reg_words,
+		const WiiUProgramTexture *p_textures, uint32_t p_texture_count, float p_time);
+// 1x1 textures for shader texture defaults (hint_default_black/transparent).
+WiiUTexture *wiiu_gx2_black_texture(void);
+WiiUTexture *wiiu_gx2_transparent_texture(void);
 
 // MSDF text for the following wiiu_gx2_draw calls: the texture is a
 // multichannel signed distance field (Godot's FontFile MSDF mode). p_px_range

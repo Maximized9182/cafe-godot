@@ -2,6 +2,8 @@
 
 #include "core/io/image.h"
 #include "core/math/math_funcs.h"
+#include "core/os/os.h"
+#include "scene/resources/texture.h"
 #include "servers/rendering/rendering_server_globals.h"
 #include "servers/rendering/rendering_server.h"
 #include "servers/rendering/rendering_server_default.h"
@@ -732,6 +734,13 @@ MaterialStorageWiiU::MaterialStorageWiiU() {
 }
 
 MaterialStorageWiiU::~MaterialStorageWiiU() {
+	LocalVector<RID> shaders;
+	for (const KeyValue<RID, CanvasProgram *> &E : shader_programs) {
+		shaders.push_back(E.key);
+	}
+	for (const RID &rid : shaders) {
+		_free_canvas_program(rid);
+	}
 	wiiu_singleton = nullptr;
 }
 
@@ -766,9 +775,333 @@ static WiiUBlend blend_from_shader_code(const String &p_code) {
 	return WIIU_BLEND_MIX;
 }
 
+// The names drivers/gles3 gives the canvas built-ins (its CanvasShaderData);
+// the fragment template below declares the ones a fragment() can use.
+void MaterialStorageWiiU::_init_canvas_compiler() {
+	if (canvas_compiler_ready) {
+		return;
+	}
+	ShaderCompiler::DefaultIdentifierActions actions;
+	actions.renames["VERTEX"] = "vertex";
+	actions.renames["LIGHT_VERTEX"] = "light_vertex";
+	actions.renames["SHADOW_VERTEX"] = "shadow_vertex";
+	actions.renames["UV"] = "uv";
+	actions.renames["POINT_SIZE"] = "point_size";
+	actions.renames["MODEL_MATRIX"] = "model_matrix";
+	actions.renames["CANVAS_MATRIX"] = "canvas_transform";
+	actions.renames["SCREEN_MATRIX"] = "screen_transform";
+	actions.renames["TIME"] = "time";
+	actions.renames["PI"] = String::num(Math::PI);
+	actions.renames["TAU"] = String::num(Math::TAU);
+	actions.renames["E"] = String::num(Math::E);
+	actions.renames["AT_LIGHT_PASS"] = "false";
+	actions.renames["INSTANCE_CUSTOM"] = "instance_custom";
+	actions.renames["COLOR"] = "color";
+	actions.renames["NORMAL"] = "normal";
+	actions.renames["NORMAL_MAP"] = "normal_map";
+	actions.renames["NORMAL_MAP_DEPTH"] = "normal_map_depth";
+	actions.renames["TEXTURE"] = "color_texture";
+	actions.renames["TEXTURE_PIXEL_SIZE"] = "color_texture_pixel_size";
+	actions.renames["NORMAL_TEXTURE"] = "normal_texture";
+	actions.renames["SPECULAR_SHININESS_TEXTURE"] = "specular_texture";
+	actions.renames["SPECULAR_SHININESS"] = "specular_shininess";
+	actions.renames["SCREEN_UV"] = "screen_uv";
+	actions.renames["REGION_RECT"] = "region_rect";
+	actions.renames["SCREEN_PIXEL_SIZE"] = "screen_pixel_size";
+	actions.renames["FRAGCOORD"] = "gl_FragCoord";
+	actions.renames["POINT_COORD"] = "gl_PointCoord";
+	actions.renames["INSTANCE_ID"] = "gl_InstanceID";
+	actions.renames["VERTEX_ID"] = "gl_VertexID";
+	actions.renames["CUSTOM0"] = "custom0";
+	actions.renames["CUSTOM1"] = "custom1";
+	actions.renames["LIGHT_POSITION"] = "light_position";
+	actions.renames["LIGHT_DIRECTION"] = "light_direction";
+	actions.renames["LIGHT_IS_DIRECTIONAL"] = "is_directional";
+	actions.renames["LIGHT_COLOR"] = "light_color";
+	actions.renames["LIGHT_ENERGY"] = "light_energy";
+	actions.renames["LIGHT"] = "light";
+	actions.renames["SHADOW_MODULATE"] = "shadow_modulate";
+	actions.renames["texture_sdf"] = "texture_sdf";
+	actions.renames["texture_sdf_normal"] = "texture_sdf_normal";
+	actions.renames["sdf_to_screen_uv"] = "sdf_to_screen_uv";
+	actions.renames["screen_uv_to_sdf"] = "screen_uv_to_sdf";
+	actions.usage_defines["COLOR"] = "#define COLOR_USED\n";
+	actions.usage_defines["SCREEN_UV"] = "#define SCREEN_UV_USED\n";
+	actions.usage_defines["SCREEN_PIXEL_SIZE"] = "@SCREEN_UV";
+	actions.usage_defines["NORMAL"] = "#define NORMAL_USED\n";
+	actions.usage_defines["NORMAL_MAP"] = "#define NORMAL_MAP_USED\n";
+	actions.usage_defines["SPECULAR_SHININESS"] = "#define SPECULAR_SHININESS_USED\n";
+	actions.usage_defines["CUSTOM0"] = "#define CUSTOM0_USED\n";
+	actions.usage_defines["CUSTOM1"] = "#define CUSTOM1_USED\n";
+	actions.render_mode_defines["skip_vertex_transform"] = "#define SKIP_TRANSFORM_USED\n";
+	actions.render_mode_defines["unshaded"] = "#define MODE_UNSHADED\n";
+	actions.render_mode_defines["light_only"] = "#define MODE_LIGHT_ONLY\n";
+	actions.render_mode_defines["world_vertex_coords"] = "#define USE_WORLD_VERTEX_COORDS\n";
+	actions.global_buffer_array_variable = "global_shader_uniforms";
+	actions.instance_uniform_index_variable = "read_draw_data_instance_offset";
+	canvas_compiler.initialize(actions);
+	canvas_compiler_ready = true;
+}
+
+// The fragment template: drivers/gles3/shaders/canvas.glsl's fragment main()
+// without lights, normal maps and the screen/SDF textures. Vertex colour
+// already holds the item's modulate, as GLES3's color_interp does.
+static const char *canvas_vs_glsl =
+		"#version 330\n"
+		"#extension GL_ARB_separate_shader_objects : enable\n"
+		"layout(location = 0) in vec3 VertexPosition;\n"
+		"layout(location = 1) in vec2 VertexTexCoord;\n"
+		"layout(location = 2) in vec4 VertexColor;\n"
+		"layout(location = 0) out vec4 VaryingColor;\n"
+		"layout(location = 1) out vec2 VaryingTexCoord;\n"
+		"void main()\n"
+		"{\n"
+		"    gl_Position = vec4(VertexPosition, 1.0);\n"
+		"    VaryingColor = VertexColor;\n"
+		"    VaryingTexCoord = VertexTexCoord;\n"
+		"}\n";
+
+static String canvas_fragment_glsl(const ShaderCompiler::GeneratedCode &p_gen) {
+	String s = "#version 330\n"
+			   "#extension GL_ARB_separate_shader_objects : enable\n"
+			   "layout(location = 0) in vec4 VertexColor;\n"
+			   "layout(location = 1) in vec2 VertexTexCoord;\n"
+			   "layout(location = 0) out vec4 frag_color;\n"
+			   "uniform sampler2D color_texture;\n"
+			   "uniform float time;\n"
+			   "uniform vec2 color_texture_pixel_size;\n"
+			   "uniform vec2 screen_pixel_size;\n";
+	for (const String &d : p_gen.defines) {
+		s += d;
+	}
+	// Loose uniforms (register mode): GLES3 puts these in a block.
+	for (const String &line : p_gen.uniforms.split("\n")) {
+		if (!line.strip_edges().is_empty()) {
+			s += "uniform " + line + "\n";
+		}
+	}
+	s += p_gen.stage_globals[ShaderCompiler::STAGE_FRAGMENT];
+	s += "void main()\n"
+		 "{\n"
+		 "\tvec4 color = VertexColor;\n"
+		 "\tvec2 uv = VertexTexCoord;\n"
+		 "\tvec2 vertex = gl_FragCoord.xy;\n"
+		 "\tvec4 region_rect = vec4(0.0, 0.0, 1.0 / color_texture_pixel_size);\n"
+		 "\tcolor *= texture(color_texture, uv);\n"
+		 "\tvec3 normal = vec3(0.0, 0.0, 1.0);\n"
+		 "\tvec4 specular_shininess = vec4(1.0);\n"
+		 "\tvec2 screen_uv = gl_FragCoord.xy * screen_pixel_size;\n"
+		 "\tvec3 light_vertex = vec3(vertex, 0.0);\n"
+		 "\tvec2 shadow_vertex = vertex;\n"
+		 "\t{\n"
+		 "\t\tfloat normal_map_depth = 1.0;\n"
+		 "\t\tvec3 normal_map = vec3(0.0, 0.0, 1.0);\n";
+	if (const String *code = p_gen.code.getptr("fragment")) {
+		s += *code;
+	}
+	s += "\n\t}\n"
+		 "\tfrag_color = color;\n"
+		 "}\n";
+	return s;
+}
+
+static void print_numbered(const String &p_source) {
+	const Vector<String> lines = p_source.split("\n");
+	for (int i = 0; i < lines.size(); i++) {
+		print_line(vformat("[shader] %4d %s", i + 1, lines[i]));
+	}
+}
+
+static bool is_float_or_vector(ShaderLanguage::DataType p_type) {
+	switch (p_type) {
+		case ShaderLanguage::TYPE_BOOL:
+		case ShaderLanguage::TYPE_BVEC2:
+		case ShaderLanguage::TYPE_BVEC3:
+		case ShaderLanguage::TYPE_BVEC4:
+		case ShaderLanguage::TYPE_INT:
+		case ShaderLanguage::TYPE_IVEC2:
+		case ShaderLanguage::TYPE_IVEC3:
+		case ShaderLanguage::TYPE_IVEC4:
+		case ShaderLanguage::TYPE_UINT:
+		case ShaderLanguage::TYPE_UVEC2:
+		case ShaderLanguage::TYPE_UVEC3:
+		case ShaderLanguage::TYPE_UVEC4:
+		case ShaderLanguage::TYPE_FLOAT:
+		case ShaderLanguage::TYPE_VEC2:
+		case ShaderLanguage::TYPE_VEC3:
+		case ShaderLanguage::TYPE_VEC4:
+		case ShaderLanguage::TYPE_MAT2:
+		case ShaderLanguage::TYPE_MAT3:
+		case ShaderLanguage::TYPE_MAT4:
+			return true;
+		default:
+			return false;
+	}
+}
+
+// Registers (vec4 each) a uniform of this type takes.
+static uint32_t register_count(ShaderLanguage::DataType p_type) {
+	switch (p_type) {
+		case ShaderLanguage::TYPE_MAT2:
+			return 2;
+		case ShaderLanguage::TYPE_MAT3:
+			return 3;
+		case ShaderLanguage::TYPE_MAT4:
+			return 4;
+		default:
+			return 1;
+	}
+}
+
+MaterialStorageWiiU::CanvasProgram *MaterialStorageWiiU::_compile_canvas_program(RID p_shader, const String &p_code) {
+	if (!p_code.contains("canvas_item") || !wiiu_gx2_glsl_available()) {
+		return nullptr;
+	}
+	_init_canvas_compiler();
+	const String *path_ptr = shader_paths.getptr(p_shader);
+	const String path = path_ptr ? *path_ptr : String("(no path)");
+
+	bool uses_sdf = false;
+	int blend_dummy = 0;
+	HashMap<StringName, ShaderLanguage::ShaderNode::Uniform> uniforms;
+	ShaderCompiler::IdentifierActions actions;
+	actions.entry_point_stages["vertex"] = ShaderCompiler::STAGE_VERTEX;
+	actions.entry_point_stages["fragment"] = ShaderCompiler::STAGE_FRAGMENT;
+	actions.entry_point_stages["light"] = ShaderCompiler::STAGE_FRAGMENT;
+	for (const char *mode : { "blend_add", "blend_mix", "blend_sub", "blend_mul", "blend_premul_alpha", "blend_disabled" }) {
+		actions.render_mode_values[mode] = Pair<int *, int>(&blend_dummy, 0);
+	}
+	actions.usage_flag_pointers["texture_sdf"] = &uses_sdf;
+	actions.usage_flag_pointers["texture_sdf_normal"] = &uses_sdf;
+	actions.usage_flag_pointers["sdf_to_screen_uv"] = &uses_sdf;
+	actions.usage_flag_pointers["screen_uv_to_sdf"] = &uses_sdf;
+	actions.uniforms = &uniforms;
+	ShaderCompiler::GeneratedCode gen;
+	if (canvas_compiler.compile(RSE::SHADER_CANVAS_ITEM, p_code, &actions, path, gen) != OK) {
+		return nullptr; // The dummy compiler already reported it.
+	}
+
+	const String *fragment = gen.code.getptr("fragment");
+	if (fragment == nullptr || fragment->strip_edges().is_empty()) {
+		return nullptr; // Only render_mode (CanvasItemMaterial): the blend is enough.
+	}
+	String unsupported;
+	const String *vertex = gen.code.getptr("vertex");
+	if (vertex && !vertex->strip_edges().is_empty()) {
+		unsupported = "vertex()";
+	} else if (gen.uses_screen_texture) {
+		unsupported = "screen texture";
+	} else if (uses_sdf) {
+		unsupported = "SDF";
+	}
+	for (const KeyValue<StringName, ShaderLanguage::ShaderNode::Uniform> &E : uniforms) {
+		if (!unsupported.is_empty()) {
+			break;
+		}
+		const ShaderLanguage::ShaderNode::Uniform &u = E.value;
+		if (u.scope != ShaderLanguage::ShaderNode::Uniform::SCOPE_LOCAL) {
+			unsupported = "global/instance uniform " + String(E.key);
+		} else if (u.array_size > 0) {
+			unsupported = "uniform array " + String(E.key);
+		} else if (ShaderLanguage::is_sampler_type(u.type) ? u.type != ShaderLanguage::TYPE_SAMPLER2D : !is_float_or_vector(u.type)) {
+			unsupported = "uniform type of " + String(E.key);
+		}
+	}
+	if (!unsupported.is_empty()) {
+		print_line(vformat("[shader] %s: %s isn't supported yet; drawing without the shader", path, unsupported));
+		return nullptr;
+	}
+
+	const String ps = canvas_fragment_glsl(gen);
+	WiiUProgram *program = nullptr;
+	if (CachedProgram *cached = program_cache.getptr(ps)) {
+		cached->refs++;
+		program = cached->program;
+	} else {
+		static char log[4096];
+		const uint64_t start = OS::get_singleton()->get_ticks_msec();
+		const CharString ps_utf8 = ps.utf8();
+		program = wiiu_gx2_program_compile(canvas_vs_glsl, ps_utf8.get_data(), log, sizeof(log));
+		const uint64_t ms = OS::get_singleton()->get_ticks_msec() - start;
+		if (program == nullptr) {
+			print_line(vformat("[shader] %s: GLSL compile failed after %d ms; drawing without the shader", path, ms));
+			for (const String &line : String::utf8(log).split("\n")) {
+				if (!line.strip_edges().is_empty()) {
+					print_line("[shader] " + line);
+				}
+			}
+			print_numbered(ps);
+			return nullptr;
+		}
+		print_line(vformat("[shader] %s: compiled in %d ms", path, ms));
+		CachedProgram c;
+		c.program = program;
+		c.refs = 1;
+		program_cache.insert(ps, c);
+	}
+
+	CanvasProgram *cp = memnew(CanvasProgram);
+	cp->program = program;
+	cp->source = ps;
+	cp->serial = ++program_serial;
+	for (const KeyValue<StringName, ShaderLanguage::ShaderNode::Uniform> &E : uniforms) {
+		const ShaderLanguage::ShaderNode::Uniform &u = E.value;
+		if (u.hint == ShaderLanguage::ShaderNode::Uniform::HINT_SCREEN_TEXTURE ||
+				u.hint == ShaderLanguage::ShaderNode::Uniform::HINT_DEPTH_TEXTURE ||
+				u.hint == ShaderLanguage::ShaderNode::Uniform::HINT_NORMAL_ROUGHNESS_TEXTURE) {
+			continue;
+		}
+		CanvasProgram::Param param;
+		param.name = E.key;
+		param.type = u.type;
+		param.hint = u.hint;
+		param.filter = u.filter;
+		param.repeat = u.repeat;
+		const CharString id = ("m_" + String(E.key)).utf8();
+		if (ShaderLanguage::is_sampler_type(u.type)) {
+			param.location = wiiu_gx2_program_sampler_location(program, id.get_data());
+			if (param.location >= 0) {
+				cp->textures.push_back(param);
+			}
+		} else {
+			param.location = wiiu_gx2_program_uniform_offset(program, id.get_data());
+			if (param.location < 0) {
+				continue; // Optimized out.
+			}
+			if (!u.default_value.is_empty()) {
+				param.default_value = ShaderLanguage::constant_value_to_variant(u.default_value, u.type, u.array_size, u.hint);
+			}
+			cp->reg_words = MAX(cp->reg_words, (uint32_t)param.location + 4 * register_count(u.type));
+			cp->uniforms.push_back(param);
+		}
+	}
+	return cp;
+}
+
+void MaterialStorageWiiU::_free_canvas_program(RID p_shader) {
+	CanvasProgram **cp = shader_programs.getptr(p_shader);
+	if (cp == nullptr) {
+		return;
+	}
+	if (CachedProgram *cached = program_cache.getptr((*cp)->source)) {
+		if (--cached->refs <= 0) {
+			wiiu_gx2_program_free(cached->program);
+			program_cache.erase((*cp)->source);
+		}
+	}
+	memdelete(*cp);
+	shader_programs.erase(p_shader);
+}
+
 void MaterialStorageWiiU::shader_free(RID p_rid) {
 	shader_blend.erase(p_rid);
+	shader_paths.erase(p_rid);
+	_free_canvas_program(p_rid);
 	RendererDummy::MaterialStorage::shader_free(p_rid);
+}
+
+void MaterialStorageWiiU::shader_set_path_hint(RID p_shader, const String &p_path) {
+	shader_paths[p_shader] = p_path;
 }
 
 void MaterialStorageWiiU::shader_set_code(RID p_shader, const String &p_code) {
@@ -779,16 +1112,45 @@ void MaterialStorageWiiU::shader_set_code(RID p_shader, const String &p_code) {
 	} else {
 		shader_blend[p_shader] = b;
 	}
+	_free_canvas_program(p_shader);
+	CanvasProgram *cp = _compile_canvas_program(p_shader, p_code);
+	if (cp) {
+		shader_programs.insert(p_shader, cp);
+	}
 }
 
 void MaterialStorageWiiU::material_free(RID p_rid) {
 	material_shader.erase(p_rid);
+	material_data.erase(p_rid);
 	RendererDummy::MaterialStorage::material_free(p_rid);
 }
 
 void MaterialStorageWiiU::material_set_shader(RID p_material, RID p_shader) {
 	RendererDummy::MaterialStorage::material_set_shader(p_material, p_shader);
 	material_shader[p_material] = p_shader;
+	if (MaterialData *md = material_data.getptr(p_material)) {
+		md->built_serial = 0;
+	}
+}
+
+void MaterialStorageWiiU::material_set_param(RID p_material, const StringName &p_param, const Variant &p_value) {
+	MaterialData &md = material_data[p_material];
+	if (p_value.get_type() == Variant::NIL) {
+		md.params.erase(p_param);
+	} else {
+		md.params[p_param] = p_value;
+	}
+	md.built_serial = 0;
+}
+
+Variant MaterialStorageWiiU::material_get_param(RID p_material, const StringName &p_param) const {
+	const MaterialData *md = material_data.getptr(p_material);
+	if (md) {
+		if (const Variant *v = md->params.getptr(p_param)) {
+			return *v;
+		}
+	}
+	return Variant();
 }
 
 WiiUBlend MaterialStorageWiiU::get_material_blend(RID p_material) const {
@@ -798,6 +1160,235 @@ WiiUBlend MaterialStorageWiiU::get_material_blend(RID p_material) const {
 	}
 	const WiiUBlend *b = shader_blend.getptr(*shader);
 	return b ? *b : WIIU_BLEND_MIX;
+}
+
+bool MaterialStorageWiiU::material_has_program(RID p_material) const {
+	const RID *shader = material_shader.getptr(p_material);
+	return shader && shader_programs.has(*shader);
+}
+
+// One uniform into its registers: floats as floats, ints and bools as their
+// 32-bit patterns (bools as ~0, Mesa's true), matrices one column per register.
+static void pack_uniform(uint32_t *r_regs, ShaderLanguage::DataType p_type, const Variant &p_value) {
+	float f[16] = {};
+	int32_t n[4] = {};
+	bool is_int = false;
+	switch (p_type) {
+		case ShaderLanguage::TYPE_BOOL:
+			n[0] = p_value.booleanize() ? -1 : 0;
+			is_int = true;
+			break;
+		case ShaderLanguage::TYPE_BVEC2:
+		case ShaderLanguage::TYPE_BVEC3:
+		case ShaderLanguage::TYPE_BVEC4: {
+			const int bits = (int)p_value;
+			for (int i = 0; i < 4; i++) {
+				n[i] = (bits & (1 << i)) ? -1 : 0;
+			}
+			is_int = true;
+		} break;
+		case ShaderLanguage::TYPE_INT:
+		case ShaderLanguage::TYPE_UINT:
+			n[0] = (int32_t)(int64_t)p_value;
+			is_int = true;
+			break;
+		case ShaderLanguage::TYPE_IVEC2:
+		case ShaderLanguage::TYPE_UVEC2: {
+			const Vector2i v = p_value;
+			n[0] = v.x;
+			n[1] = v.y;
+			is_int = true;
+		} break;
+		case ShaderLanguage::TYPE_IVEC3:
+		case ShaderLanguage::TYPE_UVEC3: {
+			const Vector3i v = p_value;
+			n[0] = v.x;
+			n[1] = v.y;
+			n[2] = v.z;
+			is_int = true;
+		} break;
+		case ShaderLanguage::TYPE_IVEC4:
+		case ShaderLanguage::TYPE_UVEC4: {
+			const Vector4i v = p_value;
+			n[0] = v.x;
+			n[1] = v.y;
+			n[2] = v.z;
+			n[3] = v.w;
+			is_int = true;
+		} break;
+		case ShaderLanguage::TYPE_FLOAT:
+			f[0] = (float)p_value;
+			break;
+		case ShaderLanguage::TYPE_VEC2: {
+			const Vector2 v = p_value;
+			f[0] = v.x;
+			f[1] = v.y;
+		} break;
+		case ShaderLanguage::TYPE_VEC3:
+			if (p_value.get_type() == Variant::COLOR) {
+				const Color c = p_value;
+				f[0] = c.r;
+				f[1] = c.g;
+				f[2] = c.b;
+			} else {
+				const Vector3 v = p_value;
+				f[0] = v.x;
+				f[1] = v.y;
+				f[2] = v.z;
+			}
+			break;
+		case ShaderLanguage::TYPE_VEC4:
+			if (p_value.get_type() == Variant::COLOR) {
+				const Color c = p_value;
+				f[0] = c.r;
+				f[1] = c.g;
+				f[2] = c.b;
+				f[3] = c.a;
+			} else if (p_value.get_type() == Variant::PLANE) {
+				const Plane p = p_value;
+				f[0] = p.normal.x;
+				f[1] = p.normal.y;
+				f[2] = p.normal.z;
+				f[3] = p.d;
+			} else if (p_value.get_type() == Variant::QUATERNION) {
+				const Quaternion q = p_value;
+				f[0] = q.x;
+				f[1] = q.y;
+				f[2] = q.z;
+				f[3] = q.w;
+			} else {
+				const Vector4 v = p_value;
+				f[0] = v.x;
+				f[1] = v.y;
+				f[2] = v.z;
+				f[3] = v.w;
+			}
+			break;
+		case ShaderLanguage::TYPE_MAT2:
+			if (p_value.get_type() == Variant::TRANSFORM2D) {
+				const Transform2D t = p_value;
+				f[0] = t.columns[0].x;
+				f[1] = t.columns[0].y;
+				f[4] = t.columns[1].x;
+				f[5] = t.columns[1].y;
+			} else {
+				const PackedFloat32Array a = p_value;
+				for (int i = 0; i < 4 && i < a.size(); i++) {
+					f[(i / 2) * 4 + (i % 2)] = a[i];
+				}
+			}
+			break;
+		case ShaderLanguage::TYPE_MAT3: {
+			const Basis b = p_value;
+			for (int c = 0; c < 3; c++) {
+				const Vector3 col = b.get_column(c);
+				f[c * 4 + 0] = col.x;
+				f[c * 4 + 1] = col.y;
+				f[c * 4 + 2] = col.z;
+			}
+		} break;
+		case ShaderLanguage::TYPE_MAT4: {
+			const Projection p = p_value;
+			for (int c = 0; c < 4; c++) {
+				for (int r = 0; r < 4; r++) {
+					f[c * 4 + r] = p.columns[c][r];
+				}
+			}
+		} break;
+		default:
+			break;
+	}
+	if (is_int) {
+		memcpy(r_regs, n, sizeof(n));
+	} else {
+		memcpy(r_regs, f, 4 * 4 * register_count(p_type));
+	}
+}
+
+static int filter_bits(ShaderLanguage::TextureFilter p_filter, int p_default) {
+	switch (p_filter) {
+		case ShaderLanguage::FILTER_NEAREST:
+			return 0;
+		case ShaderLanguage::FILTER_LINEAR:
+			return WIIU_FILTER_LINEAR;
+		case ShaderLanguage::FILTER_NEAREST_MIPMAP:
+		case ShaderLanguage::FILTER_NEAREST_MIPMAP_ANISOTROPIC:
+			return WIIU_FILTER_MIPMAPS;
+		case ShaderLanguage::FILTER_LINEAR_MIPMAP:
+		case ShaderLanguage::FILTER_LINEAR_MIPMAP_ANISOTROPIC:
+			return WIIU_FILTER_LINEAR | WIIU_FILTER_MIPMAPS;
+		default:
+			return p_default;
+	}
+}
+
+WiiUProgram *MaterialStorageWiiU::get_material_program(RID p_material, int p_filter, bool p_repeat, const uint32_t *&r_regs,
+		uint32_t &r_reg_words, const WiiUProgramTexture *&r_textures, uint32_t &r_texture_count) {
+	const RID *shader = material_shader.getptr(p_material);
+	if (shader == nullptr) {
+		return nullptr;
+	}
+	CanvasProgram **cpp = shader_programs.getptr(*shader);
+	if (cpp == nullptr) {
+		return nullptr;
+	}
+	const CanvasProgram *cp = *cpp;
+	MaterialData &md = material_data[p_material];
+	if (md.built_serial != cp->serial) {
+		md.regs.resize(cp->reg_words);
+		for (uint32_t i = 0; i < md.regs.size(); i++) {
+			md.regs[i] = 0;
+		}
+		for (const CanvasProgram::Param &param : cp->uniforms) {
+			const Variant *v = md.params.getptr(param.name);
+			pack_uniform(md.regs.ptr() + param.location, param.type, v ? *v : param.default_value);
+		}
+		md.built_serial = cp->serial;
+	}
+	// Textures every time: the resources behind the RIDs can change.
+	md.textures.resize(cp->textures.size());
+	TextureStorageWiiU *ts = TextureStorageWiiU::get_wiiu_singleton();
+	for (uint32_t i = 0; i < cp->textures.size(); i++) {
+		const CanvasProgram::Param &param = cp->textures[i];
+		WiiUProgramTexture &t = md.textures[i];
+		t.location = param.location;
+		t.filter = filter_bits(param.filter, p_filter);
+		t.repeat = param.repeat == ShaderLanguage::REPEAT_DEFAULT ? p_repeat : param.repeat == ShaderLanguage::REPEAT_ENABLE;
+		t.texture = nullptr;
+		const Variant *v = md.params.getptr(param.name);
+		if (v && ts) {
+			RID rid;
+			if (v->get_type() == Variant::RID) {
+				rid = *v;
+			} else if (v->get_type() == Variant::OBJECT) {
+				Ref<Texture2D> tex = *v;
+				if (tex.is_valid()) {
+					rid = tex->get_rid();
+				}
+			}
+			if (rid.is_valid()) {
+				t.texture = ts->resolve(rid).texture;
+			}
+		}
+		if (t.texture == nullptr) {
+			switch (param.hint) {
+				case ShaderLanguage::ShaderNode::Uniform::HINT_DEFAULT_BLACK:
+					t.texture = wiiu_gx2_black_texture();
+					break;
+				case ShaderLanguage::ShaderNode::Uniform::HINT_DEFAULT_TRANSPARENT:
+					t.texture = wiiu_gx2_transparent_texture();
+					break;
+				default:
+					t.texture = wiiu_gx2_white_texture();
+					break;
+			}
+		}
+	}
+	r_regs = md.regs.ptr();
+	r_reg_words = md.regs.size();
+	r_textures = md.textures.ptr();
+	r_texture_count = md.textures.size();
+	return cp->program;
 }
 
 // ===========================================================================
@@ -844,7 +1435,23 @@ void RasterizerCanvasWiiU::_flush() {
 		const uint32_t count = MIN(MAX_DRAW_VERTICES, batch.size() - start);
 		wiiu_gx2_set_blend(batch_blend);
 		wiiu_gx2_set_msdf(batch_msdf_range, batch_msdf_outline, batch_msdf_px_size);
+		WiiUProgram *program = nullptr;
+		if (batch_material.is_valid()) {
+			MaterialStorageWiiU *mats = MaterialStorageWiiU::get_wiiu_singleton();
+			const uint32_t *regs = nullptr;
+			uint32_t reg_words = 0;
+			const WiiUProgramTexture *textures = nullptr;
+			uint32_t texture_count = 0;
+			program = mats ? mats->get_material_program(batch_material, batch_linear, batch_repeat, regs, reg_words, textures, texture_count) : nullptr;
+			if (program) {
+				const double time = RSG::rasterizer ? RSG::rasterizer->get_total_time() : 0.0;
+				wiiu_gx2_set_program(program, regs, reg_words, textures, texture_count, (float)time);
+			}
+		}
 		wiiu_gx2_draw(batch_primitive, batch_texture, batch_linear, batch_repeat, batch.ptr() + start, count);
+		if (program) {
+			wiiu_gx2_set_program(nullptr, nullptr, 0, nullptr, 0, 0.0f);
+		}
 		wiiu_gx2_set_msdf(0.0f, 0.0f, 1.0f);
 		wiiu_gx2_set_blend(WIIU_BLEND_MIX);
 	}
@@ -853,8 +1460,10 @@ void RasterizerCanvasWiiU::_flush() {
 
 void RasterizerCanvasWiiU::_begin(WiiUPrimitive p_primitive, WiiUTexture *p_texture, int p_linear, bool p_repeat) {
 	if (p_primitive != batch_primitive || p_texture != batch_texture || p_linear != batch_linear || p_repeat != batch_repeat || blend != batch_blend ||
-			msdf_range != batch_msdf_range || msdf_outline != batch_msdf_outline || msdf_px_size != batch_msdf_px_size) {
+			msdf_range != batch_msdf_range || msdf_outline != batch_msdf_outline || msdf_px_size != batch_msdf_px_size ||
+			shader_material != batch_material) {
 		_flush();
+		batch_material = shader_material;
 		batch_primitive = p_primitive;
 		batch_texture = p_texture;
 		batch_linear = p_linear;
@@ -893,6 +1502,7 @@ void RasterizerCanvasWiiU::draw_texture_rect(WiiUTexture *p_texture, const Rect2
 	// The blit to the screen is a plain copy: blending it with the render
 	// target's alpha darkened whatever blend_sub had left alpha below 1.
 	blend = WIIU_BLEND_DISABLED;
+	shader_material = RID();
 	msdf_range = 0.0f;
 	msdf_outline = 0.0f;
 	msdf_px_size = 1.0f;
@@ -977,6 +1587,7 @@ void RasterizerCanvasWiiU::canvas_render_items(RID p_to_render_target, Item *p_i
 			const RID material = ci->material_owner == nullptr ? ci->material : ci->material_owner->material;
 			MaterialStorageWiiU *mats = MaterialStorageWiiU::get_wiiu_singleton();
 			blend = (mats && material.is_valid()) ? mats->get_material_blend(material) : WIIU_BLEND_MIX;
+			shader_material = (mats && material.is_valid() && mats->material_has_program(material)) ? material : RID();
 		}
 		// final_transform already maps the item into render-target pixels.
 		Transform2D base_xform = ci->final_transform;
