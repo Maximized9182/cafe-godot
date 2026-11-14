@@ -215,12 +215,27 @@ static uint32_t gx2_proc_released(void *context) {
 	if (!GX2DrawDone()) {
 		WHBLogPrint("[gx2] GPU timed out while releasing the foreground (GPU hung)");
 	}
+	// With one frame in flight a swap can still be queued: let it flip before
+	// the scan buffers go back to the system (at most ~3 frames).
+	for (int i = 0; i < 6; i++) {
+		uint32_t swap_count = 0, flip_count = 0;
+		OSTime last_flip = 0, last_vsync = 0;
+		GX2GetSwapStatus(&swap_count, &flip_count, &last_flip, &last_vsync);
+		if (flip_count >= swap_count) {
+			break;
+		}
+		GX2WaitForFlip();
+	}
 	WHBLogPrint("[home] gx2: freeing screen buffers");
 	gx2_acquired = false;
 	if (target_cb == &gx2_tv.color_buffer || target_cb == &gx2_drc.color_buffer) {
 		target_cb = NULL;
 	}
 	MEMFreeByStateToFrmHeap(MEMGetBaseHeapHandle(MEM_BASE_HEAP_MEM1), GX2_FRAME_HEAP_TAG);
+	// As SDL2's Wii U backend does after freeing its buffers ("necessary to
+	// avoid a black frame on leaving foreground").
+	GX2SetTVEnable(TRUE);
+	GX2SetDRCEnable(TRUE);
 	WHBLogPrint("[home] gx2: released");
 	return 0;
 }

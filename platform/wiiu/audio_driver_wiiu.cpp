@@ -187,9 +187,10 @@ void AudioDriverWiiU::set_voices_playing(bool p_playing) {
 // block repeating). Runs on the main thread inside ProcUIProcessMessages.
 uint32_t AudioDriverWiiU::proc_released(void *p_context) {
 	AudioDriverWiiU *ad = static_cast<AudioDriverWiiU *>(p_context);
-	WHBLogPrint("[home] audio: stopping voices"); // Debug (HOME freeze), temporary.
+	WHBLogPrint("[home] audio: muting"); // Debug (HOME freeze), temporary.
+	// The voices are left alone (the system stops AX for the switch), as
+	// SDL2 does; the mixer stops touching AX and the ring is silenced.
 	ad->voices_paused = true;
-	ad->set_voices_playing(false);
 	// Silence, so coming back doesn't replay the old ring.
 	for (int ch = 0; ch < 2; ch++) {
 		if (ad->rings[ch]) {
@@ -205,7 +206,6 @@ uint32_t AudioDriverWiiU::proc_acquired(void *p_context) {
 	AudioDriverWiiU *ad = static_cast<AudioDriverWiiU *>(p_context);
 	if (ad->voices_paused) {
 		ad->resync_pending = true;
-		ad->set_voices_playing(true);
 		ad->voices_paused = false;
 	}
 	return 0;
