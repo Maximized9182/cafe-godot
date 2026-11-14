@@ -88,6 +88,7 @@ static uint32_t draws_since_flush = 0;
 #define ARENA_BYTES (2 * 1024 * 1024)
 
 extern const uint8_t wiiu_shader_texture[];
+extern const uint8_t wiiu_shader_msdf[];
 
 // wiiu_system_font.cpp
 bool wiiu_sysfont_init(void);
@@ -126,6 +127,19 @@ static Screen gx2_drc;
 
 static bool draw_ready = false;
 static WHBGfxShaderGroup draw_shader;
+// MSDF text (shaders/msdf_fsh.glsl, compiled with CafeGLSL).
+static WHBGfxShaderGroup msdf_shader;
+static bool msdf_loaded = false;
+static uint32_t msdf_vs_uniform_location = 0;
+static uint32_t msdf_ps_uniform_location = 0;
+static uint32_t msdf_sampler_location = 0;
+static float msdf_px_range = 0.0f;
+static float msdf_outline = 0.0f;
+
+void wiiu_gx2_set_msdf(float p_px_range, float p_outline) {
+	msdf_px_range = p_px_range;
+	msdf_outline = p_outline;
+}
 static uint32_t draw_uniform_location = 0;
 static uint32_t draw_sampler_location = 0;
 static uint32_t *draw_uniforms = NULL; // 32 words, byte-swapped
@@ -556,6 +570,31 @@ static bool draw_init(void) {
 		}
 	}
 
+	// MSDF text shader (optional: without it MSDF fonts draw as plain textures).
+	if (WHBGfxLoadGFDShaderGroup(&msdf_shader, 0, wiiu_shader_msdf)) {
+		WHBGfxInitShaderAttribute(&msdf_shader, "VertexPosition", 0, 0, GX2_ATTRIB_FORMAT_FLOAT_32_32_32);
+		WHBGfxInitShaderAttribute(&msdf_shader, "VertexTexCoord", 0, 12, GX2_ATTRIB_FORMAT_FLOAT_32_32);
+		WHBGfxInitShaderAttribute(&msdf_shader, "VertexColor", 0, 20, GX2_ATTRIB_FORMAT_FLOAT_32_32_32_32);
+		WHBGfxInitFetchShader(&msdf_shader);
+		GX2UniformBlock *vs_block = GX2GetVertexUniformBlock(msdf_shader.vertexShader, "Transformation");
+		GX2UniformBlock *ps_block = GX2GetPixelUniformBlock(msdf_shader.pixelShader, "MsdfParams");
+		if (vs_block != NULL && ps_block != NULL) {
+			msdf_vs_uniform_location = vs_block->offset;
+			msdf_ps_uniform_location = ps_block->offset;
+			for (uint32_t i = 0; i < msdf_shader.pixelShader->samplerVarCount; i++) {
+				if (strcmp(msdf_shader.pixelShader->samplerVars[i].name, "texture0") == 0) {
+					msdf_sampler_location = msdf_shader.pixelShader->samplerVars[i].location;
+				}
+			}
+			msdf_loaded = true;
+		} else {
+			WHBLogPrint("[gx2] msdf.gsh is missing its uniform blocks; MSDF text draws unfiltered");
+			WHBGfxFreeShaderGroup(&msdf_shader);
+		}
+	} else {
+		WHBLogPrint("[gx2] couldn't load msdf.gsh; MSDF text draws unfiltered");
+	}
+
 	// Two identity matrices (vertices arrive in clip space). GX2 reads uniform
 	// blocks little-endian, so every 32-bit word is byte-swapped.
 	draw_uniforms = (uint32_t *)MEMAllocFromDefaultHeapEx(GX2_UNIFORM_BLOCK_ALIGNMENT, GX2_UNIFORM_BLOCK_ALIGNMENT);
@@ -649,6 +688,10 @@ static void draw_free(void) {
 	}
 	if (draw_ready) {
 		WHBGfxFreeShaderGroup(&draw_shader);
+		if (msdf_loaded) {
+			WHBGfxFreeShaderGroup(&msdf_shader);
+			msdf_loaded = false;
+		}
 	}
 	draw_ready = false;
 }
@@ -763,13 +806,36 @@ void wiiu_gx2_draw(WiiUPrimitive p_primitive, WiiUTexture *p_texture, int p_filt
 
 	WiiUTexture *texture = p_texture ? p_texture : draw_white;
 	GX2SetShaderMode(GX2_SHADER_MODE_UNIFORM_BLOCK);
-	GX2SetFetchShader(&draw_shader.fetchShader);
-	GX2SetVertexShader(draw_shader.vertexShader);
-	GX2SetPixelShader(draw_shader.pixelShader);
-	GX2SetVertexUniformBlock(draw_uniform_location, 32 * 4, draw_uniforms);
-	GX2SetAttribBuffer(0, bytes, (uint32_t)sizeof(WiiUVertex), out);
-	GX2SetPixelTexture(&texture->texture, draw_sampler_location);
-	GX2SetPixelSampler(&draw_samplers[p_filter & 3][p_repeat ? 1 : 0], draw_sampler_location);
+	if (msdf_loaded && msdf_px_range > 0.0f && p_texture != NULL &&
+			arena_used + GX2_UNIFORM_BLOCK_ALIGNMENT * 2 <= ARENA_BYTES) {
+		// Per-draw parameters live in the arena (the GPU reads them later).
+		arena_used = (arena_used + GX2_UNIFORM_BLOCK_ALIGNMENT - 1) & ~(uint32_t)(GX2_UNIFORM_BLOCK_ALIGNMENT - 1);
+		uint32_t *params = (uint32_t *)(arena[arena_index] + arena_used);
+		const float values[4] = { msdf_px_range, msdf_outline, (float)texture->width, (float)texture->height };
+		for (int i = 0; i < 4; i++) {
+			uint32_t bits;
+			memcpy(&bits, &values[i], 4);
+			params[i] = __builtin_bswap32(bits); // GX2 reads uniform blocks little-endian.
+		}
+		GX2Invalidate((GX2InvalidateMode)(GX2_INVALIDATE_MODE_CPU | GX2_INVALIDATE_MODE_UNIFORM_BLOCK), params, 16);
+		arena_used += GX2_UNIFORM_BLOCK_ALIGNMENT;
+		GX2SetFetchShader(&msdf_shader.fetchShader);
+		GX2SetVertexShader(msdf_shader.vertexShader);
+		GX2SetPixelShader(msdf_shader.pixelShader);
+		GX2SetVertexUniformBlock(msdf_vs_uniform_location, 32 * 4, draw_uniforms);
+		GX2SetPixelUniformBlock(msdf_ps_uniform_location, 16, params);
+		GX2SetAttribBuffer(0, bytes, (uint32_t)sizeof(WiiUVertex), out);
+		GX2SetPixelTexture(&texture->texture, msdf_sampler_location);
+		GX2SetPixelSampler(&draw_samplers[p_filter & 3][p_repeat ? 1 : 0], msdf_sampler_location);
+	} else {
+		GX2SetFetchShader(&draw_shader.fetchShader);
+		GX2SetVertexShader(draw_shader.vertexShader);
+		GX2SetPixelShader(draw_shader.pixelShader);
+		GX2SetVertexUniformBlock(draw_uniform_location, 32 * 4, draw_uniforms);
+		GX2SetAttribBuffer(0, bytes, (uint32_t)sizeof(WiiUVertex), out);
+		GX2SetPixelTexture(&texture->texture, draw_sampler_location);
+		GX2SetPixelSampler(&draw_samplers[p_filter & 3][p_repeat ? 1 : 0], draw_sampler_location);
+	}
 	GX2SetDepthOnlyControl(FALSE, FALSE, GX2_COMPARE_FUNC_ALWAYS);
 	GX2SetCullOnlyControl(GX2_FRONT_FACE_CCW, FALSE, FALSE);
 	GX2SetColorControl(GX2_LOGIC_OP_COPY, draw_blend == WIIU_BLEND_DISABLED ? 0x00 : 0xFF, FALSE, TRUE);

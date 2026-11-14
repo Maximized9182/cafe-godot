@@ -6,6 +6,9 @@ module_gdscript_enabled = "yes"
 module_godot_physics_2d_enabled = "yes"
 module_text_server_fb_enabled = "yes"
 module_freetype_enabled = "yes"
+# MSDF fonts (FontFile.multichannel_signed_distance_field): glyphs become distance
+# fields at runtime; drawn with shaders/msdf.gsh.
+module_msdfgen_enabled = "yes"
 module_ogg_enabled = "yes"
 module_vorbis_enabled = "yes"
 # Imported textures are stored as lossless WebP inside .ctex (Godot 4 default

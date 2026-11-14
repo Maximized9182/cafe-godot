@@ -843,20 +843,25 @@ void RasterizerCanvasWiiU::_flush() {
 	for (uint32_t start = 0; start < batch.size(); start += MAX_DRAW_VERTICES) {
 		const uint32_t count = MIN(MAX_DRAW_VERTICES, batch.size() - start);
 		wiiu_gx2_set_blend(batch_blend);
+		wiiu_gx2_set_msdf(batch_msdf_range, batch_msdf_outline);
 		wiiu_gx2_draw(batch_primitive, batch_texture, batch_linear, batch_repeat, batch.ptr() + start, count);
+		wiiu_gx2_set_msdf(0.0f, 0.0f);
 		wiiu_gx2_set_blend(WIIU_BLEND_MIX);
 	}
 	batch.clear();
 }
 
 void RasterizerCanvasWiiU::_begin(WiiUPrimitive p_primitive, WiiUTexture *p_texture, int p_linear, bool p_repeat) {
-	if (p_primitive != batch_primitive || p_texture != batch_texture || p_linear != batch_linear || p_repeat != batch_repeat || blend != batch_blend) {
+	if (p_primitive != batch_primitive || p_texture != batch_texture || p_linear != batch_linear || p_repeat != batch_repeat || blend != batch_blend ||
+			msdf_range != batch_msdf_range || msdf_outline != batch_msdf_outline) {
 		_flush();
 		batch_primitive = p_primitive;
 		batch_texture = p_texture;
 		batch_linear = p_linear;
 		batch_repeat = p_repeat;
 		batch_blend = blend;
+		batch_msdf_range = msdf_range;
+		batch_msdf_outline = msdf_outline;
 	}
 }
 
@@ -887,6 +892,8 @@ void RasterizerCanvasWiiU::draw_texture_rect(WiiUTexture *p_texture, const Rect2
 	// The blit to the screen is a plain copy: blending it with the render
 	// target's alpha darkened whatever blend_sub had left alpha below 1.
 	blend = WIIU_BLEND_DISABLED;
+	msdf_range = 0.0f;
+	msdf_outline = 0.0f;
 	_begin(WIIU_PRIM_TRIANGLES, p_texture, p_linear, false);
 	const Vector2 pos[4] = {
 		p_dst.position,
@@ -1055,6 +1062,8 @@ void RasterizerCanvasWiiU::canvas_render_items(RID p_to_render_target, Item *p_i
 				if (skipping && c->type != Item::Command::TYPE_ANIMATION_SLICE) {
 					continue;
 				}
+				msdf_range = 0.0f; // Only TYPE_RECT with CANVAS_RECT_MSDF sets it.
+				msdf_outline = 0.0f;
 				switch (c->type) {
 					case Item::Command::TYPE_TRANSFORM: {
 						const Item::CommandTransform *t = static_cast<const Item::CommandTransform *>(c);
@@ -1071,6 +1080,9 @@ void RasterizerCanvasWiiU::canvas_render_items(RID p_to_render_target, Item *p_i
 
 					case Item::Command::TYPE_RECT: {
 						const Item::CommandRect *rect = static_cast<const Item::CommandRect *>(c);
+						// MSDF glyphs: the shader turns the distance field into coverage.
+						msdf_range = (rect->flags & CANVAS_RECT_MSDF) ? MAX(rect->px_range, 0.0001f) : 0.0f;
+						msdf_outline = (rect->flags & CANVAS_RECT_MSDF) ? rect->outline : 0.0f;
 						Size2 tsize;
 						const bool textured = use_texture(rect->texture, WIIU_PRIM_TRIANGLES, tsize);
 						if (rect->flags & CANVAS_RECT_TILE) {

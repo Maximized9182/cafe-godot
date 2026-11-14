@@ -135,6 +135,7 @@ func _ready() -> void:
 		_caption(blend_names[i], Vector2(775 + i * 92, 465))
 
 	_add_mipmap_row()
+	_add_msdf_row()
 
 	fps_label = Label.new()
 	fps_label.position = Vector2(40, 640)
@@ -187,3 +188,25 @@ func _add_mipmap_row() -> void:
 		sprite.position = Vector2(840 + i * 130, 500)
 		add_child(sprite)
 		_caption(entries[i][2], Vector2(840 + i * 130, 570))
+
+
+# MSDF text: the same font as a plain bitmap and as a multichannel signed
+# distance field, both scaled up 2.5x (MSDF stays sharp, bitmap blurs). The
+# MSDF one also has an outline (drawn by the same shader).
+func _add_msdf_row() -> void:
+	var base: FontFile = load("res://fonts/NotoSans-Regular.ttf")
+	var msdf: FontFile = base.duplicate()
+	msdf.multichannel_signed_distance_field = true
+	var fonts := [[base, "bitmap"], [msdf, "MSDF"]]
+	for i in fonts.size():
+		var label := Label.new()
+		label.text = fonts[i][1]
+		label.add_theme_font_override("font", fonts[i][0])
+		label.add_theme_font_size_override("font_size", 16)
+		label.add_theme_color_override("font_color", Color(1, 0.85, 0.3))
+		if i == 1:
+			label.add_theme_constant_override("outline_size", 4)
+			label.add_theme_color_override("font_outline_color", Color(0.4, 0.1, 0.6))
+		label.position = Vector2(40 + i * 260, 525)
+		label.scale = Vector2(2.5, 2.5)
+		add_child(label)

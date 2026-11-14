@@ -48,7 +48,7 @@ def make_shader_c(target, source, env):
 
 
 wiiu_shaders = env.Command(
-    "wiiu_shaders.gen.c", ["shaders/texture.gsh", "shaders/color.gsh"], env.Run(make_shader_c)
+    "wiiu_shaders.gen.c", ["shaders/texture.gsh", "shaders/color.gsh", "shaders/msdf.gsh"], env.Run(make_shader_c)
 )
 
 # wiiu_system_font.cpp rasterises the system font with Godot's bundled FreeType.
