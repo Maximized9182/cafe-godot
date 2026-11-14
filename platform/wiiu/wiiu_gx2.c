@@ -127,7 +127,185 @@ static Screen gx2_drc;
 
 static bool draw_ready = false;
 static WHBGfxShaderGroup draw_shader;
-// MSDF text (shaders/msdf_fsh.glsl, compiled with CafeGLSL).
+// ---------------------------------------------------------------------------
+// Runtime shader programs (CafeGLSL)
+// ---------------------------------------------------------------------------
+
+#ifdef WIIU_CAFEGLSL
+#include <cafeglsl/CafeGLSLCompiler.h>
+#endif
+
+struct WiiUProgram {
+	GX2VertexShader *vs;
+	GX2PixelShader *ps;
+	GX2FetchShader fetch;
+	uint8_t *fetch_program;
+};
+
+static bool glsl_initialised = false;
+
+bool wiiu_gx2_glsl_available(void) {
+#ifdef WIIU_CAFEGLSL
+	return true;
+#else
+	return false;
+#endif
+}
+
+void wiiu_gx2_program_free(WiiUProgram *p_program) {
+	if (p_program == NULL) {
+		return;
+	}
+#ifdef WIIU_CAFEGLSL
+	if (gx2_acquired) {
+		GX2DrawDone(); // The GPU may still run it from the last frame.
+	}
+	FreeShaders(p_program->vs, p_program->ps);
+#endif
+	if (p_program->fetch_program) {
+		MEMFreeToDefaultHeap(p_program->fetch_program);
+	}
+	free(p_program);
+}
+
+WiiUProgram *wiiu_gx2_program_compile(const char *p_vs, const char *p_ps, char *r_log, int p_log_size) {
+	if (r_log && p_log_size > 0) {
+		r_log[0] = '\0';
+	}
+#ifdef WIIU_CAFEGLSL
+	if (!glsl_initialised) {
+		InitGLSLCompiler();
+		glsl_initialised = true;
+	}
+	WiiUProgram *p = (WiiUProgram *)calloc(1, sizeof(WiiUProgram));
+	if (p == NULL) {
+		return NULL;
+	}
+	const GX2ShaderMode mode = CompileShaderPair(p_vs, p_ps, GLSL_COMPILE_REGISTER, &p->vs, &p->ps, r_log, p_log_size,
+			GLSL_COMPILER_FLAG_NONE);
+	if (mode == GLSL_SHADER_MODE_ERROR || p->vs == NULL || p->ps == NULL) {
+		FreeShaders(p->vs, p->ps);
+		free(p);
+		return NULL;
+	}
+	// The GPU fetches the programs from memory: out of the CPU cache.
+	GX2Invalidate(GX2_INVALIDATE_MODE_CPU_SHADER, p->vs->program, p->vs->size);
+	GX2Invalidate(GX2_INVALIDATE_MODE_CPU_SHADER, p->ps->program, p->ps->size);
+
+	// Fetch shader: our vertex layout (WiiUVertex) for the inputs the shader has.
+	static const struct {
+		const char *name;
+		uint32_t offset;
+		GX2AttribFormat format;
+		uint32_t mask;
+	} layout[3] = {
+		{ "VertexPosition", 0, GX2_ATTRIB_FORMAT_FLOAT_32_32_32, GX2_SEL_MASK(GX2_SQ_SEL_X, GX2_SQ_SEL_Y, GX2_SQ_SEL_Z, GX2_SQ_SEL_1) },
+		{ "VertexTexCoord", 12, GX2_ATTRIB_FORMAT_FLOAT_32_32, GX2_SEL_MASK(GX2_SQ_SEL_X, GX2_SQ_SEL_Y, GX2_SQ_SEL_0, GX2_SQ_SEL_1) },
+		{ "VertexColor", 20, GX2_ATTRIB_FORMAT_FLOAT_32_32_32_32, GX2_SEL_MASK(GX2_SQ_SEL_X, GX2_SQ_SEL_Y, GX2_SQ_SEL_Z, GX2_SQ_SEL_W) },
+	};
+	GX2AttribStream attribs[3];
+	uint32_t count = 0;
+	for (int i = 0; i < 3; i++) {
+		for (uint32_t v = 0; v < p->vs->attribVarCount; v++) {
+			if (strcmp(p->vs->attribVars[v].name, layout[i].name) == 0) {
+				GX2AttribStream *a = &attribs[count++];
+				memset(a, 0, sizeof(*a));
+				a->location = p->vs->attribVars[v].location;
+				a->buffer = 0;
+				a->offset = layout[i].offset;
+				a->format = layout[i].format;
+				a->type = GX2_ATTRIB_INDEX_PER_VERTEX;
+				a->aluDivisor = 0;
+				a->mask = layout[i].mask;
+				a->endianSwap = GX2_ENDIAN_SWAP_DEFAULT;
+				break;
+			}
+		}
+	}
+	const uint32_t size = GX2CalcFetchShaderSizeEx(count, GX2_FETCH_SHADER_TESSELLATION_NONE, GX2_TESSELLATION_MODE_DISCRETE);
+	p->fetch_program = (uint8_t *)MEMAllocFromDefaultHeapEx(size, GX2_SHADER_PROGRAM_ALIGNMENT);
+	if (p->fetch_program == NULL) {
+		wiiu_gx2_program_free(p);
+		return NULL;
+	}
+	GX2InitFetchShaderEx(&p->fetch, p->fetch_program, count, attribs, GX2_FETCH_SHADER_TESSELLATION_NONE,
+			GX2_TESSELLATION_MODE_DISCRETE);
+	GX2Invalidate(GX2_INVALIDATE_MODE_CPU_SHADER, p->fetch_program, size);
+	return p;
+#else
+	(void)p_vs;
+	(void)p_ps;
+	return NULL;
+#endif
+}
+
+// MSDF text (shaders/msdf_fsh.glsl). Compiled at startup with CafeGLSL when
+// available, else the precompiled shaders/msdf.gsh.
+static const char *msdf_vs_glsl =
+	"#version 330\n"
+	"#extension GL_ARB_separate_shader_objects : enable\n"
+	"\n"
+	"// Vertex shader for MSDF text. The engine sends vertices already in clip\n"
+	"// space, so no matrices: this pair uses uniform registers, not blocks.\n"
+	"layout(location = 0) in vec3 VertexPosition;\n"
+	"layout(location = 1) in vec2 VertexTexCoord;\n"
+	"layout(location = 2) in vec4 VertexColor;\n"
+	"\n"
+	"layout(location = 0) out vec4 VaryingColor;\n"
+	"layout(location = 1) out vec2 VaryingTexCoord;\n"
+	"\n"
+	"void main()\n"
+	"{\n"
+	"    gl_Position = vec4(VertexPosition, 1.0);\n"
+	"    VaryingColor = VertexColor;\n"
+	"    VaryingTexCoord = VertexTexCoord;\n"
+	"}\n";
+static const char *msdf_ps_glsl =
+	"#version 330\n"
+	"#extension GL_ARB_separate_shader_objects : enable\n"
+	"\n"
+	"// MSDF text (Godot's FontFile multichannel_signed_distance_field), ported from\n"
+	"// drivers/gles3/shaders/canvas.glsl.\n"
+	"layout (location = 0) in vec4 VertexColor;\n"
+	"layout (location = 1) in vec2 VertexTexCoord;\n"
+	"\n"
+	"layout (location = 0) out vec4 VaryingColor;\n"
+	"\n"
+	"uniform sampler2D texture0;\n"
+	"\n"
+	"// x: px_range, y: outline size, z: px_size (screen pixels per distance-field\n"
+	"// unit, computed on the CPU from the glyph's on-screen scale). A loose\n"
+	"// uniform (register mode): a uniform block in memory read as zeros on the\n"
+	"// console (fills half transparent), while Cemu showed it right.\n"
+	"uniform vec4 params;\n"
+	"\n"
+	"float msdf_median(float r, float g, float b)\n"
+	"{\n"
+	"    return max(min(r, g), min(max(r, g), b));\n"
+	"}\n"
+	"\n"
+	"void main()\n"
+	"{\n"
+	"    vec4 msdf_sample = texture(texture0, VertexTexCoord);\n"
+	"    float px_range = params.x;\n"
+	"    float outline_thickness = params.y;\n"
+	"    float px_size = max(params.z, 1.0);\n"
+	"    float d = msdf_median(msdf_sample.r, msdf_sample.g, msdf_sample.b);\n"
+	"    float a;\n"
+	"    if (outline_thickness > 0.0) {\n"
+	"        float cr = clamp(outline_thickness, 0.0, (px_range / 2.0) - 1.0) / px_range;\n"
+	"        d = min(d, msdf_sample.a);\n"
+	"        a = clamp((d - 0.5 + cr) * px_size, 0.0, 1.0);\n"
+	"    } else {\n"
+	"        a = clamp((d - 0.5) * px_size + 0.5, 0.0, 1.0);\n"
+	"    }\n"
+	"    VaryingColor = vec4(VertexColor.rgb, VertexColor.a * a);\n"
+	"}\n";
+
+static WiiUProgram *msdf_program = NULL;
+static GX2FetchShader *msdf_fetch = NULL;
+static GX2VertexShader *msdf_vs = NULL;
+static GX2PixelShader *msdf_ps = NULL;
 static WHBGfxShaderGroup msdf_shader;
 static bool msdf_loaded = false;
 // Register mode (uniform registers, not blocks): see shaders/msdf_fsh.glsl.
@@ -578,12 +756,31 @@ static bool draw_init(void) {
 		WHBGfxInitShaderAttribute(&msdf_shader, "VertexTexCoord", 0, 12, GX2_ATTRIB_FORMAT_FLOAT_32_32);
 		WHBGfxInitShaderAttribute(&msdf_shader, "VertexColor", 0, 20, GX2_ATTRIB_FORMAT_FLOAT_32_32_32_32);
 		WHBGfxInitFetchShader(&msdf_shader);
-		GX2UniformVar *params_var = GX2GetPixelUniformVar(msdf_shader.pixelShader, "params");
+		msdf_fetch = &msdf_shader.fetchShader;
+		msdf_vs = msdf_shader.vertexShader;
+		msdf_ps = msdf_shader.pixelShader;
+#ifdef WIIU_CAFEGLSL
+		// Runtime compile check (canvas shaders use the same path).
+		char log[512];
+		const OSTime t0 = OSGetSystemTime();
+		msdf_program = wiiu_gx2_program_compile(msdf_vs_glsl, msdf_ps_glsl, log, sizeof(log));
+		const uint32_t ms = (uint32_t)OSTicksToMilliseconds(OSGetSystemTime() - t0);
+		if (msdf_program) {
+			msdf_fetch = &msdf_program->fetch;
+			msdf_vs = msdf_program->vs;
+			msdf_ps = msdf_program->ps;
+			WHBLogPrintf("[glsl] MSDF shaders compiled at runtime in %u ms (vs %u bytes, ps %u bytes)", (unsigned)ms,
+					(unsigned)msdf_vs->size, (unsigned)msdf_ps->size);
+		} else {
+			WHBLogPrintf("[glsl] runtime compile failed after %u ms, using msdf.gsh: %s", (unsigned)ms, log);
+		}
+#endif
+		GX2UniformVar *params_var = GX2GetPixelUniformVar(msdf_ps, "params");
 		if (params_var != NULL) {
 			msdf_params_offset = params_var->offset;
-			for (uint32_t i = 0; i < msdf_shader.pixelShader->samplerVarCount; i++) {
-				if (strcmp(msdf_shader.pixelShader->samplerVars[i].name, "texture0") == 0) {
-					msdf_sampler_location = msdf_shader.pixelShader->samplerVars[i].location;
+			for (uint32_t i = 0; i < msdf_ps->samplerVarCount; i++) {
+				if (strcmp(msdf_ps->samplerVars[i].name, "texture0") == 0) {
+					msdf_sampler_location = msdf_ps->samplerVars[i].location;
 				}
 			}
 			msdf_loaded = true;
@@ -809,9 +1006,9 @@ void wiiu_gx2_draw(WiiUPrimitive p_primitive, WiiUTexture *p_texture, int p_filt
 		// Register mode: the parameters go into the command buffer itself.
 		GX2SetShaderMode(GX2_SHADER_MODE_UNIFORM_REGISTER);
 		const float values[4] = { msdf_px_range, msdf_outline, msdf_px_size, 0.0f };
-		GX2SetFetchShader(&msdf_shader.fetchShader);
-		GX2SetVertexShader(msdf_shader.vertexShader);
-		GX2SetPixelShader(msdf_shader.pixelShader);
+		GX2SetFetchShader(msdf_fetch);
+		GX2SetVertexShader(msdf_vs);
+		GX2SetPixelShader(msdf_ps);
 		GX2SetPixelUniformReg(msdf_params_offset, 4, (const void *)values);
 		GX2SetAttribBuffer(0, bytes, (uint32_t)sizeof(WiiUVertex), out);
 		GX2SetPixelTexture(&texture->texture, msdf_sampler_location);

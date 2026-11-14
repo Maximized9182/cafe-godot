@@ -39,6 +39,7 @@ def get_opts():
 
     return [
         BoolVariable("wiiu_udp_log", "Also send engine output to wiiu-udplogserver over the network", True),
+        ("cafeglsl_path", "CafeGLSL for Wii U (runtime GLSL compiler for canvas shaders); empty to build without", "/home/user/wiiu/cafeglsl"),
     ]
 
 
@@ -171,4 +172,14 @@ def configure(env: "SConsEnvironment"):
         env.Append(CPPDEFINES=["WIIU_UDP_LOG"])
 
     # Linked last so the platform's own objects can resolve against them.
+    # CafeGLSL (https://github.com/Exzap/CafeGLSL, MIT): compiles GLSL to GX2
+    # shaders on the console, for canvas_item shaders. Static library.
+    cafeglsl = env.get("cafeglsl_path", "")
+    if cafeglsl and os.path.isfile(os.path.join(cafeglsl, "lib", "libcafeglsl.a")):
+        env.Append(CPPDEFINES=["WIIU_CAFEGLSL"])
+        env.Append(CPPPATH=[os.path.join(cafeglsl, "include")])
+        env.Append(LIBPATH=[os.path.join(cafeglsl, "lib")])
+        env.Append(LIBS=["cafeglsl"])
+    elif cafeglsl:
+        print_warning("CafeGLSL not found at %s: canvas shaders will be ignored." % cafeglsl)
     env.Append(LIBS=["wut", "m"])

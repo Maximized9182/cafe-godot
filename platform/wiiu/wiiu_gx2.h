@@ -81,6 +81,15 @@ void wiiu_gx2_bind_render_target(WiiURenderTarget *p_rt);
 void wiiu_gx2_bind_screen(WiiUScreen p_screen);
 void wiiu_gx2_clear(float p_r, float p_g, float p_b, float p_a);
 void wiiu_gx2_set_scissor(int32_t p_x, int32_t p_y, int32_t p_width, int32_t p_height);
+// Shader programs compiled at runtime from GLSL 330 with CafeGLSL, in
+// uniform register mode. Vertex inputs: VertexPosition (vec3, clip space),
+// VertexTexCoord (vec2), VertexColor (vec4). NULL without CafeGLSL or on a
+// compile error (the error goes to r_log).
+typedef struct WiiUProgram WiiUProgram;
+bool wiiu_gx2_glsl_available(void);
+WiiUProgram *wiiu_gx2_program_compile(const char *p_vs, const char *p_ps, char *r_log, int p_log_size);
+void wiiu_gx2_program_free(WiiUProgram *p_program);
+
 // MSDF text for the following wiiu_gx2_draw calls: the texture is a
 // multichannel signed distance field (Godot's FontFile MSDF mode). p_px_range
 // 0 turns it off; p_outline is the outline size in pixels (0: fill).
