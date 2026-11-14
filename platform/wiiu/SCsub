@@ -56,12 +56,32 @@ env.Prepend(CPPPATH=["#thirdparty/freetype/include"])
 
 prog = env.add_program("#bin/godot", wiiu_files + wiiu_shaders)
 
+# .text must stay under 32 MB: past that, ld inserts long-branch stubs and the
+# console runs the .rpx wrong (2026-11-14: with CafeGLSL linked, .text was
+# 36.5 MB and a static constructor's call to __cxa_atexit jumped back into the
+# constructor list; startup looped until MEM2 ran out). Fail the build instead.
+def check_text_size(target, source, env):
+    import subprocess
+
+    out = subprocess.run(["powerpc-eabi-objdump", "-h", str(source[0])], capture_output=True, text=True).stdout
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) > 2 and parts[1] == ".text":
+            size = int(parts[2], 16)
+            print("wiiu: .text is %.2f MB (limit 32 MB, %.2f MB left)" % (size / 1048576.0, (0x2000000 - size) / 1048576.0))
+            if size >= 0x2000000:
+                print("wiiu: error: .text is 32 MB or larger; the .rpx would not run. Drop modules or features.")
+                return 1
+    return 0
+
+
 # Convert the linked ELF into a Cafe OS executable (.rpx). Clang's objects carry
 # .note.GNU-stack sections, which elf2rpl can't lay out, so they're stripped first.
 rpx = env.Command(
     str(prog[0]).replace(".elf", ".rpx"),
     prog,
     [
+        check_text_size,
         "powerpc-eabi-objcopy --remove-section=.note.GNU-stack $SOURCE ${TARGET.base}.stripped.elf",
         "elf2rpl ${TARGET.base}.stripped.elf $TARGET",
     ],

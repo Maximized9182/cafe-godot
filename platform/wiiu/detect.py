@@ -39,7 +39,9 @@ def get_opts():
 
     return [
         BoolVariable("wiiu_udp_log", "Also send engine output to wiiu-udplogserver over the network", True),
-        ("cafeglsl_path", "CafeGLSL for Wii U (runtime GLSL compiler for canvas shaders); empty to build without", "/home/user/wiiu/cafeglsl"),
+        # Off by default: linking CafeGLSL (~5 MB of code) pushes .text past 32 MB,
+        # which the Cafe OS loader can't run (the SCsub check below stops the build).
+        ("cafeglsl_path", "CafeGLSL for Wii U (runtime GLSL compiler for canvas shaders); empty to build without", ""),
     ]
 
 
