@@ -454,7 +454,6 @@ bool wiiu_proc_is_running(void) {
 	if (proc_release_pending) {
 		proc_release_pending = false;
 		proc_in_background = true;
-		WHBLogPrint("[home] ProcUIDrawDoneRelease"); // Debug (HOME freeze), temporary.
 		ProcUIDrawDoneRelease();
 	}
 	switch (ProcUIProcessMessages(TRUE)) {
@@ -463,7 +462,6 @@ bool wiiu_proc_is_running(void) {
 			ProcUIShutdown();
 			break;
 		case PROCUI_STATUS_RELEASE_FOREGROUND:
-			WHBLogPrint("[home] release requested: one more frame");
 			proc_release_pending = true;
 			if (wiiu_proc_focus_callback && !crash_in_progress) {
 				wiiu_proc_focus_callback(false);
@@ -471,7 +469,6 @@ bool wiiu_proc_is_running(void) {
 			break;
 		case PROCUI_STATUS_IN_FOREGROUND:
 			if (proc_in_background) {
-				WHBLogPrint("[home] back in the foreground");
 				proc_in_background = false;
 				if (wiiu_proc_focus_callback && !crash_in_progress) {
 					wiiu_proc_focus_callback(true);

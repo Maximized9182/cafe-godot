@@ -211,7 +211,6 @@ static uint32_t gx2_proc_released(void *context) {
 	}
 	// Let the GPU finish with the buffers before they go back to the system.
 	// GX2DrawDone gives up (FALSE) after the GPU timeout: then the GPU hung.
-	WHBLogPrint("[home] gx2: GX2DrawDone"); // Debug (HOME freeze), temporary.
 	if (!GX2DrawDone()) {
 		WHBLogPrint("[gx2] GPU timed out while releasing the foreground (GPU hung)");
 	}
@@ -226,7 +225,6 @@ static uint32_t gx2_proc_released(void *context) {
 		}
 		GX2WaitForFlip();
 	}
-	WHBLogPrint("[home] gx2: freeing screen buffers");
 	gx2_acquired = false;
 	if (target_cb == &gx2_tv.color_buffer || target_cb == &gx2_drc.color_buffer) {
 		target_cb = NULL;
@@ -236,7 +234,6 @@ static uint32_t gx2_proc_released(void *context) {
 	// avoid a black frame on leaving foreground").
 	GX2SetTVEnable(TRUE);
 	GX2SetDRCEnable(TRUE);
-	WHBLogPrint("[home] gx2: released");
 	return 0;
 }
 
