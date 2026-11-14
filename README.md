@@ -16,8 +16,8 @@ the HOME menu.
 
 - **2D rendering on GX2**: sprites, text (TTF fonts), nine-patches, polygons, 2D meshes and
   multimeshes, `CPUParticles2D`, `Parallax2D`, animated textures, and the canvas blend modes
-  (mix, add, subtract, multiply, premultiplied alpha). The same image goes to the TV and the
-  GamePad.
+  (mix, add, subtract, multiply, premultiplied alpha), and mipmaps for textures imported with
+  them (the `*_WITH_MIPMAPS` filters). The same image goes to the TV and the GamePad.
 - **Input**: Wii U GamePad (buttons, sticks, touchscreen), Wii Remote (with Nunchuk or Classic
   Controller) and Pro Controller, as Godot joypads. Button 0 is A, as on an Xbox pad.
 - **Audio** through AX, with Ogg Vorbis, MP3 and WAV.
@@ -33,8 +33,8 @@ the HOME menu.
 - **Shaders**: `ShaderMaterial` and canvas shaders are ignored except for their blend mode.
   Godot generates GLSL at runtime, and GX2 needs compiled shaders.
 - **GPUParticles2D** draws nothing; use `CPUParticles2D`.
-- **Mipmaps**, MSDF fonts, networking (`HTTPRequest`, multiplayer), the editor itself.
-- Known issue: switching to the HOME menu sometimes stalls for a few seconds. Still being
+- MSDF fonts, networking (`HTTPRequest`, multiplayer), the editor itself.
+- Known issue: rarely, pressing HOME freezes the console in some games. Still being
   investigated.
 
 ## Building the export template
