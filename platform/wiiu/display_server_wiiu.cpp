@@ -77,3 +77,9 @@ DisplayServerWiiU::DisplayServerWiiU() {
 DisplayServerWiiU::~DisplayServerWiiU() {
 	wiiu_gx2_shutdown();
 }
+
+void DisplayServerWiiU::send_window_event(DisplayServerEnums::WindowEvent p_event) {
+	if (window_event_callback.is_valid()) {
+		window_event_callback.call((int)p_event);
+	}
+}

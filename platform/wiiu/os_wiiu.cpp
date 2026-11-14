@@ -219,12 +219,40 @@ extern "C" bool wiiu_log_overlay_visible(void);
 extern "C" void wiiu_log_overlay_toggle(void);
 extern "C" void wiiu_console_draw(void);
 
+// Called from wiiu_proc_is_running (crash_log.c) when the HOME menu takes
+// the foreground and when the app gets it back: the same notifications other
+// platforms send when the app loses focus / goes to the background.
+extern "C" void (*wiiu_proc_focus_callback)(bool p_focused);
+
+static void wiiu_focus_changed(bool p_focused) {
+	MainLoop *loop = OS::get_singleton()->get_main_loop();
+	DisplayServerWiiU *ds = Object::cast_to<DisplayServerWiiU>(DisplayServer::get_singleton());
+	if (p_focused) {
+		if (loop) {
+			loop->notification(MainLoop::NOTIFICATION_APPLICATION_RESUMED);
+			loop->notification(MainLoop::NOTIFICATION_APPLICATION_FOCUS_IN);
+		}
+		if (ds) {
+			ds->send_window_event(DisplayServerEnums::WINDOW_EVENT_FOCUS_IN);
+		}
+	} else {
+		if (ds) {
+			ds->send_window_event(DisplayServerEnums::WINDOW_EVENT_FOCUS_OUT);
+		}
+		if (loop) {
+			loop->notification(MainLoop::NOTIFICATION_APPLICATION_FOCUS_OUT);
+			loop->notification(MainLoop::NOTIFICATION_APPLICATION_PAUSED);
+		}
+	}
+}
+
 void OS_WiiU::run() {
 	if (!main_loop) {
 		return;
 	}
 
 	main_loop->initialize();
+	wiiu_proc_focus_callback = wiiu_focus_changed;
 
 	while (true) {
 		if (!wiiu_proc_is_running()) {
@@ -259,6 +287,7 @@ void OS_WiiU::run() {
 		wiiu_crash_check();
 	}
 
+	wiiu_proc_focus_callback = nullptr;
 	main_loop->finalize();
 }
 

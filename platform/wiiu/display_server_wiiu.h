@@ -29,6 +29,11 @@ public:
 	bool can_any_window_draw() const override;
 	DisplayServerEnums::WindowMode window_get_mode(DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) const override { return DisplayServerEnums::WINDOW_MODE_FULLSCREEN; }
 
+	// Window focus follows the foreground (HOME menu): see OS_WiiU::run.
+	Callable window_event_callback;
+	void window_set_window_event_callback(const Callable &p_callable, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override { window_event_callback = p_callable; }
+	void send_window_event(DisplayServerEnums::WindowEvent p_event);
+
 	static void register_wiiu_driver();
 
 	DisplayServerWiiU();

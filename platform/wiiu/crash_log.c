@@ -426,10 +426,50 @@ void *__wrap__sbrk_r(struct _reent *reent, ptrdiff_t incr) {
 // ProcUIProcessMessages OSPanic ("procui.c" line 641). Everything goes through
 // this wrapper, which remembers the false and never calls into ProcUI again.
 static volatile bool proc_running = true;
+static volatile bool crash_in_progress;
 
+// Set by the OS layer (os_wiiu.cpp) while Godot's main loop runs: told when
+// the app loses the foreground (HOME menu) and gets it back, for Godot's
+// focus notifications. Never called during a crash.
+void (*wiiu_proc_focus_callback)(bool p_focused) = NULL;
+
+static bool proc_release_pending = false;
+static bool proc_in_background = false;
+
+// WHBProcIsRunning, except that on "release foreground" the app gets one more
+// frame before ProcUIDrawDoneRelease (like SDL2's Wii U backend), so the game
+// sees the focus loss first (e.g. pauses) and the HOME menu opens on top of
+// that frame.
 bool wiiu_proc_is_running(void) {
-	if (proc_running) {
-		proc_running = WHBProcIsRunning();
+	if (!proc_running) {
+		return false;
+	}
+	if (proc_release_pending) {
+		proc_release_pending = false;
+		proc_in_background = true;
+		ProcUIDrawDoneRelease();
+	}
+	switch (ProcUIProcessMessages(TRUE)) {
+		case PROCUI_STATUS_EXITING:
+			proc_running = false;
+			ProcUIShutdown();
+			break;
+		case PROCUI_STATUS_RELEASE_FOREGROUND:
+			proc_release_pending = true;
+			if (wiiu_proc_focus_callback && !crash_in_progress) {
+				wiiu_proc_focus_callback(false);
+			}
+			break;
+		case PROCUI_STATUS_IN_FOREGROUND:
+			if (proc_in_background) {
+				proc_in_background = false;
+				if (wiiu_proc_focus_callback && !crash_in_progress) {
+					wiiu_proc_focus_callback(true);
+				}
+			}
+			break;
+		default:
+			break;
 	}
 	return proc_running;
 }
