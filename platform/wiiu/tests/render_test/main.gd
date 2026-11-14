@@ -135,6 +135,7 @@ func _ready() -> void:
 		_caption(blend_names[i], Vector2(775 + i * 92, 465))
 
 	_add_mipmap_row()
+	_add_gpu_particles()
 	_add_msdf_row()
 
 	fps_label = Label.new()
@@ -210,3 +211,32 @@ func _add_msdf_row() -> void:
 		label.position = Vector2(40 + i * 260, 525)
 		label.scale = Vector2(2.5, 2.5)
 		add_child(label)
+
+
+# GPUParticles2D with a ParticleProcessMaterial: on the Wii U an internal
+# CPUParticles2D converted from it draws the particles.
+func _add_gpu_particles() -> void:
+	var img := Image.create_empty(6, 6, false, Image.FORMAT_RGBA8)
+	img.fill(Color.WHITE)
+	var p := GPUParticles2D.new()
+	p.texture = ImageTexture.create_from_image(img)
+	p.amount = 48
+	p.lifetime = 1.5
+	var m := ParticleProcessMaterial.new()
+	m.direction = Vector3(0, -1, 0)
+	m.spread = 30.0
+	m.initial_velocity_min = 80.0
+	m.initial_velocity_max = 120.0
+	m.gravity = Vector3(0, 98, 0)
+	m.scale_min = 1.0
+	m.scale_max = 2.0
+	var ramp := Gradient.new()
+	ramp.set_color(0, Color(0.3, 1.0, 0.6))
+	ramp.set_color(1, Color(0.2, 0.4, 1.0, 0.0))
+	var ramp_tex := GradientTexture1D.new()
+	ramp_tex.gradient = ramp
+	m.color_ramp = ramp_tex
+	p.process_material = m
+	p.position = Vector2(1160, 220)
+	add_child(p)
+	_caption("GPUParticles2D", Vector2(1090, 262))

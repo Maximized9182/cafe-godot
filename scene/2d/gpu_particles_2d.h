@@ -36,6 +36,14 @@ class GPUParticles2D : public Node2D {
 private:
 	GDCLASS(GPUParticles2D, Node2D);
 
+#ifdef WIIU_ENABLED
+	// Cafe Godot (Wii U) has no GPU particle simulation: an internal
+	// CPUParticles2D converted from this node draws the particles, and the
+	// runtime calls below are forwarded to it.
+	class CPUParticles2D *cafe_cpu_twin = nullptr;
+	void _cafe_update_twin();
+#endif
+
 public:
 	enum DrawOrder {
 		DRAW_ORDER_INDEX,

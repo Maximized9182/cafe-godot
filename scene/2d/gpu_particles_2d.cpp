@@ -44,6 +44,11 @@
 #include "servers/rendering/rendering_server.h"
 
 void GPUParticles2D::set_emitting(bool p_emitting) {
+#ifdef WIIU_ENABLED
+	if (cafe_cpu_twin) {
+		cafe_cpu_twin->set_emitting(p_emitting);
+	}
+#endif
 	// Do not return even if `p_emitting == emitting` because `emitting` is just an approximation.
 
 	if (p_emitting && p_emitting != emitting && !use_fixed_seed && one_shot) {
@@ -74,6 +79,11 @@ void GPUParticles2D::set_emitting(bool p_emitting) {
 }
 
 void GPUParticles2D::set_amount(int p_amount) {
+#ifdef WIIU_ENABLED
+	if (cafe_cpu_twin) {
+		cafe_cpu_twin->set_amount(p_amount);
+	}
+#endif
 	ERR_FAIL_COND_MSG(p_amount < 1, "Amount of particles cannot be smaller than 1.");
 	amount = p_amount;
 	RS::get_singleton()->particles_set_amount(particles, amount);
@@ -178,6 +188,9 @@ void GPUParticles2D::set_process_material(const Ref<Material> &p_material) {
 	RS::get_singleton()->particles_set_process_material(particles, material_rid);
 
 	update_configuration_warnings();
+#ifdef WIIU_ENABLED
+	_cafe_update_twin();
+#endif
 }
 
 void GPUParticles2D::set_trail_enabled(bool p_enabled) {
@@ -255,6 +268,11 @@ real_t GPUParticles2D::get_collision_base_size() const {
 }
 
 void GPUParticles2D::set_speed_scale(double p_scale) {
+#ifdef WIIU_ENABLED
+	if (cafe_cpu_twin) {
+		cafe_cpu_twin->set_speed_scale(p_scale);
+	}
+#endif
 	speed_scale = p_scale;
 	RS::get_singleton()->particles_set_speed_scale(particles, p_scale);
 }
@@ -422,6 +440,11 @@ Rect2 GPUParticles2D::capture_rect() const {
 }
 
 void GPUParticles2D::set_texture(const Ref<Texture2D> &p_texture) {
+#ifdef WIIU_ENABLED
+	if (cafe_cpu_twin) {
+		cafe_cpu_twin->set_texture(p_texture);
+	}
+#endif
 	if (texture.is_valid()) {
 		texture->disconnect_changed(callable_mp(this, &GPUParticles2D::_texture_changed));
 	}
@@ -503,7 +526,20 @@ float GPUParticles2D::get_amount_ratio() const {
 	return amount_ratio;
 }
 
+#ifdef WIIU_ENABLED
+void GPUParticles2D::_cafe_update_twin() {
+	if (cafe_cpu_twin) {
+		cafe_cpu_twin->convert_from_particles(this);
+	}
+}
+#endif
+
 void GPUParticles2D::restart(bool p_keep_seed) {
+#ifdef WIIU_ENABLED
+	if (cafe_cpu_twin) {
+		cafe_cpu_twin->restart(p_keep_seed);
+	}
+#endif
 	if (!p_keep_seed && !use_fixed_seed) {
 		set_seed(Math::rand());
 	}
@@ -749,6 +785,14 @@ void GPUParticles2D::_notification(int p_what) {
 		} break;
 
 		case NOTIFICATION_ENTER_TREE: {
+#ifdef WIIU_ENABLED
+			if (!Engine::get_singleton()->is_editor_hint() && cafe_cpu_twin == nullptr) {
+				cafe_cpu_twin = memnew(CPUParticles2D);
+				cafe_cpu_twin->set_name("CafeCPUParticles");
+				cafe_cpu_twin->convert_from_particles(this);
+				add_child(cafe_cpu_twin, false, INTERNAL_MODE_FRONT);
+			}
+#endif
 			if (sub_emitter != NodePath()) {
 				_attach_sub_emitter();
 			}
