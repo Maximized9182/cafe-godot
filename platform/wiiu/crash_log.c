@@ -406,9 +406,16 @@ void *__wrap_realloc(void *old_ptr, size_t size) {
 // break; failures are always logged.
 static const bool sbrk_trace = false;
 
+// Bytes malloc has taken from sbrk so far (the stats overlay's "malloc arena";
+// cheap, unlike mallinfo).
+volatile uint32_t wiiu_sbrk_total = 0;
+
 void *__wrap__sbrk_r(struct _reent *reent, ptrdiff_t incr) {
 	void *before = (incr != 0) ? __real__sbrk_r(reent, 0) : NULL;
 	void *result = __real__sbrk_r(reent, incr);
+	if (result != (void *)-1) {
+		wiiu_sbrk_total = wiiu_sbrk_total + (uint32_t)incr;
+	}
 	if (incr != 0 && (sbrk_trace || result == (void *)-1)) {
 		void *after = __real__sbrk_r(reent, 0);
 		log_static("[sbrk] %+d: break %p -> %p, returned %p, caller %p", (int)incr, before,

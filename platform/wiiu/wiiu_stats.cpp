@@ -30,8 +30,9 @@
 #include <string.h>
 
 // wiiu_system_font.cpp: CafeStd (the Wii U system font).
-// Defined in audio_driver_wiiu.cpp.
+// Defined in audio_driver_wiiu.cpp and crash_log.c.
 extern "C" volatile uint32_t wiiu_audio_underruns;
+extern "C" volatile uint32_t wiiu_sbrk_total;
 extern "C" float wiiu_sysfont_measure(const char *p_text, float p_px);
 extern "C" float wiiu_sysfont_line_height(float p_px);
 extern "C" void wiiu_sysfont_draw(float p_x, float p_y, float p_px, const char *p_text, float p_r, float p_g, float p_b, float p_a);
@@ -48,11 +49,7 @@ const uint32_t chord_buttons[6] = {
 int chord_step = 0;
 bool visible = false;
 float update_cost_ms = 0.0f; // Time the last text refresh took (shown in the header).
-// Debug (buzz on refresh): parts of the refresh, shown in the header.
-float cost_perf_ms = 0.0f, cost_mallinfo_ms = 0.0f, cost_mem_ms = 0.0f;
-static float ticks_ms(OSTime p_from) {
-	return (float)((double)OSTicksToMicroseconds(OSGetSystemTime() - p_from) / 1000.0);
-}
+
 
 // ---------------------------------------------------------------------------
 // Placement
@@ -154,7 +151,6 @@ void update_lines() {
 	if (n == 0) {
 		mn = 0.0f;
 	}
-	OSTime t_part = OSGetSystemTime();
 	Performance *perf = Performance::get_singleton();
 	add("%s", "Cafe Godot stats");
 	add("FPS %.0f   frame %.2f ms (%.2f-%.2f)", (double)Engine::get_singleton()->get_frames_per_second(), (double)avg, (double)mn, (double)mx);
@@ -163,7 +159,6 @@ void update_lines() {
 		add("Physics %.2f ms per step", perf->get_monitor(Performance::TIME_PHYSICS_PROCESS) * 1000.0);
 	}
 
-	cost_perf_ms = ticks_ms(t_part);
 	WiiUGX2Stats gx2;
 	wiiu_gx2_get_stats(&gx2);
 	if (sum_frames > 0) {
@@ -183,26 +178,15 @@ void update_lines() {
 	add("Draws %u   vertices %u", (unsigned)gx2.draws, (unsigned)gx2.vertices);
 	add("Audio underruns %u", (unsigned)wiiu_audio_underruns);
 
-	// Memory. No MEMGetTotalFreeSizeForExpHeap / MEMGetAllocatableSizeForExpHeapEx
-	// on MEM2: they walk the heap with interrupts off, and calling them 4 times
-	// a second is the suspect for the audio buzz with the panel open (and they read 0 anyway, since
-	// wut's malloc reserves MEM2 at start-up). mallinfo walks malloc's bins,
-	// so it's read once a second.
-	static struct mallinfo mi = {};
-	static OSTime mi_time = 0;
-	const OSTime now_mi = OSGetSystemTime();
-	if (!mi_time || OSTicksToMilliseconds(now_mi - mi_time) >= 1000) {
-		t_part = OSGetSystemTime();
-		mi = mallinfo();
-		cost_mallinfo_ms = ticks_ms(t_part);
-		mi_time = now_mi;
-	}
-	t_part = OSGetSystemTime();
-	add("malloc %.1f / %.1f MB used", mb(mi.uordblks), mb(mi.arena));
+	// Memory. No mallinfo: it walks the heap under the allocator lock and took
+	// ~20 ms with FNF's 280 MB arena, which stalled AX (a short buzz on every
+	// refresh, with no underrun of our own). No MEMGetTotalFreeSizeForExpHeap /
+	// MEMGetAllocatableSizeForExpHeapEx on MEM2 either (interrupts off while
+	// they walk; and wut's malloc reserves MEM2 at start-up, so they read 0).
+	add("malloc arena %.1f MB", mb(wiiu_sbrk_total));
 	MEMHeapHandle mem1 = MEMGetBaseHeapHandle(MEM_BASE_HEAP_MEM1);
 	add("MEM1 free %.2f MB", mb(MEMGetAllocatableSizeForFrmHeapEx(mem1, 4)));
 	add("Godot heap %.1f MB (peak %.1f MB)", mb(Memory::get_mem_usage()), mb(Memory::get_mem_max_usage()));
-	cost_mem_ms = ticks_ms(t_part);
 	add("Textures %u (%.1f MB)   targets %u (%.1f MB)", (unsigned)gx2.textures, mb(gx2.texture_bytes),
 			(unsigned)gx2.render_targets, mb(gx2.render_target_bytes));
 	if (perf) {
@@ -398,8 +382,7 @@ extern "C" void wiiu_stats_draw(WiiUScreen p_screen) {
 		if (i == 0) {
 			wiiu_sysfont_draw(x + PAD * s, ty, px, lines[i], 1.0f, 0.85f, 0.3f, 1.0f);
 			char hint_buf[96];
-			snprintf(hint_buf, sizeof(hint_buf), "refresh %.1f ms (perf %.1f, mallinfo %.1f, mem %.1f)", (double)update_cost_ms,
-					(double)cost_perf_ms, (double)cost_mallinfo_ms, (double)cost_mem_ms);
+			snprintf(hint_buf, sizeof(hint_buf), "refresh %.1f ms", (double)update_cost_ms);
 			const char *hint = dragging ? "release to snap" : hint_buf;
 			const float hw = wiiu_sysfont_measure(hint, px * 0.8f);
 			wiiu_sysfont_draw(x + w - PAD * s - hw, ty + px * 0.15f, px * 0.8f, hint, 0.7f, 0.7f, 0.7f, 1.0f);
