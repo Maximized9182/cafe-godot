@@ -131,9 +131,53 @@ static WHBGfxShaderGroup draw_shader;
 // Runtime shader programs (CafeGLSL)
 // ---------------------------------------------------------------------------
 
-#ifdef WIIU_CAFEGLSL
-#include <cafeglsl/CafeGLSLCompiler.h>
-#endif
+// CafeGLSL is loaded at runtime from cafeglsl.rpl (built from the static
+// library as its own module, see /home/user/wiiu/cafeglsl-rpl): linked into
+// the .rpx it pushed .text past 32 MB. The calls go through these pointers.
+#include <coreinit/dynload.h>
+
+typedef GX2ShaderMode (*GlslCompilePairFn)(const char *, const char *, int, GX2VertexShader **, GX2PixelShader **,
+		char *, int, int);
+typedef void (*GlslFreeShadersFn)(GX2VertexShader *, GX2PixelShader *);
+typedef void (*GlslVoidFn)(void);
+#define GLSL_COMPILE_REGISTER_MODE 1
+#define GLSL_MODE_ERROR ((GX2ShaderMode)-1)
+
+static OSDynLoad_Module glsl_module = NULL;
+static GlslCompilePairFn glsl_compile_pair = NULL;
+static GlslFreeShadersFn glsl_free_shaders = NULL;
+static int glsl_load_state = 0; // 0 not tried, 1 loaded, -1 unavailable.
+
+static bool glsl_load(void) {
+	if (glsl_load_state != 0) {
+		return glsl_load_state > 0;
+	}
+	glsl_load_state = -1;
+	static const char *paths[] = { "cafeglsl", "~/wiiu/libs/cafeglsl.rpl" };
+	OSDynLoad_Error err = OS_DYNLOAD_OK;
+	for (unsigned i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
+		err = OSDynLoad_Acquire(paths[i], &glsl_module);
+		if (err == OS_DYNLOAD_OK) {
+			WHBLogPrintf("[glsl] loaded %s", paths[i]);
+			break;
+		}
+	}
+	if (err != OS_DYNLOAD_OK) {
+		WHBLogPrintf("[glsl] cafeglsl.rpl not found (error %d): canvas shaders are off", (int)err);
+		return false;
+	}
+	GlslVoidFn init = NULL;
+	OSDynLoad_FindExport(glsl_module, OS_DYNLOAD_EXPORT_FUNC, "InitGLSLCompiler", (void **)&init);
+	OSDynLoad_FindExport(glsl_module, OS_DYNLOAD_EXPORT_FUNC, "CompileShaderPair", (void **)&glsl_compile_pair);
+	OSDynLoad_FindExport(glsl_module, OS_DYNLOAD_EXPORT_FUNC, "FreeShaders", (void **)&glsl_free_shaders);
+	if (init == NULL || glsl_compile_pair == NULL || glsl_free_shaders == NULL) {
+		WHBLogPrint("[glsl] cafeglsl.rpl is missing exports");
+		return false;
+	}
+	init();
+	glsl_load_state = 1;
+	return true;
+}
 
 struct WiiUProgram {
 	GX2VertexShader *vs;
@@ -142,26 +186,20 @@ struct WiiUProgram {
 	uint8_t *fetch_program;
 };
 
-static bool glsl_initialised = false;
-
 bool wiiu_gx2_glsl_available(void) {
-#ifdef WIIU_CAFEGLSL
-	return true;
-#else
-	return false;
-#endif
+	return glsl_load();
 }
 
 void wiiu_gx2_program_free(WiiUProgram *p_program) {
 	if (p_program == NULL) {
 		return;
 	}
-#ifdef WIIU_CAFEGLSL
-	if (gx2_acquired) {
-		GX2DrawDone(); // The GPU may still run it from the last frame.
+	if (glsl_free_shaders) {
+		if (gx2_acquired) {
+			GX2DrawDone(); // The GPU may still run it from the last frame.
+		}
+		glsl_free_shaders(p_program->vs, p_program->ps);
 	}
-	FreeShaders(p_program->vs, p_program->ps);
-#endif
 	if (p_program->fetch_program) {
 		MEMFreeToDefaultHeap(p_program->fetch_program);
 	}
@@ -172,19 +210,17 @@ WiiUProgram *wiiu_gx2_program_compile(const char *p_vs, const char *p_ps, char *
 	if (r_log && p_log_size > 0) {
 		r_log[0] = '\0';
 	}
-#ifdef WIIU_CAFEGLSL
-	if (!glsl_initialised) {
-		InitGLSLCompiler();
-		glsl_initialised = true;
+	if (!glsl_load()) {
+		return NULL;
 	}
 	WiiUProgram *p = (WiiUProgram *)calloc(1, sizeof(WiiUProgram));
 	if (p == NULL) {
 		return NULL;
 	}
-	const GX2ShaderMode mode = CompileShaderPair(p_vs, p_ps, GLSL_COMPILE_REGISTER, &p->vs, &p->ps, r_log, p_log_size,
-			GLSL_COMPILER_FLAG_NONE);
-	if (mode == GLSL_SHADER_MODE_ERROR || p->vs == NULL || p->ps == NULL) {
-		FreeShaders(p->vs, p->ps);
+	const GX2ShaderMode mode = glsl_compile_pair(p_vs, p_ps, GLSL_COMPILE_REGISTER_MODE, &p->vs, &p->ps, r_log,
+			p_log_size, 0);
+	if (mode == GLSL_MODE_ERROR || p->vs == NULL || p->ps == NULL) {
+		glsl_free_shaders(p->vs, p->ps);
 		free(p);
 		return NULL;
 	}
@@ -232,11 +268,6 @@ WiiUProgram *wiiu_gx2_program_compile(const char *p_vs, const char *p_ps, char *
 			GX2_TESSELLATION_MODE_DISCRETE);
 	GX2Invalidate(GX2_INVALIDATE_MODE_CPU_SHADER, p->fetch_program, size);
 	return p;
-#else
-	(void)p_vs;
-	(void)p_ps;
-	return NULL;
-#endif
 }
 
 // MSDF text (shaders/msdf_fsh.glsl). Compiled at startup with CafeGLSL when
@@ -759,8 +790,7 @@ static bool draw_init(void) {
 		msdf_fetch = &msdf_shader.fetchShader;
 		msdf_vs = msdf_shader.vertexShader;
 		msdf_ps = msdf_shader.pixelShader;
-#ifdef WIIU_CAFEGLSL
-		// Runtime compile check (canvas shaders use the same path).
+		{ // Runtime compile check through cafeglsl.rpl (canvas shaders use the same path).
 		char log[512];
 		const OSTime t0 = OSGetSystemTime();
 		msdf_program = wiiu_gx2_program_compile(msdf_vs_glsl, msdf_ps_glsl, log, sizeof(log));
@@ -774,7 +804,7 @@ static bool draw_init(void) {
 		} else {
 			WHBLogPrintf("[glsl] runtime compile failed after %u ms, using msdf.gsh: %s", (unsigned)ms, log);
 		}
-#endif
+		}
 		GX2UniformVar *params_var = GX2GetPixelUniformVar(msdf_ps, "params");
 		if (params_var != NULL) {
 			msdf_params_offset = params_var->offset;
