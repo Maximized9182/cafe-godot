@@ -129,7 +129,7 @@ static WHBGfxShaderGroup draw_shader;
 static uint32_t draw_uniform_location = 0;
 static uint32_t draw_sampler_location = 0;
 static uint32_t *draw_uniforms = NULL; // 32 words, byte-swapped
-static GX2Sampler draw_samplers[2][2]; // [linear][repeat]
+static GX2Sampler draw_samplers[4][2]; // [filter (WIIU_FILTER_*)][repeat]
 static WiiUTexture *draw_white = NULL;
 static WiiUTexture *draw_font = NULL; // FONT_COLUMNS glyphs per row
 static WiiUTexture *saved_frame[2] = { NULL, NULL }; // [WiiUScreen]
@@ -260,7 +260,7 @@ void wiiu_gx2_screen_size(WiiUScreen p_screen, uint32_t *r_width, uint32_t *r_he
 static void init_texture_view(WiiUTexture *t, const GX2Surface *surface) {
 	memset(&t->texture, 0, sizeof(t->texture));
 	t->texture.surface = *surface;
-	t->texture.viewNumMips = 1;
+	t->texture.viewNumMips = surface->mipLevels ? surface->mipLevels : 1;
 	t->texture.viewNumSlices = 1;
 	t->texture.compMap = GX2_COMP_MAP(GX2_SQ_SEL_R, GX2_SQ_SEL_G, GX2_SQ_SEL_B, GX2_SQ_SEL_A);
 	GX2InitTextureRegs(&t->texture);
@@ -270,76 +270,109 @@ static void init_texture_view(WiiUTexture *t, const GX2Surface *surface) {
 
 static void apply_target(void);
 
-// Fills a tiled texture from RGBA rows: the CPU writes a linear staging
-// surface and the GPU converts it with GX2CopySurface. Needs the foreground
-// (GPU commands); waits for the copy so the staging memory can go.
-// Fills a tiled texture from RGBA rows: the CPU writes a linear staging
-// surface and the GPU converts it with GX2CopySurface. Needs the foreground
-// (GPU commands); waits for the copy so the staging memory can go.
-static bool upload_tiled(WiiUTexture *p_texture, const uint8_t *p_rgba) {
+#define WIIU_MAX_MIPS 14
+
+static uint32_t level_dim(uint32_t p_size, uint32_t p_level) {
+	const uint32_t d = p_size >> p_level;
+	return d ? d : 1;
+}
+
+// Fills a tiled texture from RGBA levels: for each mip level the CPU writes a
+// linear staging surface of that level's size and the GPU converts it into
+// the level with GX2CopySurface. Needs the foreground (GPU commands); waits
+// for the copies so the staging memory can go. p_levels NULL: all zero.
+static bool upload_tiled(WiiUTexture *p_texture, const uint8_t *const *p_levels, uint32_t p_count) {
 	if (!wiiu_gx2_can_draw()) {
 		return false;
 	}
-	GX2Surface staging = p_texture->texture.surface;
-	staging.tileMode = GX2_TILE_MODE_LINEAR_ALIGNED;
-	staging.swizzle = 0; // The tiled surface's swizzle scrambles a linear one.
-	staging.image = NULL;
-	staging.mipmaps = NULL;
-	GX2CalcSurfaceSizeAndAlignment(&staging);
-	staging.image = MEMAllocFromDefaultHeapEx(staging.imageSize, staging.alignment);
-	if (staging.image == NULL) {
-		return false;
-	}
-	uint8_t *image = (uint8_t *)staging.image;
-	const uint32_t row = p_texture->width * 4;
-	if (p_rgba == NULL) {
-		memset(image, 0, staging.imageSize);
-	} else {
-		for (uint32_t y = 0; y < p_texture->height; y++) {
-			memcpy(image + y * staging.pitch * 4, p_rgba + y * row, row);
-		}
-	}
 	GX2Surface *dst = &p_texture->texture.surface;
-	// Staging: out of the CPU cache, and drop GPU texture cache lines of an
-	// earlier buffer at the same address. Destination: no stale GPU lines.
-	GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, staging.image, staging.imageSize);
+	uint32_t count = p_levels ? p_count : dst->mipLevels;
+	if (count > dst->mipLevels) {
+		count = dst->mipLevels;
+	}
+	if (count == 0) {
+		count = 1;
+	}
+	void *staging_images[WIIU_MAX_MIPS] = { NULL };
+	bool ok = true;
+	// No stale GPU lines over the destination.
 	GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE | GX2_INVALIDATE_MODE_COLOR_BUFFER, dst->image, dst->imageSize);
-	GX2CopySurface(&staging, 0, 0, dst, 0, 0);
+	if (dst->mipmaps != NULL && dst->mipmapSize) {
+		GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE | GX2_INVALIDATE_MODE_COLOR_BUFFER, dst->mipmaps, dst->mipmapSize);
+	}
+	for (uint32_t l = 0; l < count; l++) {
+		GX2Surface staging;
+		memset(&staging, 0, sizeof(staging));
+		staging.width = level_dim(dst->width, l);
+		staging.height = level_dim(dst->height, l);
+		staging.depth = 1;
+		staging.mipLevels = 1;
+		staging.format = dst->format;
+		staging.aa = GX2_AA_MODE1X;
+		staging.use = GX2_SURFACE_USE_TEXTURE;
+		staging.dim = GX2_SURFACE_DIM_TEXTURE_2D;
+		staging.tileMode = GX2_TILE_MODE_LINEAR_ALIGNED;
+		GX2CalcSurfaceSizeAndAlignment(&staging);
+		staging.image = MEMAllocFromDefaultHeapEx(staging.imageSize, staging.alignment);
+		if (staging.image == NULL) {
+			ok = false;
+			break;
+		}
+		staging_images[l] = staging.image;
+		uint8_t *image = (uint8_t *)staging.image;
+		const uint8_t *src = p_levels ? p_levels[l] : NULL;
+		const uint32_t row = staging.width * 4;
+		if (src == NULL) {
+			memset(image, 0, staging.imageSize);
+		} else {
+			for (uint32_t y = 0; y < staging.height; y++) {
+				memcpy(image + y * staging.pitch * 4, src + y * row, row);
+			}
+		}
+		// Out of the CPU cache, and drop GPU texture cache lines of an earlier
+		// buffer at the same address.
+		GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, staging.image, staging.imageSize);
+		GX2CopySurface(&staging, 0, 0, dst, l, 0);
+	}
 	GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER | GX2_INVALIDATE_MODE_TEXTURE, dst->image, dst->imageSize);
+	if (dst->mipmaps != NULL && dst->mipmapSize) {
+		GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER | GX2_INVALIDATE_MODE_TEXTURE, dst->mipmaps, dst->mipmapSize);
+	}
 	// GX2CopySurface changes GPU state: put ours back (target, viewport, scissor).
 	GX2SetContextState(gx2_context);
 	if (target_cb != NULL) {
 		apply_target();
 	}
 	GX2DrawDone();
-	MEMFreeToDefaultHeap(staging.image);
-	return true;
+	for (uint32_t l = 0; l < WIIU_MAX_MIPS; l++) {
+		if (staging_images[l] != NULL) {
+			MEMFreeToDefaultHeap(staging_images[l]);
+		}
+	}
+	return ok;
 }
 
 // Linear textures (p_tiled false) are a plain row copy, also without the
-// foreground; tiled ones sample much faster but need the GPU to upload.
-static WiiUTexture *texture_create(uint32_t p_width, uint32_t p_height, const uint8_t *p_rgba, bool p_tiled);
-
-WiiUTexture *wiiu_gx2_texture_create(uint32_t p_width, uint32_t p_height, const uint8_t *p_rgba) {
-	return texture_create(p_width, p_height, p_rgba, false);
-}
-
-WiiUTexture *wiiu_gx2_texture_create_tiled(uint32_t p_width, uint32_t p_height, const uint8_t *p_rgba) {
-	// Tiling needs the GPU; in the background (HOME menu) fall back to linear.
-	return texture_create(p_width, p_height, p_rgba, wiiu_gx2_can_draw());
-}
-
-static WiiUTexture *texture_create(uint32_t p_width, uint32_t p_height, const uint8_t *p_rgba, bool p_tiled) {
+// foreground, and have no mipmaps; tiled ones sample much faster but need the
+// GPU to upload.
+static WiiUTexture *texture_create(uint32_t p_width, uint32_t p_height, const uint8_t *const *p_levels, uint32_t p_count, bool p_tiled) {
 	WiiUTexture *t = (WiiUTexture *)calloc(1, sizeof(WiiUTexture));
 	if (t == NULL) {
 		return NULL;
+	}
+	uint32_t mips = p_tiled ? p_count : 1;
+	if (mips < 1) {
+		mips = 1;
+	}
+	if (mips > WIIU_MAX_MIPS) {
+		mips = WIIU_MAX_MIPS;
 	}
 	GX2Surface surface;
 	memset(&surface, 0, sizeof(surface));
 	surface.width = p_width;
 	surface.height = p_height;
 	surface.depth = 1;
-	surface.mipLevels = 1;
+	surface.mipLevels = mips;
 	surface.format = GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8;
 	surface.aa = GX2_AA_MODE1X;
 	surface.use = GX2_SURFACE_USE_TEXTURE;
@@ -352,39 +385,77 @@ static WiiUTexture *texture_create(uint32_t p_width, uint32_t p_height, const ui
 		free(t);
 		return NULL;
 	}
+	surface.mipmaps = NULL;
+	if (mips > 1 && surface.mipmapSize) {
+		surface.mipmaps = MEMAllocFromDefaultHeapEx(surface.mipmapSize, surface.alignment);
+		if (surface.mipmaps == NULL) {
+			// Out of memory for the smaller levels: keep level 0 only.
+			surface.mipLevels = 1;
+			GX2CalcSurfaceSizeAndAlignment(&surface);
+		}
+	}
 	// Memory only the GPU writes (tiled: GX2CopySurface) must not keep dirty
 	// CPU cache lines from its previous owner: written back later, they land
 	// on top of the texture (random garbage in sprites, 2026-11-13).
 	if (p_tiled) {
 		GX2Invalidate(GX2_INVALIDATE_MODE_CPU, surface.image, surface.imageSize);
+		if (surface.mipmaps != NULL) {
+			GX2Invalidate(GX2_INVALIDATE_MODE_CPU, surface.mipmaps, surface.mipmapSize);
+		}
 	}
 	init_texture_view(t, &surface);
 	t->owns_image = true;
 	stat_textures++;
-	stat_texture_bytes += surface.imageSize;
-	wiiu_gx2_texture_update(t, p_rgba);
+	stat_texture_bytes += surface.imageSize + (surface.mipmaps != NULL ? surface.mipmapSize : 0);
+	wiiu_gx2_texture_update_levels(t, p_levels, p_count);
 	return t;
 }
 
+WiiUTexture *wiiu_gx2_texture_create(uint32_t p_width, uint32_t p_height, const uint8_t *p_rgba) {
+	const uint8_t *levels[1] = { p_rgba };
+	return texture_create(p_width, p_height, p_rgba ? levels : NULL, 1, false);
+}
+
+WiiUTexture *wiiu_gx2_texture_create_tiled(uint32_t p_width, uint32_t p_height, const uint8_t *p_rgba) {
+	const uint8_t *levels[1] = { p_rgba };
+	return wiiu_gx2_texture_create_tiled_levels(p_width, p_height, p_rgba ? levels : NULL, 1);
+}
+
+WiiUTexture *wiiu_gx2_texture_create_tiled_levels(uint32_t p_width, uint32_t p_height, const uint8_t *const *p_levels, uint32_t p_count) {
+	// Tiling needs the GPU; in the background (HOME menu) fall back to linear.
+	return texture_create(p_width, p_height, p_levels, p_count, wiiu_gx2_can_draw());
+}
+
+uint32_t wiiu_gx2_texture_levels(const WiiUTexture *p_texture) {
+	return p_texture ? p_texture->texture.surface.mipLevels : 0;
+}
+
 void wiiu_gx2_texture_update(WiiUTexture *p_texture, const uint8_t *p_rgba) {
+	const uint8_t *levels[1] = { p_rgba };
+	wiiu_gx2_texture_update_levels(p_texture, p_rgba ? levels : NULL, 1);
+}
+
+void wiiu_gx2_texture_update_levels(WiiUTexture *p_texture, const uint8_t *const *p_levels, uint32_t p_count) {
 	if (p_texture == NULL || !p_texture->owns_image) {
 		return;
 	}
 	GX2Surface *s = &p_texture->texture.surface;
 	if (s->tileMode != GX2_TILE_MODE_LINEAR_ALIGNED) {
-		if (!upload_tiled(p_texture, p_rgba)) {
+		if (!upload_tiled(p_texture, p_levels, p_count)) {
 			WHBLogPrintf("[gx2] couldn't update a %ux%u tiled texture (background or out of memory)",
 					(unsigned)p_texture->width, (unsigned)p_texture->height);
 		}
 		return;
 	}
+	// Linear: level 0 only.
 	uint8_t *image = (uint8_t *)s->image;
+	const uint8_t *src = p_levels ? p_levels[0] : NULL;
 	const uint32_t row = p_texture->width * 4;
-	if (p_rgba == NULL) {
+	if (src == NULL) {
 		memset(image, 0, s->imageSize);
 	} else {
 		for (uint32_t y = 0; y < p_texture->height; y++) {
-			memcpy(image + y * s->pitch * 4, p_rgba + y * row, row);
+			memcpy(image + y * s->pitch * 4, src + y * row, row);
 		}
 	}
 	GX2Invalidate(GX2_INVALIDATE_MODE_CPU | GX2_INVALIDATE_MODE_TEXTURE, s->image, s->imageSize);
@@ -402,9 +473,13 @@ void wiiu_gx2_texture_free(WiiUTexture *p_texture) {
 		GX2DrawDone();
 	}
 	if (p_texture->owns_image) {
+		GX2Surface *s = &p_texture->texture.surface;
 		stat_textures--;
-		stat_texture_bytes -= p_texture->texture.surface.imageSize;
-		MEMFreeToDefaultHeap(p_texture->texture.surface.image);
+		stat_texture_bytes -= s->imageSize + (s->mipmaps != NULL ? s->mipmapSize : 0);
+		MEMFreeToDefaultHeap(s->image);
+		if (s->mipmaps != NULL) {
+			MEMFreeToDefaultHeap(s->mipmaps);
+		}
 	}
 	free(p_texture);
 }
@@ -497,11 +572,16 @@ static bool draw_init(void) {
 	}
 	GX2Invalidate(GX2_INVALIDATE_MODE_CPU | GX2_INVALIDATE_MODE_UNIFORM_BLOCK, draw_uniforms, GX2_UNIFORM_BLOCK_ALIGNMENT);
 
-	for (int linear = 0; linear < 2; linear++) {
+	for (int filter = 0; filter < 4; filter++) {
 		for (int repeat = 0; repeat < 2; repeat++) {
-			GX2InitSampler(&draw_samplers[linear][repeat],
-					repeat ? GX2_TEX_CLAMP_MODE_WRAP : GX2_TEX_CLAMP_MODE_CLAMP,
-					linear ? GX2_TEX_XY_FILTER_MODE_LINEAR : GX2_TEX_XY_FILTER_MODE_POINT);
+			GX2Sampler *sampler = &draw_samplers[filter][repeat];
+			GX2InitSampler(sampler, repeat ? GX2_TEX_CLAMP_MODE_WRAP : GX2_TEX_CLAMP_MODE_CLAMP,
+					(filter & WIIU_FILTER_LINEAR) ? GX2_TEX_XY_FILTER_MODE_LINEAR : GX2_TEX_XY_FILTER_MODE_POINT);
+			// Mipmaps only when asked for (Godot's *_WITH_MIPMAPS filters),
+			// blended between levels like Godot's GLES3 renderer.
+			GX2InitSamplerZMFilter(sampler, GX2_TEX_Z_FILTER_MODE_POINT,
+					(filter & WIIU_FILTER_MIPMAPS) ? GX2_TEX_MIP_FILTER_MODE_LINEAR : GX2_TEX_MIP_FILTER_MODE_NONE);
+			GX2InitSamplerLOD(sampler, 0.0f, (filter & WIIU_FILTER_MIPMAPS) ? 14.0f : 0.0f, 0.0f);
 		}
 	}
 
@@ -656,7 +736,7 @@ void wiiu_gx2_set_scissor(int32_t p_x, int32_t p_y, int32_t p_width, int32_t p_h
 	GX2SetScissor((uint32_t)scissor_x, (uint32_t)scissor_y, (uint32_t)scissor_w, (uint32_t)scissor_h);
 }
 
-void wiiu_gx2_draw(WiiUPrimitive p_primitive, WiiUTexture *p_texture, bool p_linear, bool p_repeat,
+void wiiu_gx2_draw(WiiUPrimitive p_primitive, WiiUTexture *p_texture, int p_filter, bool p_repeat,
 		const WiiUVertex *p_vertices, uint32_t p_count) {
 	if (p_count == 0 || target_cb == NULL || !wiiu_gx2_can_draw() || scissor_w == 0 || scissor_h == 0) {
 		return;
@@ -692,7 +772,7 @@ void wiiu_gx2_draw(WiiUPrimitive p_primitive, WiiUTexture *p_texture, bool p_lin
 	GX2SetVertexUniformBlock(draw_uniform_location, 32 * 4, draw_uniforms);
 	GX2SetAttribBuffer(0, bytes, (uint32_t)sizeof(WiiUVertex), out);
 	GX2SetPixelTexture(&texture->texture, draw_sampler_location);
-	GX2SetPixelSampler(&draw_samplers[p_linear ? 1 : 0][p_repeat ? 1 : 0], draw_sampler_location);
+	GX2SetPixelSampler(&draw_samplers[p_filter & 3][p_repeat ? 1 : 0], draw_sampler_location);
 	GX2SetDepthOnlyControl(FALSE, FALSE, GX2_COMPARE_FUNC_ALWAYS);
 	GX2SetCullOnlyControl(GX2_FRONT_FACE_CCW, FALSE, FALSE);
 	GX2SetColorControl(GX2_LOGIC_OP_COPY, draw_blend == WIIU_BLEND_DISABLED ? 0x00 : 0xFF, FALSE, TRUE);

@@ -28,19 +28,16 @@ void TextureStorageWiiU::_release_gpu(Texture *p_texture) {
 	}
 }
 
-// Converts to RGBA8 (level 0 only) and uploads, recreating the GX2 texture if
-// the size changed.
+// Converts to RGBA8 (keeping the image's mipmaps, if it has any) and
+// uploads, recreating the GX2 texture if the size or mip count changed.
 void TextureStorageWiiU::_upload(Texture *p_texture, const Ref<Image> &p_image) {
 	ERR_FAIL_COND(p_image.is_null() || p_image->is_empty());
 	// Only copy when the image needs converting: big atlases are tens of MB.
 	Ref<Image> img = p_image;
-	if (img->is_compressed() || img->has_mipmaps() || img->get_format() != Image::FORMAT_RGBA8) {
+	if (img->is_compressed() || img->get_format() != Image::FORMAT_RGBA8) {
 		img = p_image->duplicate();
 		if (img->is_compressed()) {
 			img->decompress();
-		}
-		if (img->has_mipmaps()) {
-			img->clear_mipmaps();
 		}
 		if (img->get_format() != Image::FORMAT_RGBA8) {
 			img->convert(Image::FORMAT_RGBA8);
@@ -49,14 +46,25 @@ void TextureStorageWiiU::_upload(Texture *p_texture, const Ref<Image> &p_image) 
 	const int w = img->get_width();
 	const int h = img->get_height();
 	Vector<uint8_t> data = img->get_data();
+	// Mip levels as pointers into data (Godot's chain halves down to 1x1,
+	// like GX2's). Used when a canvas item asks for a *_WITH_MIPMAPS filter.
+	constexpr int MAX_LEVELS = 14;
+	const uint8_t *levels[MAX_LEVELS];
+	const int level_count = MIN(img->has_mipmaps() ? img->get_mipmap_count() + 1 : 1, MAX_LEVELS);
+	for (int l = 0; l < level_count; l++) {
+		int64_t ofs = 0, size = 0;
+		img->get_mipmap_offset_and_size(l, ofs, size);
+		levels[l] = data.ptr() + ofs;
+	}
 
-	if (p_texture->gpu && (p_texture->width != w || p_texture->height != h)) {
+	if (p_texture->gpu && (p_texture->width != w || p_texture->height != h ||
+								  (int)wiiu_gx2_texture_levels(p_texture->gpu) != level_count)) {
 		_release_gpu(p_texture);
 	}
 	if (p_texture->gpu) {
-		wiiu_gx2_texture_update(p_texture->gpu, data.ptr());
+		wiiu_gx2_texture_update_levels(p_texture->gpu, levels, level_count);
 	} else {
-		p_texture->gpu = wiiu_gx2_texture_create_tiled(w, h, data.ptr());
+		p_texture->gpu = wiiu_gx2_texture_create_tiled_levels(w, h, levels, level_count);
 	}
 	p_texture->width = w;
 	p_texture->height = h;
@@ -841,7 +849,7 @@ void RasterizerCanvasWiiU::_flush() {
 	batch.clear();
 }
 
-void RasterizerCanvasWiiU::_begin(WiiUPrimitive p_primitive, WiiUTexture *p_texture, bool p_linear, bool p_repeat) {
+void RasterizerCanvasWiiU::_begin(WiiUPrimitive p_primitive, WiiUTexture *p_texture, int p_linear, bool p_repeat) {
 	if (p_primitive != batch_primitive || p_texture != batch_texture || p_linear != batch_linear || p_repeat != batch_repeat || blend != batch_blend) {
 		_flush();
 		batch_primitive = p_primitive;
@@ -896,10 +904,20 @@ void RasterizerCanvasWiiU::draw_texture_rect(WiiUTexture *p_texture, const Rect2
 	_flush();
 }
 
-static bool filter_is_linear(RSE::CanvasItemTextureFilter p_filter) {
-	return p_filter == RSE::CANVAS_ITEM_TEXTURE_FILTER_LINEAR ||
-			p_filter == RSE::CANVAS_ITEM_TEXTURE_FILTER_LINEAR_WITH_MIPMAPS ||
-			p_filter == RSE::CANVAS_ITEM_TEXTURE_FILTER_LINEAR_WITH_MIPMAPS_ANISOTROPIC;
+// Godot's canvas filter as WIIU_FILTER_* bits (anisotropic is plain trilinear).
+static int filter_mode(RSE::CanvasItemTextureFilter p_filter) {
+	switch (p_filter) {
+		case RSE::CANVAS_ITEM_TEXTURE_FILTER_LINEAR:
+			return WIIU_FILTER_LINEAR;
+		case RSE::CANVAS_ITEM_TEXTURE_FILTER_NEAREST_WITH_MIPMAPS:
+		case RSE::CANVAS_ITEM_TEXTURE_FILTER_NEAREST_WITH_MIPMAPS_ANISOTROPIC:
+			return WIIU_FILTER_MIPMAPS;
+		case RSE::CANVAS_ITEM_TEXTURE_FILTER_LINEAR_WITH_MIPMAPS:
+		case RSE::CANVAS_ITEM_TEXTURE_FILTER_LINEAR_WITH_MIPMAPS_ANISOTROPIC:
+			return WIIU_FILTER_LINEAR | WIIU_FILTER_MIPMAPS;
+		default:
+			return 0;
+	}
 }
 
 void RasterizerCanvasWiiU::canvas_render_items(RID p_to_render_target, Item *p_item_list, const Color &p_modulate, Light *p_light_list, Light *p_directional_list, const Transform2D &p_canvas_transform, RSE::CanvasItemTextureFilter p_default_filter, RSE::CanvasItemTextureRepeat p_default_repeat, bool p_snap_2d_vertices_to_pixel, bool &r_sdf_used, RenderingServerTypes::RenderInfo *r_render_info) {
@@ -961,7 +979,7 @@ void RasterizerCanvasWiiU::canvas_render_items(RID p_to_render_target, Item *p_i
 			TextureStorageWiiU::Resolved res = ts->resolve(p_texture);
 			const RSE::CanvasItemTextureFilter f = res.filter == RSE::CANVAS_ITEM_TEXTURE_FILTER_DEFAULT ? item_filter : res.filter;
 			const RSE::CanvasItemTextureRepeat rep = res.repeat == RSE::CANVAS_ITEM_TEXTURE_REPEAT_DEFAULT ? item_repeat : res.repeat;
-			_begin(p_primitive, res.texture, filter_is_linear(f), rep != RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED && rep != RSE::CANVAS_ITEM_TEXTURE_REPEAT_DEFAULT);
+			_begin(p_primitive, res.texture, filter_mode(f), rep != RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED && rep != RSE::CANVAS_ITEM_TEXTURE_REPEAT_DEFAULT);
 			r_size = res.size;
 			return res.texture != nullptr;
 		};
@@ -1164,7 +1182,7 @@ void RasterizerCanvasWiiU::canvas_render_items(RID p_to_render_target, Item *p_i
 							r_out.push_back({ p_pos[2], p_pos[3], p_uv[2], p_uv[3], 2 });
 						};
 						LocalVector<Segment> seg_x, seg_y;
-						const bool linear_np = batch_linear;
+						const bool linear_np = (batch_linear & WIIU_FILTER_LINEAR) != 0;
 						axis_segments(xs, us, src.size.x - ml - mr, np->axis_x, textured && linear_np ? 0.5f / tsize.x : 0.0f, seg_x);
 						axis_segments(ys, vs, src.size.y - mt - mb, np->axis_y, textured && linear_np ? 0.5f / tsize.y : 0.0f, seg_y);
 						for (const Segment &sy : seg_y) {

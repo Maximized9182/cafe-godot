@@ -134,6 +134,8 @@ func _ready() -> void:
 		add_child(sq)
 		_caption(blend_names[i], Vector2(775 + i * 92, 465))
 
+	_add_mipmap_row()
+
 	fps_label = Label.new()
 	fps_label.position = Vector2(40, 640)
 	add_child(fps_label)
@@ -141,3 +143,47 @@ func _ready() -> void:
 func _process(delta: float) -> void:
 	$Spin.rotation += delta
 	fps_label.text = "%d fps  |  Cafe Render Test (%s / %s)" % [Engine.get_frames_per_second(), OS.get_name(), DisplayServer.get_name()]
+
+
+# Mipmaps: a fine checker shrunk 4x without and with mipmaps (moire vs smooth
+# grey), and a texture whose mip levels are solid colours (red, green, blue,
+# yellow, ...) so the screen shows which level the GPU samples (4x smaller:
+# level 2, blue).
+func _add_mipmap_row() -> void:
+	var fine := Image.create_empty(256, 256, false, Image.FORMAT_RGBA8)
+	for y in 256:
+		for x in 256:
+			var on := ((x / 2) + (y / 2)) % 2 == 0
+			fine.set_pixel(x, y, Color.WHITE if on else Color.BLACK)
+	var no_mips := ImageTexture.create_from_image(fine)
+	var with_mips_img := fine.duplicate()
+	with_mips_img.generate_mipmaps()
+	var with_mips := ImageTexture.create_from_image(with_mips_img)
+
+	var colors := [Color.RED, Color.GREEN, Color.BLUE, Color.YELLOW, Color.MAGENTA, Color.CYAN, Color.WHITE, Color.ORANGE, Color.PURPLE]
+	var data := PackedByteArray()
+	var size := 256
+	var level := 0
+	while true:
+		var c: Color = colors[level % colors.size()]
+		for i in size * size:
+			data.append(c.r8)
+			data.append(c.g8)
+			data.append(c.b8)
+			data.append(255)
+		if size == 1:
+			break
+		size /= 2
+		level += 1
+	var levels_tex := ImageTexture.create_from_image(Image.create_from_data(256, 256, true, Image.FORMAT_RGBA8, data))
+
+	var entries := [[no_mips, CanvasItem.TEXTURE_FILTER_LINEAR, "no mips"], [with_mips, CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS, "mipmaps"], [levels_tex, CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS, "level 2 = blue"]]
+	for i in entries.size():
+		var sprite := Sprite2D.new()
+		sprite.texture = entries[i][0]
+		sprite.texture_filter = entries[i][1]
+		sprite.centered = false
+		sprite.scale = Vector2(0.25, 0.25)
+		sprite.position = Vector2(840 + i * 130, 500)
+		add_child(sprite)
+		_caption(entries[i][2], Vector2(840 + i * 130, 570))

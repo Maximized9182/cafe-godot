@@ -56,6 +56,13 @@ WiiUTexture *wiiu_gx2_texture_create(uint32_t p_width, uint32_t p_height, const 
 // not for things made during a crash.
 WiiUTexture *wiiu_gx2_texture_create_tiled(uint32_t p_width, uint32_t p_height, const uint8_t *p_rgba);
 void wiiu_gx2_texture_update(WiiUTexture *p_texture, const uint8_t *p_rgba);
+// With mipmaps: p_levels[0..p_count-1] are RGBA8 levels, each level half the
+// previous one (at least 1x1). Mipmaps need the tiled path; in the background
+// only level 0 is kept.
+WiiUTexture *wiiu_gx2_texture_create_tiled_levels(uint32_t p_width, uint32_t p_height, const uint8_t *const *p_levels, uint32_t p_count);
+void wiiu_gx2_texture_update_levels(WiiUTexture *p_texture, const uint8_t *const *p_levels, uint32_t p_count);
+// Number of mip levels of the GPU texture (1 without mipmaps).
+uint32_t wiiu_gx2_texture_levels(const WiiUTexture *p_texture);
 void wiiu_gx2_texture_free(WiiUTexture *p_texture);
 // A 1x1 opaque white texture, for untextured drawing.
 WiiUTexture *wiiu_gx2_white_texture(void);
@@ -77,8 +84,12 @@ void wiiu_gx2_set_scissor(int32_t p_x, int32_t p_y, int32_t p_width, int32_t p_h
 // Blend for the following wiiu_gx2_draw calls (WIIU_BLEND_MIX by default).
 // Whoever sets another mode sets it back to mix afterwards.
 void wiiu_gx2_set_blend(WiiUBlend p_blend);
+// Texture filter for wiiu_gx2_draw: bit 0 linear (else nearest), bit 1 use the
+// texture's mipmaps (trilinear when linear).
+#define WIIU_FILTER_LINEAR 1
+#define WIIU_FILTER_MIPMAPS 2
 // Draws p_count vertices (pixel coordinates of the bound target).
-void wiiu_gx2_draw(WiiUPrimitive p_primitive, WiiUTexture *p_texture, bool p_linear, bool p_repeat,
+void wiiu_gx2_draw(WiiUPrimitive p_primitive, WiiUTexture *p_texture, int p_filter, bool p_repeat,
 		const WiiUVertex *p_vertices, uint32_t p_count);
 
 // Numbers for the stats overlay (wiiu_stats.cpp). Draws/vertices are from the

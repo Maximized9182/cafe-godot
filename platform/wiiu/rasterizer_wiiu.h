@@ -263,14 +263,14 @@ class RasterizerCanvasWiiU : public RasterizerCanvasDummy {
 	// The batch being collected: one draw per texture/filter/primitive change.
 	WiiUPrimitive batch_primitive = WIIU_PRIM_TRIANGLES;
 	WiiUTexture *batch_texture = nullptr;
-	bool batch_linear = false;
+	int batch_linear = 0; // WIIU_FILTER_* bits.
 	bool batch_repeat = false;
 	WiiUBlend batch_blend = WIIU_BLEND_MIX;
 	WiiUBlend blend = WIIU_BLEND_MIX; // For the next _begin: the current item's material.
 	LocalVector<WiiUVertex> batch;
 
 	void _flush();
-	void _begin(WiiUPrimitive p_primitive, WiiUTexture *p_texture, bool p_linear, bool p_repeat);
+	void _begin(WiiUPrimitive p_primitive, WiiUTexture *p_texture, int p_filter, bool p_repeat);
 	void _vertex(const Vector2 &p_pos, const Vector2 &p_uv, const Color &p_color);
 	void _quad(const Transform2D &p_xform, const Vector2 p_pos[4], const Vector2 p_uv[4], const Color &p_color);
 
