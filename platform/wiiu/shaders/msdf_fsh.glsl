@@ -11,12 +11,10 @@ layout (location = 0) out vec4 VaryingColor;
 uniform sampler2D texture0;
 
 // x: px_range, y: outline size, z: px_size (screen pixels per distance-field
-// unit, computed on the CPU from the glyph's on-screen scale: fwidth() gave
-// a wrong scale on GX2 and left fills half transparent).
-layout(std140) uniform MsdfParams
-{
-    vec4 params;
-} m;
+// unit, computed on the CPU from the glyph's on-screen scale). A loose
+// uniform (register mode): a uniform block in memory read as zeros on the
+// console (fills half transparent), while Cemu showed it right.
+uniform vec4 params;
 
 float msdf_median(float r, float g, float b)
 {
@@ -26,9 +24,9 @@ float msdf_median(float r, float g, float b)
 void main()
 {
     vec4 msdf_sample = texture(texture0, VertexTexCoord);
-    float px_range = m.params.x;
-    float outline_thickness = m.params.y;
-    float px_size = max(m.params.z, 1.0);
+    float px_range = params.x;
+    float outline_thickness = params.y;
+    float px_size = max(params.z, 1.0);
     float d = msdf_median(msdf_sample.r, msdf_sample.g, msdf_sample.b);
     float a;
     if (outline_thickness > 0.0) {
