@@ -1,17 +1,17 @@
 extends Node3D
 
 # Cafe Godot 3D test: what each object checks is in its comment. Left stick
-# orbits the camera, right stick looks around, X cycles the cull mode of the
+# moves (flies where the camera looks), right stick looks around, X cycles the cull mode of the
 # lit materials (back -> front -> disabled): with the right front-face
 # winding, "back" shows solid objects and "front" shows their insides.
 
 var box: MeshInstance3D
 var camera: Camera3D
 var label: Label
-var yaw := 0.0
-var pitch := 0.45
-var distance := 6.0
-var look := Vector2.ZERO # Right stick: yaw/pitch on top of the orbit view.
+var yaw := 0.0 # Right stick: where the camera looks.
+var pitch := -0.4
+const MOVE_SPEED := 3.0 # Metres per second at full tilt.
+const LOOK_SPEED := 2.0 # Radians per second at full tilt.
 var materials: Array[StandardMaterial3D] = []
 var cull := BaseMaterial3D.CULL_BACK
 const CULL_NAMES := ["back", "front", "disabled"]
@@ -130,6 +130,7 @@ func _ready() -> void:
 	camera = Camera3D.new()
 	add_child(camera)
 	camera.current = true
+	camera.position = Vector3(0, 3, 6) # Behind the floor's front edge, looking down at the scene.
 
 	# 2D on top of 3D.
 	var layer := CanvasLayer.new()
@@ -150,15 +151,11 @@ func _unhandled_input(event: InputEvent) -> void:
 func _process(delta: float) -> void:
 	box.rotate_y(delta * 0.8)
 	box.rotate_x(delta * 0.3)
-	var stick := Input.get_vector("ui_left", "ui_right", "ui_up", "ui_down")
-	yaw -= stick.x * delta * 1.5
-	pitch = clamp(pitch - stick.y * delta * 1.0, -0.2, 1.4)
 	var rs := Vector2(Input.get_joy_axis(0, JOY_AXIS_RIGHT_X), Input.get_joy_axis(0, JOY_AXIS_RIGHT_Y))
 	if rs.length() > 0.2:
-		look.x -= rs.x * delta * 2.0
-		look.y = clamp(look.y - rs.y * delta * 2.0, -1.4, 1.4)
-	camera.position = Vector3(sin(yaw) * cos(pitch), sin(pitch), cos(yaw) * cos(pitch)) * distance + Vector3(0, 0.5, 0)
-	camera.look_at(Vector3(0, 0.5, 0))
-	camera.rotate_y(look.x)
-	camera.rotate_object_local(Vector3.RIGHT, look.y)
-	label.text = "Cafe 3D Test   %d fps   cull: %s\nleft stick: orbit, right stick: look, X: cull mode" % [Engine.get_frames_per_second(), CULL_NAMES[cull]]
+		yaw -= rs.x * delta * LOOK_SPEED
+		pitch = clamp(pitch - rs.y * delta * LOOK_SPEED, -1.5, 1.5)
+	camera.rotation = Vector3(pitch, yaw, 0)
+	var stick := Input.get_vector("ui_left", "ui_right", "ui_up", "ui_down")
+	camera.position += camera.basis * Vector3(stick.x, 0, stick.y) * MOVE_SPEED * delta
+	label.text = "Cafe 3D Test   %d fps   cull: %s\nleft stick: move, right stick: look, X: cull mode" % [Engine.get_frames_per_second(), CULL_NAMES[cull]]
