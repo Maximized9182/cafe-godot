@@ -4,6 +4,7 @@ extends Node3D
 # moves (flies where the camera looks), right stick looks around, X cycles the cull mode of the
 # lit materials (back -> front -> disabled): with the right front-face
 # winding, "back" shows solid objects and "front" shows their insides.
+# Y cycles the background: colour -> procedural sky -> physical sky.
 
 var box: MeshInstance3D
 var camera: Camera3D
@@ -15,6 +16,9 @@ const LOOK_SPEED := 2.0 # Radians per second at full tilt.
 var materials: Array[StandardMaterial3D] = []
 var cull := BaseMaterial3D.CULL_BACK
 const CULL_NAMES := ["back", "front", "disabled"]
+var env: Environment
+var background := 0
+const BACKGROUND_NAMES := ["colour", "procedural sky", "physical sky"]
 
 
 func _material(color: Color) -> StandardMaterial3D:
@@ -35,7 +39,7 @@ func _add(mesh: Mesh, material: Material, pos: Vector3) -> MeshInstance3D:
 
 func _ready() -> void:
 	# Background colour and ambient light.
-	var env := Environment.new()
+	env = Environment.new()
 	env.background_mode = Environment.BG_COLOR
 	env.background_color = Color(0.1, 0.12, 0.2)
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
@@ -141,7 +145,23 @@ func _ready() -> void:
 	layer.add_child(label)
 
 
+# Colour background with a fixed ambient colour, or a sky that also lights the scene.
+func _set_background() -> void:
+	if background == 0:
+		env.background_mode = Environment.BG_COLOR
+		env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+		return
+	var sky := Sky.new()
+	sky.sky_material = ProceduralSkyMaterial.new() if background == 1 else PhysicalSkyMaterial.new()
+	env.sky = sky
+	env.background_mode = Environment.BG_SKY
+	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
+
+
 func _unhandled_input(event: InputEvent) -> void:
+	if event is InputEventJoypadButton and event.pressed and event.button_index == JOY_BUTTON_Y:
+		background = (background + 1) % 3
+		_set_background()
 	if event is InputEventJoypadButton and event.pressed and event.button_index == JOY_BUTTON_X:
 		cull = (cull + 1) % 3
 		for m in materials:
@@ -158,4 +178,4 @@ func _process(delta: float) -> void:
 	camera.rotation = Vector3(pitch, yaw, 0)
 	var stick := Input.get_vector("ui_left", "ui_right", "ui_up", "ui_down")
 	camera.position += camera.basis * Vector3(stick.x, 0, stick.y) * MOVE_SPEED * delta
-	label.text = "Cafe 3D Test   %d fps   cull: %s\nleft stick: move, right stick: look, X: cull mode" % [Engine.get_frames_per_second(), CULL_NAMES[cull]]
+	label.text = "Cafe 3D Test   %d fps   cull: %s   background: %s\nleft stick: move, right stick: look, X: cull mode, Y: background" % [Engine.get_frames_per_second(), CULL_NAMES[cull], BACKGROUND_NAMES[background]]
