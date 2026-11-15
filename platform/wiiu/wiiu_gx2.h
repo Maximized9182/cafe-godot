@@ -71,6 +71,10 @@ WiiUTexture *wiiu_gx2_white_texture(void);
 WiiURenderTarget *wiiu_gx2_render_target_create(uint32_t p_width, uint32_t p_height);
 void wiiu_gx2_render_target_free(WiiURenderTarget *p_rt);
 WiiUTexture *wiiu_gx2_render_target_texture(WiiURenderTarget *p_rt);
+// Copies what has been drawn into the target so far to its back buffer (made
+// on first use, same size) and returns it: the screen texture of canvas
+// shaders (hint_screen_texture). Draws already queued are included.
+WiiUTexture *wiiu_gx2_render_target_copy_back_buffer(WiiURenderTarget *p_rt);
 
 // Per frame: begin (resets the vertex arena), draw into targets, present.
 void wiiu_gx2_frame_begin(void);
@@ -134,8 +138,11 @@ typedef struct {
 	const WiiUProgramTexture *textures;
 	uint32_t texture_count;
 	float time;
+	// The screen texture for the program (wiiu_gx2_render_target_copy_back_buffer);
+	// NULL: black.
+	WiiUTexture *screen_texture;
 } WiiUDrawState;
-#define WIIU_DRAW_STATE_DEFAULT { WIIU_BLEND_MIX, 0.0f, 0.0f, 1.0f, NULL, NULL, 0, NULL, 0, 0.0f }
+#define WIIU_DRAW_STATE_DEFAULT { WIIU_BLEND_MIX, 0.0f, 0.0f, 1.0f, NULL, NULL, 0, NULL, 0, 0.0f, NULL }
 
 // Draws p_count vertices (pixel coordinates of the bound target). p_state may
 // be NULL (WIIU_DRAW_STATE_DEFAULT).

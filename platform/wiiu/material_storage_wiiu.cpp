@@ -145,6 +145,9 @@ static const char *canvas_vs_glsl =
 		"}\n";
 
 static String canvas_fragment_glsl(const ShaderCompiler::GeneratedCode &p_gen) {
+	// The screen texture (hint_screen_texture) is "color_buffer" in the
+	// generated code, as in drivers/gles3; the draw binds the back buffer copy.
+	const String screen_texture = p_gen.uses_screen_texture ? "uniform sampler2D color_buffer;\n" : "";
 	String s = "#version 330\n"
 			   "#extension GL_ARB_separate_shader_objects : enable\n"
 			   "layout(location = 0) in vec4 VertexColor;\n"
@@ -153,7 +156,8 @@ static String canvas_fragment_glsl(const ShaderCompiler::GeneratedCode &p_gen) {
 			   "uniform sampler2D color_texture;\n"
 			   "uniform float time;\n"
 			   "uniform vec2 color_texture_pixel_size;\n"
-			   "uniform vec2 screen_pixel_size;\n";
+			   "uniform vec2 screen_pixel_size;\n" +
+			screen_texture;
 	for (const String &d : p_gen.defines) {
 		s += d;
 	}
@@ -272,8 +276,6 @@ MaterialStorageWiiU::CanvasProgram *MaterialStorageWiiU::_compile_canvas_program
 	const String *vertex = gen.code.getptr("vertex");
 	if (vertex && !vertex->strip_edges().is_empty()) {
 		unsupported = "vertex()";
-	} else if (gen.uses_screen_texture) {
-		unsupported = "screen texture";
 	} else if (uses_sdf) {
 		unsupported = "SDF";
 	}
@@ -331,6 +333,7 @@ MaterialStorageWiiU::CanvasProgram *MaterialStorageWiiU::_compile_canvas_program
 	cp->program = program;
 	cp->source = ps;
 	cp->serial = ++program_serial;
+	cp->uses_screen_texture = gen.uses_screen_texture;
 	for (const KeyValue<StringName, ShaderLanguage::ShaderNode::Uniform> &E : uniforms) {
 		const ShaderLanguage::ShaderNode::Uniform &u = E.value;
 		if (u.hint == ShaderLanguage::ShaderNode::Uniform::HINT_SCREEN_TEXTURE ||
@@ -452,6 +455,15 @@ WiiUBlend MaterialStorageWiiU::get_material_blend(RID p_material) const {
 bool MaterialStorageWiiU::material_has_program(RID p_material) const {
 	const RID *shader = material_shader.getptr(p_material);
 	return shader && shader_programs.has(*shader);
+}
+
+bool MaterialStorageWiiU::material_uses_screen_texture(RID p_material) const {
+	const RID *shader = material_shader.getptr(p_material);
+	if (shader == nullptr) {
+		return false;
+	}
+	CanvasProgram *const *cp = shader_programs.getptr(*shader);
+	return cp && (*cp)->uses_screen_texture;
 }
 
 // One uniform into its registers: floats as floats, ints and bools as their

@@ -138,6 +138,7 @@ func _ready() -> void:
 	_add_gpu_particles()
 	_add_msdf_row()
 	_add_shader_row(checker)
+	_add_screen_texture_case()
 
 	fps_label = Label.new()
 	fps_label.position = Vector2(40, 640)
@@ -300,3 +301,18 @@ func _add_shader_row(checker: Texture2D) -> void:
 		cap.add_theme_font_size_override("font_size", 12)
 		cap.position = Vector2(580 + i * 72, 662)
 		add_child(cap)
+
+
+# Screen texture (hint_screen_texture): a grey-scale rect over the right half
+# of the MultiMesh ring. Right half grey, left half in colour, lined up; a
+# mirrored or shifted copy means SCREEN_UV is wrong.
+func _add_screen_texture_case() -> void:
+	var sh := Shader.new()
+	sh.code = "shader_type canvas_item;\nuniform sampler2D screen_tex : hint_screen_texture;\nvoid fragment() {\n\tCOLOR.rgb = vec3(dot(texture(screen_tex, SCREEN_UV).rgb, vec3(1.0 / 3.0)));\n}\n"
+	var mat := ShaderMaterial.new()
+	mat.shader = sh
+	var rect := ColorRect.new()
+	rect.material = mat
+	rect.position = Vector2(420, 90)
+	rect.size = Vector2(100, 160)
+	add_child(rect)

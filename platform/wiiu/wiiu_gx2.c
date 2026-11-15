@@ -111,6 +111,7 @@ struct WiiUTexture {
 struct WiiURenderTarget {
 	GX2ColorBuffer color_buffer;
 	WiiUTexture texture; // Shares the colour buffer's image.
+	WiiUTexture *back_buffer; // Screen texture copy, made on first use.
 };
 
 static bool gx2_active = false;
@@ -182,6 +183,7 @@ typedef struct {
 	GX2VertexShader *vs;
 	GX2PixelShader *ps;
 	int32_t texture_location;
+	int32_t screen_texture_location; // hint_screen_texture ("color_buffer").
 	int32_t time_offset;
 	int32_t texture_pixel_size_offset;
 	int32_t screen_pixel_size_offset;
@@ -211,6 +213,7 @@ static void pipeline_init(RegPipeline *r_pipe, GX2FetchShader *p_fetch, GX2Verte
 	r_pipe->vs = p_vs;
 	r_pipe->ps = p_ps;
 	r_pipe->texture_location = ps_sampler_location(p_ps, p_texture_name);
+	r_pipe->screen_texture_location = ps_sampler_location(p_ps, "color_buffer");
 	r_pipe->time_offset = ps_uniform_offset(p_ps, "time");
 	r_pipe->texture_pixel_size_offset = ps_uniform_offset(p_ps, "color_texture_pixel_size");
 	r_pipe->screen_pixel_size_offset = ps_uniform_offset(p_ps, "screen_pixel_size");
@@ -730,7 +733,49 @@ void wiiu_gx2_render_target_free(WiiURenderTarget *p_rt) {
 	stat_render_targets--;
 	stat_render_target_bytes -= p_rt->color_buffer.surface.imageSize;
 	MEMFreeToDefaultHeap(p_rt->color_buffer.surface.image);
+	if (p_rt->back_buffer) {
+		stat_render_target_bytes -= p_rt->back_buffer->texture.surface.imageSize;
+		MEMFreeToDefaultHeap(p_rt->back_buffer->texture.surface.image);
+		free(p_rt->back_buffer);
+	}
 	free(p_rt);
+}
+
+WiiUTexture *wiiu_gx2_render_target_copy_back_buffer(WiiURenderTarget *p_rt) {
+	if (p_rt == NULL || !wiiu_gx2_can_draw()) {
+		return NULL;
+	}
+	GX2Surface *src = &p_rt->color_buffer.surface;
+	if (p_rt->back_buffer == NULL) {
+		WiiUTexture *t = (WiiUTexture *)calloc(1, sizeof(WiiUTexture));
+		if (t == NULL) {
+			return NULL;
+		}
+		GX2Surface surface = *src;
+		surface.image = MEMAllocFromDefaultHeapEx(surface.imageSize, surface.alignment);
+		if (surface.image == NULL) {
+			WHBLogPrintf("[gx2] out of memory for a %ux%u back buffer", (unsigned)surface.width, (unsigned)surface.height);
+			free(t);
+			return NULL;
+		}
+		// Only the GPU writes it: no dirty CPU cache lines on top (see texture_create).
+		GX2Invalidate(GX2_INVALIDATE_MODE_CPU, surface.image, surface.imageSize);
+		init_texture_view(t, &surface);
+		t->owns_image = false; // Freed with the render target.
+		p_rt->back_buffer = t;
+		stat_render_target_bytes += surface.imageSize;
+	}
+	GX2Surface *dst = &p_rt->back_buffer->texture.surface;
+	// The draws so far are in the colour-buffer cache: out to memory first.
+	GX2Invalidate((GX2InvalidateMode)(GX2_INVALIDATE_MODE_COLOR_BUFFER | GX2_INVALIDATE_MODE_TEXTURE), src->image, src->imageSize);
+	GX2CopySurface(src, 0, 0, dst, 0, 0);
+	GX2Invalidate((GX2InvalidateMode)(GX2_INVALIDATE_MODE_COLOR_BUFFER | GX2_INVALIDATE_MODE_TEXTURE), dst->image, dst->imageSize);
+	// GX2CopySurface changes GPU state: put ours back (target, viewport, scissor).
+	GX2SetContextState(gx2_context);
+	if (target_cb != NULL) {
+		apply_target();
+	}
+	return p_rt->back_buffer;
 }
 
 WiiUTexture *wiiu_gx2_render_target_texture(WiiURenderTarget *p_rt) {
@@ -1057,6 +1102,11 @@ void wiiu_gx2_draw(const WiiUDrawState *p_state, WiiUPrimitive p_primitive, WiiU
 		if (pipe->texture_location >= 0) {
 			GX2SetPixelTexture(&texture->texture, (uint32_t)pipe->texture_location);
 			GX2SetPixelSampler(sampler, (uint32_t)pipe->texture_location);
+		}
+		if (pipe->screen_texture_location >= 0) {
+			WiiUTexture *screen = st->screen_texture ? st->screen_texture : draw_black;
+			GX2SetPixelTexture(&screen->texture, (uint32_t)pipe->screen_texture_location);
+			GX2SetPixelSampler(&draw_samplers[WIIU_FILTER_LINEAR][0], (uint32_t)pipe->screen_texture_location);
 		}
 		for (uint32_t i = 0; st->program != NULL && i < st->texture_count; i++) {
 			const WiiUProgramTexture *t = &st->textures[i];

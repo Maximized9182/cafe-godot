@@ -60,6 +60,7 @@ void RasterizerCanvasWiiU::_flush() {
 			state.program = mats ? mats->get_material_program(batch_material, batch_linear, batch_repeat, state.regs, state.reg_words, state.textures, state.texture_count) : nullptr;
 			if (state.program) {
 				state.time = RSG::rasterizer ? (float)RSG::rasterizer->get_total_time() : 0.0f;
+				state.screen_texture = screen_texture;
 			}
 		}
 		wiiu_gx2_draw(&state, batch_primitive, batch_texture, batch_linear, batch_repeat, batch.ptr() + start, count);
@@ -165,6 +166,7 @@ void RasterizerCanvasWiiU::canvas_render_items(RID p_to_render_target, Item *p_i
 
 	const Size2i rt_size = rt->size;
 	Item *current_clip = nullptr;
+	screen_texture = nullptr;
 	bool clip_ignored = false;
 	batch.clear();
 
@@ -197,6 +199,14 @@ void RasterizerCanvasWiiU::canvas_render_items(RID p_to_render_target, Item *p_i
 			MaterialStorageWiiU *mats = MaterialStorageWiiU::get_wiiu_singleton();
 			blend = (mats && material.is_valid()) ? mats->get_material_blend(material) : WIIU_BLEND_MIX;
 			shader_material = (mats && material.is_valid() && mats->material_has_program(material)) ? material : RID();
+			// Screen texture: copy what's drawn so far, as drivers/gles3 does:
+			// once per canvas for the first shader that reads it, and again at
+			// every BackBufferCopy node (always the whole target here).
+			const bool wants_screen = shader_material.is_valid() && screen_texture == nullptr && mats->material_uses_screen_texture(shader_material);
+			if (ci->copy_back_buffer || wants_screen) {
+				_flush();
+				screen_texture = wiiu_gx2_render_target_copy_back_buffer(rt->gpu);
+			}
 		}
 		// final_transform already maps the item into render-target pixels.
 		Transform2D base_xform = ci->final_transform;

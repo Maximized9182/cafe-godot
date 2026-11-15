@@ -256,6 +256,7 @@ class MaterialStorageWiiU : public RendererDummy::MaterialStorage {
 		LocalVector<Param> uniforms;
 		LocalVector<Param> textures;
 		uint32_t reg_words = 0;
+		bool uses_screen_texture = false; // hint_screen_texture (back-buffer copy).
 	};
 	HashMap<RID, CanvasProgram *> shader_programs;
 	// Shaders with the same GLSL share one GX2 program.
@@ -289,6 +290,8 @@ public:
 	WiiUProgram *get_material_program(RID p_material, int p_filter, bool p_repeat, const uint32_t *&r_regs,
 			uint32_t &r_reg_words, const WiiUProgramTexture *&r_textures, uint32_t &r_texture_count);
 	bool material_has_program(RID p_material) const;
+	// True if the material's compiled shader reads the screen texture.
+	bool material_uses_screen_texture(RID p_material) const;
 
 	void shader_free(RID p_rid) override;
 	void shader_set_code(RID p_shader, const String &p_code) override;
@@ -333,6 +336,9 @@ class RasterizerCanvasWiiU : public RasterizerCanvasDummy {
 	// the one for the next _begin.
 	RID batch_material;
 	RID shader_material;
+	// The render target's back buffer once copied in this canvas_render_items
+	// call (screen texture of canvas shaders); nullptr before.
+	WiiUTexture *screen_texture = nullptr;
 	LocalVector<WiiUVertex> batch;
 
 	void _flush();
