@@ -746,7 +746,7 @@ Verified on the console with Godot Hello's counter button. Samples with an inval
 - Needs the patched wuhbtool (platform/wiiu/tools/wuhbtool/: build.sh clones devkitPro/wut-tools at b22de1a, applies wuhbtool-cafe.patch = --boot-sound + stb_image instead of FreeImage, installs to ~/.local/share/cafe-godot/bin/wuhbtool; the original is kept as wuhbtool.devkitpro). The patch is GPL-2.0 like wut-tools.
 - Aroma's Homebrew on Menu plugin serves `*.btsnd` (and the splash .tga files) from the bundle's meta/, but only launches a bundle as a "game" (splash screens + boot sound) when it has both bootTvTex and bootDrcTex. Without them it's a system app: no splash, no sound. cafe-export makes both splashes when --boot-sound is given and none are passed: the project's Godot boot splash (application/boot_splash/image) centred at its own size on boot_splash/bg_color, else the icon.
 - .btsnd: 8-byte big-endian header (u32 type, s32 loop start) + 48 kHz 16-bit big-endian stereo PCM, max 960000 frames (vgmstream btsnd.c). Type 0 / loop 0 stayed SILENT on the console; type 2 with the loop start in 0.5 s of appended silence plays once (make_btsnd.py default; --loop loops the whole sound).
-- The Wii U Menu reads the app list (and so the splash/sound) when it scans the SD card: after uploading a changed .wuhb, restart the console before checking.
+- The Wii U Menu reads the app list (and so the splash/sound) when it scans the SD card: after uploading a changed .wuhb, open any app (e.g. Health and Safety) and exit it: the relaunched Wii U Menu rescans (no console restart needed).
 
 ### 2026-11-15 (later): first 3D renderer
 
