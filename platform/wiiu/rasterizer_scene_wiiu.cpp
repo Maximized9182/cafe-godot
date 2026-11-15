@@ -291,9 +291,11 @@ static const char *scene_ps_glsl =
 		"    if (params.w > 0.5) {\n"
 		"        base *= vec4(pow(VaryingColor.rgb, vec3(2.2)), VaryingColor.a);\n"
 		"    }\n"
-		"    if (params.y >= 0.0 && base.a < params.y) {\n"
+		"#ifdef USE_ALPHA_SCISSOR\n"
+		"    if (base.a < params.y) {\n"
 		"        discard;\n"
 		"    }\n"
+		"#endif\n"
 		"    vec3 color = base.rgb;\n"
 		"    if (params.x < 0.5) {\n"
 		"        vec3 N = normalize(VaryingNormal);\n"
@@ -378,50 +380,62 @@ bool RasterizerSceneWiiU::_ensure_shadow_program() {
 }
 
 bool RasterizerSceneWiiU::_ensure_program() {
-	if (program) {
+	if (programs[0] && programs[1]) {
 		return true;
 	}
 	if (program_failed) {
 		return false;
 	}
-	char log[1024];
-	program = wiiu_gx2_program_compile_3d(scene_vs_glsl, scene_ps_glsl, log, sizeof(log));
-	if (program == nullptr) {
-		program_failed = true;
-		WHBLogPrintf("[3d] couldn't compile the 3D shader (needs cafeglsl.rpl): %s", log);
-		return false;
+	for (int v = 0; v < 2; v++) {
+		// The variant's #define goes after the #version line.
+		String ps = scene_ps_glsl;
+		if (v == 1) {
+			const int eol = ps.find("\n");
+			ps = ps.substr(0, eol + 1) + "#define USE_ALPHA_SCISSOR\n" + ps.substr(eol + 1);
+		}
+		const CharString ps_utf8 = ps.utf8();
+		char log[1024];
+		WiiUProgram *program = wiiu_gx2_program_compile_3d(scene_vs_glsl, ps_utf8.get_data(), log, sizeof(log));
+		if (program == nullptr) {
+			program_failed = true;
+			WHBLogPrintf("[3d] couldn't compile the 3D shader (needs cafeglsl.rpl): %s", log);
+			return false;
+		}
+		programs[v] = program;
+		SceneLoc &loc = locs[v];
+		loc.mvp = wiiu_gx2_program_vertex_uniform_offset(program, "mvp");
+		loc.model = wiiu_gx2_program_vertex_uniform_offset(program, "model");
+		loc.normal_matrix = wiiu_gx2_program_vertex_uniform_offset(program, "normal_matrix");
+		loc.uv1 = wiiu_gx2_program_vertex_uniform_offset(program, "uv1");
+		loc.albedo = wiiu_gx2_program_uniform_offset(program, "albedo");
+		loc.ambient = wiiu_gx2_program_uniform_offset(program, "ambient");
+		loc.ambient_ground = wiiu_gx2_program_uniform_offset(program, "ambient_ground");
+		loc.params = wiiu_gx2_program_uniform_offset(program, "params");
+		loc.flags = wiiu_gx2_program_uniform_offset(program, "flags");
+		loc.dir_direction = wiiu_gx2_program_uniform_offset(program, "dir_direction");
+		loc.dir_color = wiiu_gx2_program_uniform_offset(program, "dir_color");
+		loc.pbr = wiiu_gx2_program_uniform_offset(program, "pbr");
+		loc.camera_position = wiiu_gx2_program_uniform_offset(program, "camera_position");
+		for (int i = 0; i < 4; i++) {
+			const String n = itos(i);
+			loc.light_position[i] = wiiu_gx2_program_uniform_offset(program, ("light_position" + n).utf8().get_data());
+			loc.light_color[i] = wiiu_gx2_program_uniform_offset(program, ("light_color" + n).utf8().get_data());
+			loc.light_direction[i] = wiiu_gx2_program_uniform_offset(program, ("light_direction" + n).utf8().get_data());
+			loc.light_extra[i] = wiiu_gx2_program_uniform_offset(program, ("light_extra" + n).utf8().get_data());
+		}
+		loc.albedo_texture = wiiu_gx2_program_sampler_location(program, "albedo_texture");
+		loc.shadow_map = wiiu_gx2_program_sampler_location(program, "shadow_map");
+		loc.shadow_matrix = wiiu_gx2_program_uniform_offset(program, "shadow_matrix");
+		loc.shadow_params = wiiu_gx2_program_uniform_offset(program, "shadow_params");
+		loc.shadow_texel = wiiu_gx2_program_uniform_offset(program, "shadow_texel");
 	}
-	loc.mvp = wiiu_gx2_program_vertex_uniform_offset(program, "mvp");
-	loc.model = wiiu_gx2_program_vertex_uniform_offset(program, "model");
-	loc.normal_matrix = wiiu_gx2_program_vertex_uniform_offset(program, "normal_matrix");
-	loc.uv1 = wiiu_gx2_program_vertex_uniform_offset(program, "uv1");
-	loc.albedo = wiiu_gx2_program_uniform_offset(program, "albedo");
-	loc.ambient = wiiu_gx2_program_uniform_offset(program, "ambient");
-	loc.ambient_ground = wiiu_gx2_program_uniform_offset(program, "ambient_ground");
-	loc.params = wiiu_gx2_program_uniform_offset(program, "params");
-	loc.flags = wiiu_gx2_program_uniform_offset(program, "flags");
-	loc.dir_direction = wiiu_gx2_program_uniform_offset(program, "dir_direction");
-	loc.dir_color = wiiu_gx2_program_uniform_offset(program, "dir_color");
-	loc.pbr = wiiu_gx2_program_uniform_offset(program, "pbr");
-	loc.camera_position = wiiu_gx2_program_uniform_offset(program, "camera_position");
-	for (int i = 0; i < 4; i++) {
-		const String n = itos(i);
-		loc.light_position[i] = wiiu_gx2_program_uniform_offset(program, ("light_position" + n).utf8().get_data());
-		loc.light_color[i] = wiiu_gx2_program_uniform_offset(program, ("light_color" + n).utf8().get_data());
-		loc.light_direction[i] = wiiu_gx2_program_uniform_offset(program, ("light_direction" + n).utf8().get_data());
-		loc.light_extra[i] = wiiu_gx2_program_uniform_offset(program, ("light_extra" + n).utf8().get_data());
-	}
-	loc.albedo_texture = wiiu_gx2_program_sampler_location(program, "albedo_texture");
-	loc.shadow_map = wiiu_gx2_program_sampler_location(program, "shadow_map");
-	loc.shadow_matrix = wiiu_gx2_program_uniform_offset(program, "shadow_matrix");
-	loc.shadow_params = wiiu_gx2_program_uniform_offset(program, "shadow_params");
-	loc.shadow_texel = wiiu_gx2_program_uniform_offset(program, "shadow_texel");
 	WHBLogPrint("[3d] 3D shader compiled");
 	return true;
 }
 
 RasterizerSceneWiiU::~RasterizerSceneWiiU() {
-	wiiu_gx2_program_free(program);
+	wiiu_gx2_program_free(programs[0]);
+	wiiu_gx2_program_free(programs[1]);
 	wiiu_gx2_program_free(shadow_program);
 	wiiu_gx2_render_target_free(shadow_target);
 	wiiu_gx2_mesh_free(sky_triangle);
@@ -520,6 +534,11 @@ struct LocalLight {
 
 struct SortBackToFront {
 	_FORCE_INLINE_ bool operator()(const DrawItem *p_a, const DrawItem *p_b) const { return p_a->depth > p_b->depth; }
+};
+
+// Opaque surfaces near to far, so the depth test skips shading hidden pixels.
+struct SortFrontToBack {
+	_FORCE_INLINE_ bool operator()(const DrawItem *p_a, const DrawItem *p_b) const { return p_a->depth < p_b->depth; }
 };
 } // namespace
 
@@ -747,6 +766,10 @@ void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_b
 		SortArray<DrawItem *, SortBackToFront> sorter;
 		sorter.sort(transparent.ptr(), transparent.size());
 	}
+	if (opaque.size() > 1) {
+		SortArray<DrawItem *, SortFrontToBack> sorter;
+		sorter.sort(opaque.ptr(), opaque.size());
+	}
 
 	// Directional shadow map: one orthographic view from the sun covering a
 	// sphere in front of the camera (radius from shadow_max_distance), drawn
@@ -808,6 +831,8 @@ void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_b
 	static Regs vs, ps;
 	auto draw = [&](const DrawItem &p_item, bool p_blended) {
 		const MaterialStorageWiiU::SpatialMaterial &m = p_item.material;
+		const int variant = m.shader.alpha_scissor ? 1 : 0;
+		const SceneLoc &loc = locs[variant];
 		vs.count = 0;
 		vs.put(loc.mvp, view_projection * Projection(p_item.transform));
 		vs.put(loc.model, p_item.transform);
@@ -875,7 +900,7 @@ void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_b
 		}
 
 		WiiUMeshDraw d = {};
-		d.program = program;
+		d.program = programs[variant];
 		d.mesh = p_item.mesh;
 		d.vs_regs = vs.words;
 		d.vs_reg_words = vs.count;

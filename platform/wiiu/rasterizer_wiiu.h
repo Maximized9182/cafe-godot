@@ -516,15 +516,19 @@ private:
 	void _draw_sky(RID p_environment, const CameraData *p_camera, const PagedArray<RID> &p_lights);
 
 	// The built-in shader and where its uniforms are (-1: optimized out).
-	WiiUProgram *program = nullptr;
-	bool program_failed = false;
-	struct {
+	// Two variants: [1] has the alpha scissor discard, [0] doesn't (a discard
+	// anywhere in a pixel shader turns off the GPU's early depth test, so
+	// opaque surfaces would all be shaded before the depth test).
+	struct SceneLoc {
 		int32_t mvp, model, normal_matrix, uv1; // Vertex stage.
 		int32_t albedo, ambient, ambient_ground, params, flags, dir_direction, dir_color, pbr, camera_position; // Pixel stage.
 		int32_t light_position[4], light_color[4], light_direction[4], light_extra[4];
 		int32_t albedo_texture; // Sampler location.
 		int32_t shadow_map, shadow_matrix, shadow_params, shadow_texel;
-	} loc;
+	};
+	WiiUProgram *programs[2] = {};
+	SceneLoc locs[2] = {};
+	bool program_failed = false;
 	bool _ensure_program();
 
 	// Directional shadow map (packed depth in an RGBA8 render target).
