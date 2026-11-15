@@ -1,4 +1,4 @@
-# General 2D game profile (LVENGINE, Zheeometry Jash, funkin_godot): GDScript, 2D physics,
+# General game profile (LVENGINE, Zheeometry Jash, funkin_godot, 3D tests): GDScript, 2D and 3D physics,
 # TTF fonts, Ogg/MP3 audio, 3D nodes without a 3D renderer.
 # Usage: scons platform=wiiu profile=platform/wiiu/profiles/cafe.py
 modules_enabled_by_default = "no"

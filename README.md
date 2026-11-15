@@ -25,14 +25,15 @@ the HOME menu.
   depth, and `StandardMaterial3D` basics: albedo colour and texture, UV1 scale/offset, vertex
   colour, unshaded, alpha transparency (sorted), alpha scissor, cull and depth modes. Lighting
   is diffuse only: the environment's ambient light, one `DirectionalLight3D` and up to four
-  `OmniLight3D`s. Needs `cafeglsl.rpl` (see "Canvas shaders").
+  `OmniLight3D`s. Needs `cafeglsl.rpl` (see "Canvas shaders"). VRAM-compressed (S3TC/BPTC)
+  textures, which Godot imports 3D textures as, are decompressed when they load.
 - **Input**: Wii U GamePad (buttons, sticks, touchscreen, motion sensors), Wii Remote (with
   Nunchuk or Classic Controller) and Pro Controller, as Godot joypads. Button 0 is A, as on an
   Xbox pad. USB keyboards and mice work too (mouse cursor drawn on both screens).
 - **Microphone**: the GamePad's, through `AudioStreamMicrophone` (enable
   `audio/driver/enable_input`).
 - **Audio** through AX, with Ogg Vorbis, MP3 and WAV.
-- **GDScript**, 2D physics, `RichTextLabel`, RegEx, interactive music
+- **GDScript**, 2D and 3D physics (Godot Physics; projects set to Jolt use it too), `RichTextLabel`, RegEx, interactive music
   (`AudioStreamSynchronized` and friends).
 - **Saves**: `user://` is `sd:/wiiu/godot/<project user dir>/`.
 - **HOME menu**, closing from HOME and the Aroma close plugin.
@@ -43,7 +44,7 @@ the HOME menu.
 - **3D, the rest**: imported models (`.glb`, `.obj`, `.mesh`: their vertex data is read
   with the wrong byte order), shadows, spot lights, specular, sky (a sky background is a flat
   colour), fog, glow and tone mapping, custom `spatial` shaders (drawn as plain materials),
-  skeletons and blend shapes, `Sprite3D` and `Label3D`, 3D physics.
+  skeletons and blend shapes, `Sprite3D` and `Label3D`.
 - **Shaders, partly**: see "Canvas shaders" below. Shaders with SDF, global/instance uniforms,
   uniform arrays or textures read in `vertex()` draw without the shader (blend mode only).
 - Networking (`HTTPRequest`, multiplayer), the editor itself.
@@ -77,12 +78,17 @@ Requirements, on Linux:
 export DEVKITPRO=/opt/devkitpro
 export DEVKITPPC=$DEVKITPRO/devkitPPC
 export PATH=$DEVKITPRO/tools/bin:$DEVKITPPC/bin:$PATH
-scons platform=wiiu profile=platform/wiiu/profiles/cafe.py -j8
+scons platform=wiiu profile=platform/wiiu/profiles/cafe.py wiiu_lto=full -j8
 ```
 
 This produces `bin/godot.wiiu.template_debug.ppc32.rpx`. `profiles/cafe.py` is the general 2D
 profile, with the modules most 2D games need. Pass `wiiu_udp_log=no` to stop sending engine
 output over the network (it goes to `udplogserver` on your PC by default).
+
+`wiiu_lto=full` (link-time optimization) is needed for the cafe profile: the program's code
+must stay under 32 MB (the build stops past that), and the profile only fits with LTO.
+It needs LLVM's linker plugin (`LLVMgold.so`, part of the `llvm` package on most
+distributions). `wiiu_lto=thin` is faster to link but saves less.
 
 ## Exporting a game
 
