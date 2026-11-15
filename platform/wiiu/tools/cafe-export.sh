@@ -21,7 +21,8 @@
 #                          audio ffmpeg reads, or a ready .btsnd; at most 20 s). Needs
 #                          the patched wuhbtool (platform/wiiu/tools/wuhbtool/). The Wii U
 #                          Menu only plays it with both splash images, so without
-#                          --tv-image/--drc-image they're made from the icon.
+#                          --tv-image/--drc-image they're made from the project's
+#                          boot splash (centred, unscaled if it fits), else the icon.
 #   -t, --template FILE    Cafe Godot template .rpx
 #                          (default: $CAFE_GODOT_HOME/templates/4.7.2/wiiu_template_debug.rpx)
 #   -u, --upload HOST      Upload to the Wii U at HOST (FTP, empty credentials)
@@ -163,16 +164,23 @@ fit_image() { # src dst W H
 
 args=("$TEMPLATE" "$work/out.wuhb" "--content=$work/content" "--name=$name" "--short-name=$short_name" "--author=$author")
 
-if [[ -z "$icon" ]]; then
-	res_icon="$(project_value config/icon)"
-	if [[ "$res_icon" == uid://* ]]; then
+# A project setting holding a resource path (res:// or uid://) to a file path.
+resolve_res() { # setting
+	local res ref path=""
+	res="$(project_value "$1")"
+	if [[ "$res" == uid://* ]]; then
 		# The file whose .import (or .uid) records that UID.
-		ref="$(grep -rlF --include='*.import' --include='*.uid' --exclude-dir=.godot "$res_icon" "$project" | head -1 || true)"
-		[[ -n "$ref" ]] && icon="${ref%.import}" && icon="${icon%.uid}"
-	elif [[ "$res_icon" == res://* ]]; then
-		icon="$project/${res_icon#res://}"
+		ref="$(grep -rlF --include='*.import' --include='*.uid' --exclude-dir=.godot "$res" "$project" | head -1 || true)"
+		[[ -n "$ref" ]] && path="${ref%.import}" && path="${path%.uid}"
+	elif [[ "$res" == res://* ]]; then
+		path="$project/${res#res://}"
 	fi
-	[[ -n "$res_icon" && -z "$icon" ]] && echo "cafe-export: warning: couldn't find the project icon $res_icon." >&2
+	[[ -n "$res" && -z "$path" ]] && echo "cafe-export: warning: couldn't find $1 ($res)." >&2
+	echo "$path"
+}
+
+if [[ -z "$icon" ]]; then
+	icon="$(resolve_res config/icon)"
 fi
 if [[ -n "$icon" ]]; then
 	if command -v magick >/dev/null && fit_image "$icon" "$work/icon.png" 128 128 2>/dev/null; then
@@ -190,14 +198,29 @@ fi
 # Homebrew on Menu treats a bundle as a game (splash screens, boot sound) only
 # when it has both splash images: make them from the icon (centred on black).
 if [[ -n "$boot_sound" && ( -z "$tv" || -z "$drc" ) ]]; then
-	[[ -n "$icon" ]] || die "--boot-sound needs --tv-image and --drc-image (or an icon to make them from)"
-	splash_from_icon() { # dst W H SIZE
-		local filter=""
-		[[ "$(magick identify -format '%w' "$icon[0]" 2>/dev/null || echo 0)" -le 64 ]] && filter="-filter point"
-		magick "$icon[0]" $filter -resize "$4x$4" -background black -gravity center -extent "$2x$3" "PNG24:$1"
-	}
-	[[ -z "$tv" ]] && splash_from_icon "$work/tv.png" 1280 720 256 && args+=("--tv-image=$work/tv.png")
-	[[ -z "$drc" ]] && splash_from_icon "$work/drc.png" 854 480 192 && args+=("--drc-image=$work/drc.png")
+	splash="$(resolve_res boot_splash/image)"
+	bg="black"
+	splash_bg="$(project_value boot_splash/bg_color)" # Color(r, g, b, a)
+	if [[ "$splash_bg" == Color\(* ]]; then
+		bg="$(echo "$splash_bg" | sed -E 's/Color\(([^,]+), *([^,]+), *([^,]+).*/\1 \2 \3/' |
+			awk '{ printf "rgb(%d,%d,%d)", $1 * 255 + 0.5, $2 * 255 + 0.5, $3 * 255 + 0.5 }')"
+	fi
+	if [[ -n "$splash" && -f "$splash" ]]; then
+		# The game's own boot splash, centred at its size (shrunk only if too big).
+		splash_image() { # dst W H
+			magick "$splash[0]" -filter point -resize "$2x$3>" -background "$bg" -gravity center -extent "$2x$3" "PNG24:$1"
+		}
+	elif [[ -n "$icon" ]]; then
+		splash_image() { # dst W H
+			local filter=""
+			[[ "$(magick identify -format '%w' "$icon[0]" 2>/dev/null || echo 0)" -le 64 ]] && filter="-filter point"
+			magick "$icon[0]" $filter -resize "$(($3 * 2 / 5))x$(($3 * 2 / 5))" -background "$bg" -gravity center -extent "$2x$3" "PNG24:$1"
+		}
+	else
+		die "--boot-sound needs --tv-image and --drc-image (or a boot splash or icon to make them from)"
+	fi
+	[[ -z "$tv" ]] && splash_image "$work/tv.png" 1280 720 && args+=("--tv-image=$work/tv.png")
+	[[ -z "$drc" ]] && splash_image "$work/drc.png" 854 480 && args+=("--drc-image=$work/drc.png")
 fi
 
 if [[ -n "$boot_sound" ]]; then
