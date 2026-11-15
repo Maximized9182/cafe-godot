@@ -248,8 +248,9 @@ func _add_gpu_particles() -> void:
 # const: teal. uv: red-green gradient. param: orange (set from GDScript).
 # default: magenta (uniform default). TIME: pulsing purple. TEXTURE: pink
 # checker. int/bool: green (red: wrong int/bool packing). sampler: checker from
-# a sampler2D parameter. vertex(): grey (not supported yet: drawn without the
-# shader; red would mean it ran).
+# a sampler2D parameter. vertex(): red, 12 px right of its caption (a uniform
+# set from GDScript, used in vertex()) and slanted (right edge 10 px higher);
+# grey would mean it fell back.
 func _add_shader_row(checker: Texture2D) -> void:
 	var cases := [
 		["const", "COLOR = vec4(0.0, 0.8, 0.7, 1.0);", {}],
@@ -260,7 +261,7 @@ func _add_shader_row(checker: Texture2D) -> void:
 		["TEXTURE", "", {}, "COLOR = texture(TEXTURE, UV) * vec4(1.0, 0.5, 0.6, 1.0);", true],
 		["int/bool", "uniform int mode = 2;\nuniform bool on = false;", {"on": true}, "COLOR = (on && mode == 2) ? vec4(0.1, 0.9, 0.2, 1.0) : vec4(1.0, 0.0, 0.0, 1.0);"],
 		["sampler", "uniform sampler2D pattern : hint_default_black;", {"pattern": checker}, "COLOR = texture(pattern, UV * 2.0);"],
-		["vertex()", "VERTEX_CODE", {}, "COLOR = vec4(1.0, 0.0, 0.0, 1.0);"],
+		["vertex()", "VERTEX_CODE", {"shift": 12.0}, "COLOR = vec4(1.0, 0.0, 0.0, 1.0);"],
 	]
 	for i in cases.size():
 		var c: Array = cases[i]
@@ -271,7 +272,7 @@ func _add_shader_row(checker: Texture2D) -> void:
 			body = c[3]
 		var code := "shader_type canvas_item;\n"
 		if globals == "VERTEX_CODE":
-			code += "void vertex() {\n\tVERTEX.x += 4.0;\n}\n"
+			code += "uniform float shift = 0.0;\nvoid vertex() {\n\tVERTEX.x += shift;\n\tVERTEX.y -= UV.x * 10.0;\n}\n"
 		else:
 			code += globals + "\n"
 		code += "void fragment() {\n\t" + body + "\n}\n"

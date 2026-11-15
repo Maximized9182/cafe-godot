@@ -249,6 +249,7 @@ class MaterialStorageWiiU : public RendererDummy::MaterialStorage {
 			ShaderLanguage::DataType type = ShaderLanguage::TYPE_VOID;
 			Variant default_value;
 			int32_t location = -1; // Register word offset (uniforms) or sampler location (textures).
+			int32_t vs_location = -1; // Vertex-stage register word offset (uniforms used in vertex()).
 			ShaderLanguage::ShaderNode::Uniform::Hint hint = ShaderLanguage::ShaderNode::Uniform::HINT_NONE;
 			ShaderLanguage::TextureFilter filter = ShaderLanguage::FILTER_DEFAULT;
 			ShaderLanguage::TextureRepeat repeat = ShaderLanguage::REPEAT_DEFAULT;
@@ -256,7 +257,9 @@ class MaterialStorageWiiU : public RendererDummy::MaterialStorage {
 		LocalVector<Param> uniforms;
 		LocalVector<Param> textures;
 		uint32_t reg_words = 0;
+		uint32_t vs_reg_words = 0;
 		bool uses_screen_texture = false; // hint_screen_texture (back-buffer copy).
+		bool local_vertices = false; // Has vertex() code: the GPU transforms the item.
 	};
 	HashMap<RID, CanvasProgram *> shader_programs;
 	// Shaders with the same GLSL share one GX2 program.
@@ -270,6 +273,7 @@ class MaterialStorageWiiU : public RendererDummy::MaterialStorage {
 	struct MaterialData {
 		HashMap<StringName, Variant> params;
 		LocalVector<uint32_t> regs; // Packed uniforms of the current shader.
+		LocalVector<uint32_t> vs_regs; // The same for its vertex stage.
 		uint64_t built_serial = 0; // 0: regs need packing.
 		LocalVector<WiiUProgramTexture> textures;
 	};
@@ -285,10 +289,13 @@ class MaterialStorageWiiU : public RendererDummy::MaterialStorage {
 public:
 	static MaterialStorageWiiU *get_wiiu_singleton() { return wiiu_singleton; }
 	WiiUBlend get_material_blend(RID p_material) const;
-	// The material's compiled shader for a draw, with its registers and extra
-	// textures (valid until the material changes); nullptr: draw normally.
-	WiiUProgram *get_material_program(RID p_material, int p_filter, bool p_repeat, const uint32_t *&r_regs,
-			uint32_t &r_reg_words, const WiiUProgramTexture *&r_textures, uint32_t &r_texture_count);
+	// Fills r_state with the material's compiled shader for a draw: program,
+	// registers (both stages), extra textures (valid until the material
+	// changes) and local_vertices. Returns false (r_state untouched): draw normally.
+	bool get_material_program(RID p_material, int p_filter, bool p_repeat, WiiUDrawState &r_state);
+	// True if the material's shader has vertex() code (draw its items with
+	// local vertices and a model matrix).
+	bool material_uses_local_vertices(RID p_material) const;
 	bool material_has_program(RID p_material) const;
 	// True if the material's compiled shader reads the screen texture.
 	bool material_uses_screen_texture(RID p_material) const;
@@ -336,6 +343,15 @@ class RasterizerCanvasWiiU : public RasterizerCanvasDummy {
 	// the one for the next _begin.
 	RID batch_material;
 	RID shader_material;
+	// Items whose shader has vertex() code are batched alone, with local
+	// vertices (the GPU applies the item transform). local_item: the current
+	// item's number among those (0: not one), batch_local_item: the batch's.
+	uint64_t local_item = 0;
+	uint64_t local_item_counter = 0;
+	uint64_t batch_local_item = 0;
+	Transform2D local_xform; // The current item's transform (local to pixels).
+	Transform2D local_inverse; // Render-target pixels back to the item's local space.
+	Transform2D batch_local_xform;
 	// The render target's back buffer once copied in this canvas_render_items
 	// call (screen texture of canvas shaders); nullptr before.
 	WiiUTexture *screen_texture = nullptr;

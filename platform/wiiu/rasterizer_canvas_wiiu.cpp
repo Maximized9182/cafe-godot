@@ -55,12 +55,18 @@ void RasterizerCanvasWiiU::_flush() {
 		state.msdf_px_range = batch_msdf_range;
 		state.msdf_outline = batch_msdf_outline;
 		state.msdf_px_size = batch_msdf_px_size;
-		if (batch_material.is_valid()) {
-			MaterialStorageWiiU *mats = MaterialStorageWiiU::get_wiiu_singleton();
-			state.program = mats ? mats->get_material_program(batch_material, batch_linear, batch_repeat, state.regs, state.reg_words, state.textures, state.texture_count) : nullptr;
-			if (state.program) {
-				state.time = RSG::rasterizer ? (float)RSG::rasterizer->get_total_time() : 0.0f;
-				state.screen_texture = screen_texture;
+		MaterialStorageWiiU *mats = MaterialStorageWiiU::get_wiiu_singleton();
+		if (batch_material.is_valid() && mats && mats->get_material_program(batch_material, batch_linear, batch_repeat, state)) {
+			state.time = RSG::rasterizer ? (float)RSG::rasterizer->get_total_time() : 0.0f;
+			state.screen_texture = screen_texture;
+			if (state.local_vertices) {
+				const Transform2D &m = batch_local_xform;
+				state.model[0] = m.columns[0].x;
+				state.model[1] = m.columns[0].y;
+				state.model[2] = m.columns[1].x;
+				state.model[3] = m.columns[1].y;
+				state.model[4] = m.columns[2].x;
+				state.model[5] = m.columns[2].y;
 			}
 		}
 		wiiu_gx2_draw(&state, batch_primitive, batch_texture, batch_linear, batch_repeat, batch.ptr() + start, count);
@@ -71,9 +77,11 @@ void RasterizerCanvasWiiU::_flush() {
 void RasterizerCanvasWiiU::_begin(WiiUPrimitive p_primitive, WiiUTexture *p_texture, int p_linear, bool p_repeat) {
 	if (p_primitive != batch_primitive || p_texture != batch_texture || p_linear != batch_linear || p_repeat != batch_repeat || blend != batch_blend ||
 			msdf_range != batch_msdf_range || msdf_outline != batch_msdf_outline || msdf_px_size != batch_msdf_px_size ||
-			shader_material != batch_material) {
+			shader_material != batch_material || local_item != batch_local_item) {
 		_flush();
 		batch_material = shader_material;
+		batch_local_item = local_item;
+		batch_local_xform = local_xform;
 		batch_primitive = p_primitive;
 		batch_texture = p_texture;
 		batch_linear = p_linear;
@@ -87,8 +95,11 @@ void RasterizerCanvasWiiU::_begin(WiiUPrimitive p_primitive, WiiUTexture *p_text
 
 void RasterizerCanvasWiiU::_vertex(const Vector2 &p_pos, const Vector2 &p_uv, const Color &p_color) {
 	WiiUVertex v;
-	v.x = p_pos.x;
-	v.y = p_pos.y;
+	// Callers pass render-target pixels; a vertex() shader wants the item's
+	// local space (VERTEX), so undo the item transform for those.
+	const Vector2 pos = local_item ? local_inverse.xform(p_pos) : p_pos;
+	v.x = pos.x;
+	v.y = pos.y;
 	v.z = 0.0f;
 	v.u = p_uv.x;
 	v.v = p_uv.y;
@@ -113,6 +124,7 @@ void RasterizerCanvasWiiU::draw_texture_rect(WiiUTexture *p_texture, const Rect2
 	// target's alpha darkened whatever blend_sub had left alpha below 1.
 	blend = WIIU_BLEND_DISABLED;
 	shader_material = RID();
+	local_item = 0;
 	msdf_range = 0.0f;
 	msdf_outline = 0.0f;
 	msdf_px_size = 1.0f;
@@ -202,6 +214,17 @@ void RasterizerCanvasWiiU::canvas_render_items(RID p_to_render_target, Item *p_i
 			// Screen texture: copy what's drawn so far, as drivers/gles3 does:
 			// once per canvas for the first shader that reads it, and again at
 			// every BackBufferCopy node (always the whole target here).
+			// vertex() shaders: local vertices, the item transform on the GPU.
+			local_item = 0;
+			if (shader_material.is_valid() && mats->material_uses_local_vertices(shader_material)) {
+				local_xform = ci->final_transform;
+				if (Math::is_zero_approx(local_xform.determinant())) {
+					shader_material = RID(); // Zero-size item: no local space; draws nothing anyway.
+				} else {
+					local_inverse = local_xform.affine_inverse();
+					local_item = ++local_item_counter;
+				}
+			}
 			const bool wants_screen = shader_material.is_valid() && screen_texture == nullptr && mats->material_uses_screen_texture(shader_material);
 			if (ci->copy_back_buffer || wants_screen) {
 				_flush();

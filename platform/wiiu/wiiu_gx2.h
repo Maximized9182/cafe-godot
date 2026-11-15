@@ -86,7 +86,8 @@ void wiiu_gx2_bind_screen(WiiUScreen p_screen);
 void wiiu_gx2_clear(float p_r, float p_g, float p_b, float p_a);
 void wiiu_gx2_set_scissor(int32_t p_x, int32_t p_y, int32_t p_width, int32_t p_height);
 // Shader programs compiled at runtime from GLSL 330 with CafeGLSL, in
-// uniform register mode. Vertex inputs: VertexPosition (vec3, clip space),
+// uniform register mode. Vertex inputs: VertexPosition (vec3: clip space, or
+// local pixels with WiiUDrawState.local_vertices),
 // VertexTexCoord (vec2), VertexColor (vec4). NULL without CafeGLSL or on a
 // compile error (the error goes to r_log).
 typedef struct WiiUProgram WiiUProgram;
@@ -98,6 +99,10 @@ void wiiu_gx2_program_free(WiiUProgram *p_program);
 // doesn't have it (or the compiler optimized it out).
 int32_t wiiu_gx2_program_uniform_offset(const WiiUProgram *p_program, const char *p_name);
 int32_t wiiu_gx2_program_sampler_location(const WiiUProgram *p_program, const char *p_name);
+// The same for the vertex shader (uniforms used in vertex()); and how many
+// samplers the vertex shader has (vertex textures aren't supported).
+int32_t wiiu_gx2_program_vertex_uniform_offset(const WiiUProgram *p_program, const char *p_name);
+uint32_t wiiu_gx2_program_vertex_sampler_count(const WiiUProgram *p_program);
 
 // A texture a canvas_item shader samples besides the draw's own (sampler2D
 // uniforms): goes to sampler location `location` of the program.
@@ -141,8 +146,17 @@ typedef struct {
 	// The screen texture for the program (wiiu_gx2_render_target_copy_back_buffer);
 	// NULL: black.
 	WiiUTexture *screen_texture;
+	// The program's vertex-stage registers (uniforms its vertex() uses).
+	const uint32_t *vs_regs;
+	uint32_t vs_reg_words;
+	// A program with vertex() code gets the vertices in the item's local space
+	// and transforms them itself: model maps local to render-target pixels
+	// (2x3 affine: x axis, y axis, origin).
+	bool local_vertices;
+	float model[6];
 } WiiUDrawState;
-#define WIIU_DRAW_STATE_DEFAULT { WIIU_BLEND_MIX, 0.0f, 0.0f, 1.0f, NULL, NULL, 0, NULL, 0, 0.0f, NULL }
+#define WIIU_DRAW_STATE_DEFAULT \
+	{ WIIU_BLEND_MIX, 0.0f, 0.0f, 1.0f, NULL, NULL, 0, NULL, 0, 0.0f, NULL, NULL, 0, false, { 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f } }
 
 // Draws p_count vertices (pixel coordinates of the bound target). p_state may
 // be NULL (WIIU_DRAW_STATE_DEFAULT).

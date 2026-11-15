@@ -188,10 +188,20 @@ typedef struct {
 	int32_t texture_pixel_size_offset;
 	int32_t screen_pixel_size_offset;
 	int32_t msdf_params_offset;
+	// Vertex shader built-ins (programs with vertex() code).
+	int32_t vs_model_offset;
+	int32_t vs_time_offset;
+	int32_t vs_texture_pixel_size_offset;
+	int32_t vs_screen_pixel_size_offset;
 } RegPipeline;
 
 static int32_t ps_uniform_offset(const GX2PixelShader *p_ps, const char *p_name) {
 	GX2UniformVar *var = p_ps ? GX2GetPixelUniformVar((GX2PixelShader *)p_ps, p_name) : NULL;
+	return var ? (int32_t)var->offset : -1;
+}
+
+static int32_t vs_uniform_offset(const GX2VertexShader *p_vs, const char *p_name) {
+	GX2UniformVar *var = p_vs ? GX2GetVertexUniformVar((GX2VertexShader *)p_vs, p_name) : NULL;
 	return var ? (int32_t)var->offset : -1;
 }
 
@@ -218,6 +228,10 @@ static void pipeline_init(RegPipeline *r_pipe, GX2FetchShader *p_fetch, GX2Verte
 	r_pipe->texture_pixel_size_offset = ps_uniform_offset(p_ps, "color_texture_pixel_size");
 	r_pipe->screen_pixel_size_offset = ps_uniform_offset(p_ps, "screen_pixel_size");
 	r_pipe->msdf_params_offset = ps_uniform_offset(p_ps, "params");
+	r_pipe->vs_model_offset = vs_uniform_offset(p_vs, "model_matrix");
+	r_pipe->vs_time_offset = vs_uniform_offset(p_vs, "time");
+	r_pipe->vs_texture_pixel_size_offset = vs_uniform_offset(p_vs, "color_texture_pixel_size");
+	r_pipe->vs_screen_pixel_size_offset = vs_uniform_offset(p_vs, "screen_pixel_size");
 }
 
 struct WiiUProgram {
@@ -319,6 +333,14 @@ int32_t wiiu_gx2_program_uniform_offset(const WiiUProgram *p_program, const char
 
 int32_t wiiu_gx2_program_sampler_location(const WiiUProgram *p_program, const char *p_name) {
 	return p_program ? ps_sampler_location(p_program->ps, p_name) : -1;
+}
+
+int32_t wiiu_gx2_program_vertex_uniform_offset(const WiiUProgram *p_program, const char *p_name) {
+	return p_program ? vs_uniform_offset(p_program->vs, p_name) : -1;
+}
+
+uint32_t wiiu_gx2_program_vertex_sampler_count(const WiiUProgram *p_program) {
+	return (p_program && p_program->vs) ? p_program->vs->samplerVarCount : 0;
 }
 
 // MSDF text (shaders/msdf_fsh.glsl, precompiled to msdf.gsh in register mode).
@@ -1049,14 +1071,20 @@ void wiiu_gx2_draw(const WiiUDrawState *p_state, WiiUPrimitive p_primitive, WiiU
 		arena_used = 0;
 	}
 	WiiUVertex *out = (WiiUVertex *)(arena[arena_index] + arena_used);
-	// Render-target pixels (origin top-left) to clip space (+Y up).
-	const float sx = 2.0f / (float)target_width;
-	const float sy = 2.0f / (float)target_height;
-	for (uint32_t i = 0; i < p_count; i++) {
-		out[i] = p_vertices[i];
-		out[i].x = p_vertices[i].x * sx - 1.0f;
-		out[i].y = 1.0f - p_vertices[i].y * sy;
-		out[i].z = 0.0f;
+	const bool local_vertices = st->program != NULL && st->local_vertices;
+	if (local_vertices) {
+		// The program's vertex shader transforms them (model_matrix).
+		memcpy(out, p_vertices, bytes);
+	} else {
+		// Render-target pixels (origin top-left) to clip space (+Y up).
+		const float sx = 2.0f / (float)target_width;
+		const float sy = 2.0f / (float)target_height;
+		for (uint32_t i = 0; i < p_count; i++) {
+			out[i] = p_vertices[i];
+			out[i].x = p_vertices[i].x * sx - 1.0f;
+			out[i].y = 1.0f - p_vertices[i].y * sy;
+			out[i].z = 0.0f;
+		}
 	}
 	GX2Invalidate((GX2InvalidateMode)(GX2_INVALIDATE_MODE_CPU | GX2_INVALIDATE_MODE_ATTRIBUTE_BUFFER), out, bytes);
 	arena_used += (bytes + GX2_VERTEX_BUFFER_ALIGNMENT - 1) & ~(uint32_t)(GX2_VERTEX_BUFFER_ALIGNMENT - 1);
@@ -1097,6 +1125,35 @@ void wiiu_gx2_draw(const WiiUDrawState *p_state, WiiUPrimitive p_primitive, WiiU
 		words = (words + 3) & ~3u;
 		if (words > 0) {
 			GX2SetPixelUniformReg(0, words, (const void *)regs);
+		}
+		if (st->program != NULL) {
+			// Vertex stage: the material's vertex registers, the model matrix
+			// (local to render-target pixels, as a mat4) and the built-ins.
+			static uint32_t vs_regs[256 * 4];
+			uint32_t vs_words = 0;
+			if (st->vs_regs != NULL) {
+				vs_words = st->vs_reg_words < max_words ? st->vs_reg_words : max_words;
+				memcpy(vs_regs, st->vs_regs, vs_words * 4);
+			}
+			const float *m = st->model;
+			const float model_cols[4][4] = {
+				{ m[0], m[1], 0.0f, 0.0f },
+				{ m[2], m[3], 0.0f, 0.0f },
+				{ 0.0f, 0.0f, 1.0f, 0.0f },
+				{ m[4], m[5], 0.0f, 1.0f },
+			};
+			if (pipe->vs_model_offset >= 0) {
+				for (int c = 0; c < 4; c++) {
+					put_reg(vs_regs, max_words, &vs_words, pipe->vs_model_offset + 4 * c, model_cols[c]);
+				}
+			}
+			put_reg(vs_regs, max_words, &vs_words, pipe->vs_time_offset, time);
+			put_reg(vs_regs, max_words, &vs_words, pipe->vs_texture_pixel_size_offset, tps);
+			put_reg(vs_regs, max_words, &vs_words, pipe->vs_screen_pixel_size_offset, sps);
+			vs_words = (vs_words + 3) & ~3u;
+			if (vs_words > 0) {
+				GX2SetVertexUniformReg(0, vs_words, (const void *)vs_regs);
+			}
 		}
 		GX2SetAttribBuffer(0, bytes, (uint32_t)sizeof(WiiUVertex), out);
 		if (pipe->texture_location >= 0) {

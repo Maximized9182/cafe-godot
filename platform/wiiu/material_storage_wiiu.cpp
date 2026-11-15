@@ -144,6 +144,104 @@ static const char *canvas_vs_glsl =
 		"    VaryingTexCoord = VertexTexCoord;\n"
 		"}\n";
 
+// User varyings get explicit locations after the template's (colour 0, UV 1),
+// so both stages agree (drivers/gles3 leaves them out on low-end builds).
+static String locate_varyings(const String &p_globals) {
+	String out;
+	int location = 2;
+	for (const String &line : p_globals.split("\n")) {
+		String l = line;
+		String interp;
+		for (const char *mode : { "flat ", "smooth ", "noperspective " }) {
+			if (l.begins_with(mode)) {
+				interp = mode;
+				l = l.substr(interp.length());
+			}
+		}
+		if (l.begins_with("out ") || l.begins_with("in ")) {
+			int size = 1;
+			if (l.contains("mat2")) {
+				size = 2;
+			} else if (l.contains("mat3")) {
+				size = 3;
+			} else if (l.contains("mat4")) {
+				size = 4;
+			}
+			const int open = l.find("[");
+			if (open != -1) {
+				size *= MAX(1, l.substr(open + 1).to_int());
+			}
+			out += "layout(location = " + itos(location) + ") " + interp + l + "\n";
+			location += size;
+		} else {
+			out += line + "\n";
+		}
+	}
+	return out;
+}
+
+// The uniforms both stages declare: loose (register mode); GLES3 puts these in a block.
+static String loose_uniforms(const ShaderCompiler::GeneratedCode &p_gen) {
+	String s;
+	for (const String &d : p_gen.defines) {
+		s += d;
+	}
+	for (const String &line : p_gen.uniforms.split("\n")) {
+		if (!line.strip_edges().is_empty()) {
+			s += "uniform " + line + "\n";
+		}
+	}
+	return s;
+}
+
+// Vertex shader for shaders with vertex() code: drivers/gles3/shaders/canvas.glsl's
+// vertex main() for attribute draws. The item transform (local to render-target
+// pixels) is model_matrix; CANVAS_MATRIX is identity (already in it) and
+// SCREEN_MATRIX maps pixels to clip space.
+static String canvas_vertex_glsl(const ShaderCompiler::GeneratedCode &p_gen) {
+	String s = "#version 330\n"
+			   "#extension GL_ARB_separate_shader_objects : enable\n"
+			   "layout(location = 0) in vec3 VertexPosition;\n"
+			   "layout(location = 1) in vec2 VertexTexCoord;\n"
+			   "layout(location = 2) in vec4 VertexColor;\n"
+			   "layout(location = 0) out vec4 VaryingColor;\n"
+			   "layout(location = 1) out vec2 VaryingTexCoord;\n"
+			   "uniform mat4 model_matrix;\n"
+			   "uniform float time;\n"
+			   "uniform vec2 color_texture_pixel_size;\n"
+			   "uniform vec2 screen_pixel_size;\n";
+	s += loose_uniforms(p_gen);
+	s += locate_varyings(p_gen.stage_globals[ShaderCompiler::STAGE_VERTEX]);
+	s += "void main()\n"
+		 "{\n"
+		 "\tvec2 vertex = VertexPosition.xy;\n"
+		 "\tvec2 uv = VertexTexCoord;\n"
+		 "\tvec4 color = VertexColor;\n"
+		 "\tvec4 instance_custom = vec4(0.0);\n"
+		 "\tvec4 custom0 = vec4(0.0);\n"
+		 "\tvec4 custom1 = vec4(0.0);\n"
+		 "\tfloat point_size = 1.0;\n"
+		 "\tmat4 canvas_transform = mat4(1.0);\n"
+		 "\tmat4 screen_transform = mat4(vec4(2.0 * screen_pixel_size.x, 0.0, 0.0, 0.0), vec4(0.0, -2.0 * screen_pixel_size.y, 0.0, 0.0),\n"
+		 "\t\t\tvec4(0.0, 0.0, 1.0, 0.0), vec4(-1.0, 1.0, 0.0, 1.0));\n"
+		 "#ifdef USE_WORLD_VERTEX_COORDS\n"
+		 "\tvertex = (model_matrix * vec4(vertex, 0.0, 1.0)).xy;\n"
+		 "#endif\n"
+		 "\t{\n";
+	if (const String *code = p_gen.code.getptr("vertex")) {
+		s += *code;
+	}
+	s += "\n\t}\n"
+		 "#if !defined(SKIP_TRANSFORM_USED) && !defined(USE_WORLD_VERTEX_COORDS)\n"
+		 "\tvertex = (model_matrix * vec4(vertex, 0.0, 1.0)).xy;\n"
+		 "#endif\n"
+		 "\tVaryingColor = color;\n"
+		 "\tVaryingTexCoord = uv;\n"
+		 "\tgl_Position = screen_transform * vec4(vertex, 0.0, 1.0);\n"
+		 "}\n";
+	return s;
+}
+
 static String canvas_fragment_glsl(const ShaderCompiler::GeneratedCode &p_gen) {
 	// The screen texture (hint_screen_texture) is "color_buffer" in the
 	// generated code, as in drivers/gles3; the draw binds the back buffer copy.
@@ -158,16 +256,8 @@ static String canvas_fragment_glsl(const ShaderCompiler::GeneratedCode &p_gen) {
 			   "uniform vec2 color_texture_pixel_size;\n"
 			   "uniform vec2 screen_pixel_size;\n" +
 			screen_texture;
-	for (const String &d : p_gen.defines) {
-		s += d;
-	}
-	// Loose uniforms (register mode): GLES3 puts these in a block.
-	for (const String &line : p_gen.uniforms.split("\n")) {
-		if (!line.strip_edges().is_empty()) {
-			s += "uniform " + line + "\n";
-		}
-	}
-	s += p_gen.stage_globals[ShaderCompiler::STAGE_FRAGMENT];
+	s += loose_uniforms(p_gen);
+	s += locate_varyings(p_gen.stage_globals[ShaderCompiler::STAGE_FRAGMENT]);
 	s += "void main()\n"
 		 "{\n"
 		 "\tvec4 color = VertexColor;\n"
@@ -274,9 +364,8 @@ MaterialStorageWiiU::CanvasProgram *MaterialStorageWiiU::_compile_canvas_program
 	}
 	String unsupported;
 	const String *vertex = gen.code.getptr("vertex");
-	if (vertex && !vertex->strip_edges().is_empty()) {
-		unsupported = "vertex()";
-	} else if (uses_sdf) {
+	const bool local_vertices = vertex && !vertex->strip_edges().is_empty();
+	if (uses_sdf) {
 		unsupported = "SDF";
 	}
 	for (const KeyValue<StringName, ShaderLanguage::ShaderNode::Uniform> &E : uniforms) {
@@ -302,15 +391,18 @@ MaterialStorageWiiU::CanvasProgram *MaterialStorageWiiU::_compile_canvas_program
 	}
 
 	const String ps = canvas_fragment_glsl(gen);
+	const String vs = local_vertices ? canvas_vertex_glsl(gen) : String(canvas_vs_glsl);
+	const String key = vs + "\n// ----\n" + ps; // Key into program_cache.
 	WiiUProgram *program = nullptr;
-	if (CachedProgram *cached = program_cache.getptr(ps)) {
+	if (CachedProgram *cached = program_cache.getptr(key)) {
 		cached->refs++;
 		program = cached->program;
 	} else {
 		static char log[4096];
 		const uint64_t start = OS::get_singleton()->get_ticks_msec();
 		const CharString ps_utf8 = ps.utf8();
-		program = wiiu_gx2_program_compile(canvas_vs_glsl, ps_utf8.get_data(), log, sizeof(log));
+		const CharString vs_utf8 = vs.utf8();
+		program = wiiu_gx2_program_compile(vs_utf8.get_data(), ps_utf8.get_data(), log, sizeof(log));
 		const uint64_t ms = OS::get_singleton()->get_ticks_msec() - start;
 		if (program == nullptr) {
 			print_line(vformat("[shader] %s: GLSL compile failed after %d ms; drawing without the shader", path, ms));
@@ -319,21 +411,30 @@ MaterialStorageWiiU::CanvasProgram *MaterialStorageWiiU::_compile_canvas_program
 					print_line("[shader] " + line);
 				}
 			}
+			if (local_vertices) {
+				print_numbered(vs);
+			}
 			print_numbered(ps);
 			return nullptr;
 		}
-		print_line(vformat("[shader] %s: compiled in %d ms", path, ms));
+		if (wiiu_gx2_program_vertex_sampler_count(program) > 0) {
+			print_line(vformat("[shader] %s: textures in vertex() aren't supported yet; drawing without the shader", path));
+			wiiu_gx2_program_free(program);
+			return nullptr;
+		}
+		print_line(vformat("[shader] %s: compiled in %d ms%s", path, ms, local_vertices ? " (with vertex())" : ""));
 		CachedProgram c;
 		c.program = program;
 		c.refs = 1;
-		program_cache.insert(ps, c);
+		program_cache.insert(key, c);
 	}
 
 	CanvasProgram *cp = memnew(CanvasProgram);
 	cp->program = program;
-	cp->source = ps;
+	cp->source = key;
 	cp->serial = ++program_serial;
 	cp->uses_screen_texture = gen.uses_screen_texture;
+	cp->local_vertices = local_vertices;
 	for (const KeyValue<StringName, ShaderLanguage::ShaderNode::Uniform> &E : uniforms) {
 		const ShaderLanguage::ShaderNode::Uniform &u = E.value;
 		if (u.hint == ShaderLanguage::ShaderNode::Uniform::HINT_SCREEN_TEXTURE ||
@@ -355,13 +456,19 @@ MaterialStorageWiiU::CanvasProgram *MaterialStorageWiiU::_compile_canvas_program
 			}
 		} else {
 			param.location = wiiu_gx2_program_uniform_offset(program, id.get_data());
-			if (param.location < 0) {
+			param.vs_location = local_vertices ? wiiu_gx2_program_vertex_uniform_offset(program, id.get_data()) : -1;
+			if (param.location < 0 && param.vs_location < 0) {
 				continue; // Optimized out.
 			}
 			if (!u.default_value.is_empty()) {
 				param.default_value = ShaderLanguage::constant_value_to_variant(u.default_value, u.type, u.array_size, u.hint);
 			}
-			cp->reg_words = MAX(cp->reg_words, (uint32_t)param.location + 4 * register_count(u.type));
+			if (param.location >= 0) {
+				cp->reg_words = MAX(cp->reg_words, (uint32_t)param.location + 4 * register_count(u.type));
+			}
+			if (param.vs_location >= 0) {
+				cp->vs_reg_words = MAX(cp->vs_reg_words, (uint32_t)param.vs_location + 4 * register_count(u.type));
+			}
 			cp->uniforms.push_back(param);
 		}
 	}
@@ -621,15 +728,23 @@ static int filter_bits(ShaderLanguage::TextureFilter p_filter, int p_default) {
 	}
 }
 
-WiiUProgram *MaterialStorageWiiU::get_material_program(RID p_material, int p_filter, bool p_repeat, const uint32_t *&r_regs,
-		uint32_t &r_reg_words, const WiiUProgramTexture *&r_textures, uint32_t &r_texture_count) {
+bool MaterialStorageWiiU::material_uses_local_vertices(RID p_material) const {
 	const RID *shader = material_shader.getptr(p_material);
 	if (shader == nullptr) {
-		return nullptr;
+		return false;
+	}
+	CanvasProgram *const *cp = shader_programs.getptr(*shader);
+	return cp && (*cp)->local_vertices;
+}
+
+bool MaterialStorageWiiU::get_material_program(RID p_material, int p_filter, bool p_repeat, WiiUDrawState &r_state) {
+	const RID *shader = material_shader.getptr(p_material);
+	if (shader == nullptr) {
+		return false;
 	}
 	CanvasProgram **cpp = shader_programs.getptr(*shader);
 	if (cpp == nullptr) {
-		return nullptr;
+		return false;
 	}
 	const CanvasProgram *cp = *cpp;
 	MaterialData &md = material_data[p_material];
@@ -638,9 +753,19 @@ WiiUProgram *MaterialStorageWiiU::get_material_program(RID p_material, int p_fil
 		for (uint32_t i = 0; i < md.regs.size(); i++) {
 			md.regs[i] = 0;
 		}
+		md.vs_regs.resize(cp->vs_reg_words);
+		for (uint32_t i = 0; i < md.vs_regs.size(); i++) {
+			md.vs_regs[i] = 0;
+		}
 		for (const CanvasProgram::Param &param : cp->uniforms) {
 			const Variant *v = md.params.getptr(param.name);
-			pack_uniform(md.regs.ptr() + param.location, param.type, v ? *v : param.default_value);
+			const Variant &value = v ? *v : param.default_value;
+			if (param.location >= 0) {
+				pack_uniform(md.regs.ptr() + param.location, param.type, value);
+			}
+			if (param.vs_location >= 0) {
+				pack_uniform(md.vs_regs.ptr() + param.vs_location, param.type, value);
+			}
 		}
 		md.built_serial = cp->serial;
 	}
@@ -683,9 +808,13 @@ WiiUProgram *MaterialStorageWiiU::get_material_program(RID p_material, int p_fil
 			}
 		}
 	}
-	r_regs = md.regs.ptr();
-	r_reg_words = md.regs.size();
-	r_textures = md.textures.ptr();
-	r_texture_count = md.textures.size();
-	return cp->program;
+	r_state.program = cp->program;
+	r_state.regs = md.regs.ptr();
+	r_state.reg_words = md.regs.size();
+	r_state.vs_regs = md.vs_regs.ptr();
+	r_state.vs_reg_words = md.vs_regs.size();
+	r_state.textures = md.textures.ptr();
+	r_state.texture_count = md.textures.size();
+	r_state.local_vertices = cp->local_vertices;
+	return true;
 }
