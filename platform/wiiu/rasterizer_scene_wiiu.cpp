@@ -1,5 +1,6 @@
 #include "rasterizer_wiiu.h"
 
+#include "core/config/project_settings.h"
 #include "core/math/math_funcs.h"
 #include "core/os/os.h"
 #include "core/templates/sort_array.h"
@@ -194,6 +195,24 @@ static const char *scene_ps_glsl =
 		"uniform vec4 shadow_params;\n"
 		"uniform vec4 shadow_texel;\n" // xy: 1 / size, zw: size.
 		"uniform vec4 shadow_slope;\n" // x: one texel of depth (0..1 units).
+		// Debug (rendering/wiiu/shadow_debug = 1): y is the depth range in world
+		// units, z is 1. Colours how far the surface is behind what the shadow
+		// map holds at its texel (no biases, no filtering): red = behind it
+		// (shadowed), green = in front of it (lit), full colour at 0.5 units
+		// or more; blue = nothing in the map there.
+		"vec3 shadow_debug(vec3 P)\n"
+		"{\n"
+		"    vec4 clip = shadow_matrix * vec4(P, 1.0);\n"
+		"    vec3 c = clip.xyz / clip.w;\n"
+		"    vec2 uv = vec2(c.x * 0.5 + 0.5, 0.5 - c.y * 0.5);\n"
+		"    vec2 texel = (floor(uv * shadow_texel.zw) + 0.5) * shadow_texel.xy;\n"
+		"    float stored = texture(shadow_map, texel).r;\n"
+		"    if (stored >= 1.0) {\n"
+		"        return vec3(0.0, 0.0, 1.0);\n"
+		"    }\n"
+		"    float behind = (c.z * 0.5 + 0.5 - stored) * shadow_slope.y;\n"
+		"    return behind > 0.0 ? vec3(clamp(behind * 2.0, 0.1, 1.0), 0.0, 0.0) : vec3(0.0, clamp(-behind * 2.0, 0.1, 1.0), 0.0);\n"
+		"}\n"
 		"float shadow_depth(vec2 p_uv)\n"
 		"{\n"
 		"    return texture(shadow_map, p_uv).r;\n"
@@ -340,6 +359,9 @@ static const char *scene_ps_glsl =
 		"        vec2 env = vec2(-1.04, 1.04) * a004 + r.zw;\n"
 		"        specular_light += reflected * (f0 * env.x + env.y);\n"
 		"        color = base.rgb * (1.0 - metallic) * diffuse_light + specular_light;\n"
+		"        if (shadow_params.x > 0.5 && shadow_slope.z > 0.5) {\n"
+		"            color = shadow_debug(P);\n"
+		"        }\n"
 		"    }\n"
 		"    frag_color = vec4(pow(max(color, vec3(0.0)), vec3(1.0 / 2.2)), base.a);\n"
 		"}\n";
@@ -793,6 +815,12 @@ void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_b
 	bool use_shadow = false;
 	Projection shadow_view_projection;
 	float shadow_bias = 0.0f, shadow_normal_offset = 0.0f, shadow_opacity = 1.0f, shadow_texel_depth = 0.0f;
+	float shadow_depth_range = 1.0f;
+	// Shadow debugging, set from GDScript (ProjectSettings.set_setting):
+	// 0 off, 1 colour by depth against the map (see shadow_debug()), 2 shadow
+	// pass without culling, 3 shadow pass with the material's own cull (not
+	// reversed), 4 no depth or normal bias.
+	const int shadow_debug_mode = int(ProjectSettings::get_singleton()->get_setting("rendering/wiiu/shadow_debug", 0));
 	if (dir_light && dir_light->shadow && !opaque.is_empty() && _ensure_shadow_program()) {
 		if (shadow_target == nullptr) {
 			shadow_target = wiiu_gx2_render_target_create_float(SHADOW_SIZE, SHADOW_SIZE);
@@ -822,6 +850,19 @@ void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_b
 			shadow_bias = dir_light->param[RSE::LIGHT_PARAM_SHADOW_BIAS] / 100.0f;
 			shadow_normal_offset = dir_light->param[RSE::LIGHT_PARAM_SHADOW_NORMAL_BIAS] * texel;
 			shadow_opacity = dir_light->param[RSE::LIGHT_PARAM_SHADOW_OPACITY];
+			if (shadow_debug_mode == 4) {
+				shadow_bias = 0.0f;
+				shadow_normal_offset = 0.0f;
+				shadow_texel_depth = 0.0f;
+			}
+			shadow_depth_range = depth_range;
+			static int logged_mode = -1;
+			if (logged_mode != shadow_debug_mode) {
+				logged_mode = shadow_debug_mode;
+				WHBLogPrintf("[3d] shadow debug %d: range %.3f texel %.5f bias %.6f (param %.4f) normal offset %.5f (param %.4f) texel depth %.8f",
+						shadow_debug_mode, depth_range, texel, shadow_bias, dir_light->param[RSE::LIGHT_PARAM_SHADOW_BIAS],
+						shadow_normal_offset, dir_light->param[RSE::LIGHT_PARAM_SHADOW_NORMAL_BIAS], shadow_texel_depth);
+			}
 
 			wiiu_gx2_bind_render_target(shadow_target);
 			wiiu_gx2_clear(1.0f, 1.0f, 1.0f, 1.0f);
@@ -841,6 +882,11 @@ void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_b
 				// faces don't shadow themselves (two-sided materials stay so).
 				const WiiUCull cull = item->material.shader.cull;
 				d.cull = cull == WIIU_CULL_BACK ? WIIU_CULL_FRONT : (cull == WIIU_CULL_FRONT ? WIIU_CULL_BACK : WIIU_CULL_DISABLED);
+				if (shadow_debug_mode == 2) {
+					d.cull = WIIU_CULL_DISABLED;
+				} else if (shadow_debug_mode == 3) {
+					d.cull = cull;
+				}
 				d.depth_test = true;
 				d.depth_write = true;
 				wiiu_gx2_draw_mesh(&d);
@@ -916,7 +962,7 @@ void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_b
 		if (use_shadow) {
 			ps.put(loc.shadow_matrix, shadow_view_projection);
 			ps.put(loc.shadow_texel, 1.0f / SHADOW_SIZE, 1.0f / SHADOW_SIZE, (float)SHADOW_SIZE, (float)SHADOW_SIZE);
-			ps.put(loc.shadow_slope, shadow_texel_depth, 0.0f, 0.0f, 0.0f);
+			ps.put(loc.shadow_slope, shadow_texel_depth, shadow_depth_range, shadow_debug_mode == 1 ? 1.0f : 0.0f, 0.0f);
 			tex[1].texture = wiiu_gx2_render_target_texture(shadow_target);
 			tex[1].location = loc.shadow_map;
 			tex[1].filter = 0; // Nearest: depth can't be filtered.

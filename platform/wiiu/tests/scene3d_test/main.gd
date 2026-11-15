@@ -7,6 +7,8 @@ extends Node3D
 # Y cycles the background: colour -> procedural sky -> physical sky.
 # A stops/starts the box spinning; holding R makes the right stick turn the
 # box instead of the camera (to hold it at an angle, e.g. to look at shadows).
+# B cycles the renderer's shadow debug modes (rendering/wiiu/shadow_debug, see
+# platform/wiiu/rasterizer_scene_wiiu.cpp).
 
 var box: MeshInstance3D
 var camera: Camera3D
@@ -21,6 +23,8 @@ const CULL_NAMES := ["back", "front", "disabled"]
 var env: Environment
 var background := 0
 var spinning := true
+var shadow_debug := 0
+const SHADOW_DEBUG_NAMES := ["off", "depth colours", "no cull", "material cull", "no bias"]
 const BACKGROUND_NAMES := ["colour", "procedural sky", "physical sky"]
 
 
@@ -193,6 +197,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		cull = (cull + 1) % 3
 		for m in materials:
 			m.cull_mode = cull
+	if event is InputEventJoypadButton and event.pressed and event.button_index == JOY_BUTTON_B:
+		shadow_debug = (shadow_debug + 1) % SHADOW_DEBUG_NAMES.size()
+		ProjectSettings.set_setting("rendering/wiiu/shadow_debug", shadow_debug)
 	if event is InputEventJoypadButton and event.pressed and event.button_index == JOY_BUTTON_A:
 		spinning = not spinning
 
@@ -215,4 +222,4 @@ func _process(delta: float) -> void:
 	camera.rotation = Vector3(pitch, yaw, 0)
 	var stick := Input.get_vector("ui_left", "ui_right", "ui_up", "ui_down")
 	camera.position += camera.basis * Vector3(stick.x, 0, stick.y) * MOVE_SPEED * delta
-	label.text = "Cafe 3D Test   %d fps   cull: %s   background: %s   box: %s\nleft stick: move, right stick: look, X: cull mode, Y: background\nA: stop/start the box, hold R + right stick: turn the box" % [Engine.get_frames_per_second(), CULL_NAMES[cull], BACKGROUND_NAMES[background], "spinning" if spinning else "stopped"]
+	label.text = "Cafe 3D Test   %d fps   cull: %s   background: %s   box: %s\nleft stick: move, right stick: look, X: cull mode, Y: background\nA: stop/start the box, hold R + right stick: turn the box, B: shadow debug (%s)" % [Engine.get_frames_per_second(), CULL_NAMES[cull], BACKGROUND_NAMES[background], "spinning" if spinning else "stopped", SHADOW_DEBUG_NAMES[shadow_debug]]
