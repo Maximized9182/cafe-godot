@@ -393,6 +393,9 @@ public:
 		bool negative = false;
 		uint32_t cull_mask = 0xFFFFFFFF;
 		RSE::LightDirectionalSkyMode sky_mode = RSE::LIGHT_DIRECTIONAL_SKY_MODE_LIGHT_AND_SKY;
+		// Shadows on. light_has_shadow stays false so RendererSceneCull
+		// doesn't set up its shadow atlases; the 3D renderer reads this.
+		bool shadow = false;
 		Dependency dependency;
 	};
 	struct LightInstance {
@@ -422,6 +425,7 @@ public:
 
 	void light_set_color(RID p_light, const Color &p_color) override;
 	void light_set_param(RID p_light, RSE::LightParam p_param, float p_value) override;
+	void light_set_shadow(RID p_light, bool p_enabled) override;
 	void light_set_negative(RID p_light, bool p_enable) override;
 	void light_set_cull_mask(RID p_light, uint32_t p_mask) override;
 	void light_directional_set_sky_mode(RID p_light, RSE::LightDirectionalSkyMode p_mode) override;
@@ -466,7 +470,8 @@ public:
 // vertex colour, unshaded, transparency, alpha scissor, cull and depth
 // modes; Lambert diffuse and GGX specular (roughness, metallic, specular)
 // from the environment's ambient light, one directional light and the four
-// omni/spot lights nearest to each object. No shadows, fog, tone
+// omni/spot lights nearest to each object; the first directional light's
+// shadow (one 2048x2048 map, 2x2 PCF). No positional shadows, fog, tone
 // mapping, skeletons, blend shapes or spatial shader code yet. Sky shaders
 // (ProceduralSkyMaterial, PanoramaSkyMaterial, PhysicalSkyMaterial, custom
 // ones) are compiled and drawn behind the scene; the ambient light from a sky
@@ -518,8 +523,17 @@ private:
 		int32_t albedo, ambient, ambient_ground, params, flags, dir_direction, dir_color, pbr, camera_position; // Pixel stage.
 		int32_t light_position[4], light_color[4], light_direction[4], light_extra[4];
 		int32_t albedo_texture; // Sampler location.
+		int32_t shadow_map, shadow_matrix, shadow_params, shadow_texel;
 	} loc;
 	bool _ensure_program();
+
+	// Directional shadow map (packed depth in an RGBA8 render target).
+	static constexpr int SHADOW_SIZE = 2048;
+	WiiUProgram *shadow_program = nullptr;
+	bool shadow_program_failed = false;
+	int32_t shadow_mvp = -1;
+	WiiURenderTarget *shadow_target = nullptr;
+	bool _ensure_shadow_program();
 
 public:
 	RenderGeometryInstance *geometry_instance_create(RID p_base) override;

@@ -52,6 +52,7 @@ func _ready() -> void:
 	var sun := DirectionalLight3D.new()
 	sun.rotation_degrees = Vector3(-50, -35, 0)
 	sun.light_energy = 1.0
+	sun.shadow_enabled = true
 	add_child(sun)
 
 	# Red omni light near the right front of the floor.

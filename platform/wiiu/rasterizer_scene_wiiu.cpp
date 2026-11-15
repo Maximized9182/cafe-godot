@@ -58,6 +58,12 @@ void LightStorageWiiU::light_set_param(RID p_light, RSE::LightParam p_param, flo
 	light->dependency.changed_notify(Dependency::DEPENDENCY_CHANGED_LIGHT);
 }
 
+void LightStorageWiiU::light_set_shadow(RID p_light, bool p_enabled) {
+	if (Light *light = light_owner.get_or_null(p_light)) {
+		light->shadow = p_enabled;
+	}
+}
+
 void LightStorageWiiU::light_set_negative(RID p_light, bool p_enable) {
 	if (Light *light = light_owner.get_or_null(p_light)) {
 		light->negative = p_enable;
@@ -180,6 +186,37 @@ static const char *scene_ps_glsl =
 		"uniform vec4 camera_position;\n"
 		"uniform vec4 dir_direction;\n" // Towards the light; w: specular amount.
 		"uniform vec4 dir_color;\n"
+		// Directional shadow: world -> shadow map clip space (mat4, one column
+		// per register); params x: on, y: depth bias, z: normal offset
+		// (world units), w: opacity. Depth is packed into RGBA8.
+		"uniform sampler2D shadow_map;\n"
+		"uniform mat4 shadow_matrix;\n"
+		"uniform vec4 shadow_params;\n"
+		"uniform vec4 shadow_texel;\n" // xy: 1 / size, zw: size.
+		"float shadow_depth(vec2 p_uv)\n"
+		"{\n"
+		"    return dot(texture(shadow_map, p_uv), vec4(1.0, 1.0 / 255.0, 1.0 / 65025.0, 1.0 / 16581375.0));\n"
+		"}\n"
+		// 2x2 percentage-closer filtering, bilinearly weighted.
+		"float directional_shadow(vec3 P, vec3 N)\n"
+		"{\n"
+		"    vec4 clip = shadow_matrix * vec4(P + N * shadow_params.z, 1.0);\n"
+		"    vec3 c = clip.xyz / clip.w;\n"
+		"    if (any(greaterThan(abs(c), vec3(1.0)))) {\n"
+		"        return 1.0;\n"
+		"    }\n"
+		"    vec2 uv = vec2(c.x * 0.5 + 0.5, 0.5 - c.y * 0.5);\n"
+		"    float depth = c.z * 0.5 + 0.5 - shadow_params.y;\n"
+		"    vec2 t = uv * shadow_texel.zw - 0.5;\n"
+		"    vec2 f = fract(t);\n"
+		"    vec2 base = (floor(t) + 0.5) * shadow_texel.xy;\n"
+		"    float s00 = step(depth, shadow_depth(base));\n"
+		"    float s10 = step(depth, shadow_depth(base + vec2(shadow_texel.x, 0.0)));\n"
+		"    float s01 = step(depth, shadow_depth(base + vec2(0.0, shadow_texel.y)));\n"
+		"    float s11 = step(depth, shadow_depth(base + shadow_texel.xy));\n"
+		"    float s = mix(mix(s00, s10, f.x), mix(s01, s11, f.x), f.y);\n"
+		"    return mix(1.0, s, shadow_params.w);\n"
+		"}\n"
 		// Local lights (omni and spot), the four nearest to the object:
 		// position (w: 1 / range), colour (w: attenuation), direction the
 		// spot points (w: cos of the cone angle; -2 for omni lights), extra
@@ -269,7 +306,8 @@ static const char *scene_ps_glsl =
 		"        vec3 diffuse_light = mix(ambient_ground.rgb, ambient.rgb, N.y * 0.5 + 0.5);\n"
 		"        vec3 specular_light = vec3(0.0);\n"
 		"        if (flags.x > 0.5) {\n"
-		"            light_compute(N, dir_direction.xyz, V, dir_color.rgb, dir_direction.w, f0, roughness, diffuse_light, specular_light);\n"
+		"            float shadow = shadow_params.x > 0.5 ? directional_shadow(P, N) : 1.0;\n"
+		"            light_compute(N, dir_direction.xyz, V, dir_color.rgb * shadow, dir_direction.w, f0, roughness, diffuse_light, specular_light);\n"
 		"        }\n"
 		"        if (params.z > 0.5) {\n"
 		"            local_light(light_position0, light_color0, light_direction0, light_extra0, P, N, V, f0, roughness, diffuse_light, specular_light);\n"
@@ -297,6 +335,47 @@ static const char *scene_ps_glsl =
 		"    }\n"
 		"    frag_color = vec4(pow(max(color, vec3(0.0)), vec3(1.0 / 2.2)), base.a);\n"
 		"}\n";
+
+// The shadow pass: depth from the light, packed into RGBA8 (the render
+// targets are RGBA8), read back by directional_shadow() above.
+static const char *shadow_vs_glsl =
+		"#version 330\n"
+		"#extension GL_ARB_separate_shader_objects : enable\n"
+		"layout(location = 0) in vec3 VertexPosition;\n"
+		"uniform mat4 mvp;\n"
+		"void main()\n"
+		"{\n"
+		"    gl_Position = mvp * vec4(VertexPosition, 1.0);\n"
+		"}\n";
+
+static const char *shadow_ps_glsl =
+		"#version 330\n"
+		"#extension GL_ARB_separate_shader_objects : enable\n"
+		"layout(location = 0) out vec4 frag_color;\n"
+		"void main()\n"
+		"{\n"
+		"    vec4 enc = fract(vec4(1.0, 255.0, 65025.0, 16581375.0) * gl_FragCoord.z);\n"
+		"    enc -= enc.yzww * vec4(1.0 / 255.0, 1.0 / 255.0, 1.0 / 255.0, 0.0);\n"
+		"    frag_color = enc;\n"
+		"}\n";
+
+bool RasterizerSceneWiiU::_ensure_shadow_program() {
+	if (shadow_program) {
+		return true;
+	}
+	if (shadow_program_failed) {
+		return false;
+	}
+	char log[1024];
+	shadow_program = wiiu_gx2_program_compile_3d(shadow_vs_glsl, shadow_ps_glsl, log, sizeof(log));
+	if (shadow_program == nullptr) {
+		shadow_program_failed = true;
+		WHBLogPrintf("[3d] couldn't compile the shadow shader: %s", log);
+		return false;
+	}
+	shadow_mvp = wiiu_gx2_program_vertex_uniform_offset(shadow_program, "mvp");
+	return true;
+}
 
 bool RasterizerSceneWiiU::_ensure_program() {
 	if (program) {
@@ -333,12 +412,18 @@ bool RasterizerSceneWiiU::_ensure_program() {
 		loc.light_extra[i] = wiiu_gx2_program_uniform_offset(program, ("light_extra" + n).utf8().get_data());
 	}
 	loc.albedo_texture = wiiu_gx2_program_sampler_location(program, "albedo_texture");
+	loc.shadow_map = wiiu_gx2_program_sampler_location(program, "shadow_map");
+	loc.shadow_matrix = wiiu_gx2_program_uniform_offset(program, "shadow_matrix");
+	loc.shadow_params = wiiu_gx2_program_uniform_offset(program, "shadow_params");
+	loc.shadow_texel = wiiu_gx2_program_uniform_offset(program, "shadow_texel");
 	WHBLogPrint("[3d] 3D shader compiled");
 	return true;
 }
 
 RasterizerSceneWiiU::~RasterizerSceneWiiU() {
 	wiiu_gx2_program_free(program);
+	wiiu_gx2_program_free(shadow_program);
+	wiiu_gx2_render_target_free(shadow_target);
 	wiiu_gx2_mesh_free(sky_triangle);
 }
 
@@ -560,6 +645,8 @@ void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_b
 	Vector3 dir_direction;
 	Color dir_color;
 	float dir_specular = 0.0f;
+	const LightStorageWiiU::Light *dir_light = nullptr;
+	Transform3D dir_transform;
 	LocalVector<LocalLight> local_lights;
 	for (uint32_t i = 0; i < p_lights.size(); i++) {
 		const LightStorageWiiU::LightInstance *li = ls->get_light_instance(p_lights[i]);
@@ -575,6 +662,8 @@ void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_b
 				dir_direction = li->transform.basis.get_column(2).normalized();
 				dir_color = c;
 				dir_specular = light->param[RSE::LIGHT_PARAM_SPECULAR];
+				dir_light = light;
+				dir_transform = li->transform;
 			}
 		} else if (light->type == RSE::LIGHT_OMNI || light->type == RSE::LIGHT_SPOT) {
 			LocalLight l;
@@ -659,6 +748,63 @@ void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_b
 		sorter.sort(transparent.ptr(), transparent.size());
 	}
 
+	// Directional shadow map: one orthographic view from the sun covering a
+	// sphere in front of the camera (radius from shadow_max_distance), drawn
+	// with the opaque surfaces the camera sees.
+	bool use_shadow = false;
+	Projection shadow_view_projection;
+	float shadow_bias = 0.0f, shadow_normal_offset = 0.0f, shadow_opacity = 1.0f;
+	if (dir_light && dir_light->shadow && !opaque.is_empty() && _ensure_shadow_program()) {
+		if (shadow_target == nullptr) {
+			shadow_target = wiiu_gx2_render_target_create(SHADOW_SIZE, SHADOW_SIZE);
+		}
+		if (shadow_target) {
+			const float max_distance = CLAMP(dir_light->param[RSE::LIGHT_PARAM_SHADOW_MAX_DISTANCE], 1.0f, 200.0f);
+			const float camera_far = p_camera_data->main_projection.get_z_far();
+			const float radius = MIN(max_distance, camera_far) * 0.5f;
+			const Vector3 center = cam_pos + cam_forward * radius;
+			// Light space: looks along the light (its -Z); texel-snapped so
+			// the shadows don't shimmer as the camera moves.
+			Basis basis = dir_transform.basis.orthonormalized();
+			const float texel = (2.0f * radius) / SHADOW_SIZE;
+			Vector3 ls_center = basis.xform_inv(center);
+			ls_center.x = Math::floor(ls_center.x / texel) * texel;
+			ls_center.y = Math::floor(ls_center.y / texel) * texel;
+			const float back = radius + 100.0f; // Casters behind the sphere, towards the light.
+			const Transform3D light_xf(basis, basis.xform(ls_center) + basis.get_column(2) * back);
+			Projection ortho;
+			ortho.set_orthogonal(-radius, radius, -radius, radius, 0.0f, back + radius);
+			shadow_view_projection = ortho * Projection(light_xf.affine_inverse());
+			const float depth_range = back + radius;
+			shadow_bias = dir_light->param[RSE::LIGHT_PARAM_SHADOW_BIAS] * texel * 2.0f / depth_range;
+			shadow_normal_offset = dir_light->param[RSE::LIGHT_PARAM_SHADOW_NORMAL_BIAS] * texel;
+			shadow_opacity = dir_light->param[RSE::LIGHT_PARAM_SHADOW_OPACITY];
+
+			wiiu_gx2_bind_render_target(shadow_target);
+			wiiu_gx2_clear(1.0f, 1.0f, 1.0f, 1.0f);
+			wiiu_gx2_clear_depth();
+			static Regs svs;
+			for (DrawItem *item : opaque) {
+				svs.count = 0;
+				svs.put(shadow_mvp, shadow_view_projection * Projection(item->transform));
+				WiiUMeshDraw d = {};
+				d.program = shadow_program;
+				d.mesh = item->mesh;
+				d.vs_regs = svs.words;
+				d.vs_reg_words = svs.count;
+				d.blend = WIIU_BLEND_DISABLED;
+				d.cull = WIIU_CULL_DISABLED; // Both sides cast (fewer light leaks).
+				d.depth_test = true;
+				d.depth_write = true;
+				wiiu_gx2_draw_mesh(&d);
+			}
+			// Back to the viewport's target (its colour and depth are kept).
+			wiiu_gx2_bind_render_target(rt->gpu);
+			wiiu_gx2_set_scissor(0, 0, rt->size.x, rt->size.y);
+			use_shadow = true;
+		}
+	}
+
 	static Regs vs, ps;
 	auto draw = [&](const DrawItem &p_item, bool p_blended) {
 		const MaterialStorageWiiU::SpatialMaterial &m = p_item.material;
@@ -711,11 +857,22 @@ void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_b
 			ps.put(loc.light_direction[i], l.direction.x, l.direction.y, l.direction.z, l.cos_angle);
 			ps.put(loc.light_extra[i], l.spot_attenuation, l.specular, 0.0f, 0.0f);
 		}
-		WiiUProgramTexture tex;
-		tex.texture = m.texture;
-		tex.location = loc.albedo_texture;
-		tex.filter = m.shader.filter;
-		tex.repeat = m.shader.repeat;
+		ps.put(loc.shadow_params, use_shadow ? 1.0f : 0.0f, shadow_bias, shadow_normal_offset, shadow_opacity);
+		WiiUProgramTexture tex[2];
+		tex[0].texture = m.texture;
+		tex[0].location = loc.albedo_texture;
+		tex[0].filter = m.shader.filter;
+		tex[0].repeat = m.shader.repeat;
+		uint32_t tex_count = 1;
+		if (use_shadow) {
+			ps.put(loc.shadow_matrix, shadow_view_projection);
+			ps.put(loc.shadow_texel, 1.0f / SHADOW_SIZE, 1.0f / SHADOW_SIZE, (float)SHADOW_SIZE, (float)SHADOW_SIZE);
+			tex[1].texture = wiiu_gx2_render_target_texture(shadow_target);
+			tex[1].location = loc.shadow_map;
+			tex[1].filter = 0; // Nearest: packed depth can't be filtered.
+			tex[1].repeat = false;
+			tex_count = 2;
+		}
 
 		WiiUMeshDraw d = {};
 		d.program = program;
@@ -724,8 +881,8 @@ void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_b
 		d.vs_reg_words = vs.count;
 		d.ps_regs = ps.words;
 		d.ps_reg_words = ps.count;
-		d.textures = &tex;
-		d.texture_count = 1;
+		d.textures = tex;
+		d.texture_count = tex_count;
 		d.blend = p_blended ? m.shader.blend : WIIU_BLEND_DISABLED;
 		d.cull = m.shader.cull;
 		d.depth_test = m.shader.depth_test;
