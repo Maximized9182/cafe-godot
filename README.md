@@ -92,6 +92,9 @@ platform/wiiu/tools/cafe-export.sh path/to/project mygame.wuhb --name "My Game" 
 - `--pack-on-sd wiiu/apps/mygame` keeps the game's `.pck` outside the bundle, as a file on the
   SD card. This is recommended for large games.
 - `--icon`, `--tv-image` and `--drc-image` set the menu icon and splash screens.
+- `--boot-sound FILE` plays a sound when the app starts from the Wii U Menu (any audio file;
+  splash screens are made from the game's boot splash if you don't give any). It needs the
+  patched `wuhbtool` from `platform/wiiu/tools/wuhbtool/build.sh`.
 - `--help` lists everything.
 
 Any export preset works. It only decides which resources go into the pack; the template does
