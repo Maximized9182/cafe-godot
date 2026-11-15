@@ -8,7 +8,9 @@ extends Node3D
 # A stops/starts the box spinning; holding R makes the right stick turn the
 # box instead of the camera (to hold it at an angle, e.g. to look at shadows).
 # B cycles the renderer's shadow debug modes (rendering/wiiu/shadow_debug, see
-# platform/wiiu/rasterizer_scene_wiiu.cpp).
+# platform/wiiu/rasterizer_scene_wiiu.cpp). Shadow tests on the D-pad: up hides
+# everything but the box and the floor, down resets the box's rotation,
+# left/right set the sun's shadow distance to 15/100.
 
 var box: MeshInstance3D
 var camera: Camera3D
@@ -24,6 +26,9 @@ var env: Environment
 var background := 0
 var spinning := true
 var shadow_debug := 0
+var sun: DirectionalLight3D
+var floor_mi: MeshInstance3D
+var others_hidden := false
 const SHADOW_DEBUG_NAMES := ["off", "depth colours", "no cull", "material cull", "no bias", "no depth test", "show map", "hardware depth"]
 const BACKGROUND_NAMES := ["colour", "procedural sky", "physical sky"]
 
@@ -56,7 +61,7 @@ func _ready() -> void:
 	add_child(we)
 
 	# Directional light from the upper left.
-	var sun := DirectionalLight3D.new()
+	sun = DirectionalLight3D.new()
 	sun.rotation_degrees = Vector3(-50, -35, 0)
 	sun.light_energy = 1.0
 	sun.shadow_enabled = true
@@ -106,7 +111,7 @@ func _ready() -> void:
 	floor_mat.uv1_scale = Vector3(4, 4, 1)
 	var plane := PlaneMesh.new()
 	plane.size = Vector2(8, 8)
-	_add(plane, floor_mat, Vector3.ZERO)
+	floor_mi = _add(plane, floor_mat, Vector3.ZERO)
 
 	# Orange box, spinning (lit faces, back faces culled).
 	var bm := BoxMesh.new()
@@ -200,6 +205,18 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventJoypadButton and event.pressed and event.button_index == JOY_BUTTON_B:
 		shadow_debug = (shadow_debug + 1) % SHADOW_DEBUG_NAMES.size()
 		ProjectSettings.set_setting("rendering/wiiu/shadow_debug", shadow_debug)
+	if event is InputEventJoypadButton and event.pressed and event.button_index == JOY_BUTTON_DPAD_UP:
+		others_hidden = not others_hidden
+		for n in get_children():
+			if (n is MeshInstance3D or n is MultiMeshInstance3D) and n != box and n != floor_mi:
+				n.visible = not others_hidden
+	if event is InputEventJoypadButton and event.pressed and event.button_index == JOY_BUTTON_DPAD_DOWN:
+		box.basis = Basis()
+		spinning = false
+	if event is InputEventJoypadButton and event.pressed and event.button_index == JOY_BUTTON_DPAD_LEFT:
+		sun.directional_shadow_max_distance = 15.0
+	if event is InputEventJoypadButton and event.pressed and event.button_index == JOY_BUTTON_DPAD_RIGHT:
+		sun.directional_shadow_max_distance = 100.0
 	if event is InputEventJoypadButton and event.pressed and event.button_index == JOY_BUTTON_A:
 		spinning = not spinning
 
@@ -222,4 +239,4 @@ func _process(delta: float) -> void:
 	camera.rotation = Vector3(pitch, yaw, 0)
 	var stick := Input.get_vector("ui_left", "ui_right", "ui_up", "ui_down")
 	camera.position += camera.basis * Vector3(stick.x, 0, stick.y) * MOVE_SPEED * delta
-	label.text = "Cafe 3D Test   %d fps   cull: %s   background: %s   box: %s\nleft stick: move, right stick: look, X: cull mode, Y: background\nA: stop/start the box, hold R + right stick: turn the box, B: shadow debug (%s)" % [Engine.get_frames_per_second(), CULL_NAMES[cull], BACKGROUND_NAMES[background], "spinning" if spinning else "stopped", SHADOW_DEBUG_NAMES[shadow_debug]]
+	label.text = "Cafe 3D Test   %d fps   cull: %s   background: %s   box: %s\nleft stick: move, right stick: look, X: cull mode, Y: background\nA: stop/start the box, hold R + right stick: turn the box, B: shadow debug (%s)\nD-pad: up %s others, down reset box, left/right shadow distance 15/100 (now %d)" % [Engine.get_frames_per_second(), CULL_NAMES[cull], BACKGROUND_NAMES[background], "spinning" if spinning else "stopped", SHADOW_DEBUG_NAMES[shadow_debug], "show" if others_hidden else "hide", sun.directional_shadow_max_distance]
