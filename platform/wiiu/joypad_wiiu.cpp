@@ -262,10 +262,10 @@ void JoypadWiiU::process_motion(const VPADStatus &p_status) {
 	const VPADVec3D &a = p_status.accelorometer.acc;
 	const VPADVec3D &g = p_status.gyro;
 	// VPAD's axes to screen axes. Checked on hardware (input test, 2026-11-15):
-	// lying face up reads +z, held upright facing the player +y. x follows
-	// from keeping the axes right-handed.
-	const Vector3 accel_screen = Vector3(-a.x, -a.z, -a.y) * GRAVITY; // m/s^2, gravity included.
-	const Vector3 gyro_screen = Vector3(-g.x, -g.z, -g.y) * TURN; // rad/s.
+	// lying face up reads +z, held upright facing the player +y, right edge
+	// down -x. (VPAD's own axes are left-handed in these terms.)
+	const Vector3 accel_screen = Vector3(a.x, -a.z, -a.y) * GRAVITY; // m/s^2, gravity included.
+	const Vector3 gyro_screen = Vector3(g.x, -g.z, -g.y) * TURN; // rad/s.
 	// Device sensors, as on a phone held like the GamePad screen.
 	gravity = gravity.lerp(accel_screen, 0.1f);
 	input->set_accelerometer(accel_screen);
