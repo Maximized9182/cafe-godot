@@ -396,6 +396,8 @@ public:
 		// Shadows on. light_has_shadow stays false so RendererSceneCull
 		// doesn't set up its shadow atlases; the 3D renderer reads this.
 		bool shadow = false;
+		// Directional lights: one shadow map, or 2 or 4 splits (cascades).
+		RSE::LightDirectionalShadowMode shadow_mode = RSE::LIGHT_DIRECTIONAL_SHADOW_PARALLEL_4_SPLITS;
 		Dependency dependency;
 	};
 	struct LightInstance {
@@ -430,6 +432,8 @@ public:
 	void light_set_cull_mask(RID p_light, uint32_t p_mask) override;
 	void light_directional_set_sky_mode(RID p_light, RSE::LightDirectionalSkyMode p_mode) override;
 	RSE::LightDirectionalSkyMode light_directional_get_sky_mode(RID p_light) const override;
+	void light_directional_set_shadow_mode(RID p_light, RSE::LightDirectionalShadowMode p_mode) override;
+	RSE::LightDirectionalShadowMode light_directional_get_shadow_mode(RID p_light) override;
 
 	RSE::LightType light_get_type(RID p_light) const override;
 	AABB light_get_aabb(RID p_light) const override;
@@ -524,7 +528,8 @@ private:
 		int32_t albedo, ambient, ambient_ground, params, flags, dir_direction, dir_color, pbr, camera_position; // Pixel stage.
 		int32_t light_position[4], light_color[4], light_direction[4], light_extra[4];
 		int32_t albedo_texture; // Sampler location.
-		int32_t shadow_map, shadow_matrix, shadow_params, shadow_texel, shadow_slope;
+		int32_t shadow_map, shadow_params, shadow_texel, shadow_slope, shadow_splits, shadow_forward;
+		int32_t shadow_matrix[4], shadow_split[4]; // Per split.
 	};
 	WiiUProgram *programs[2] = {};
 	SceneLoc locs[2] = {};

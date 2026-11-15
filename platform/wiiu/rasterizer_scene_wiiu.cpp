@@ -89,6 +89,17 @@ RSE::LightDirectionalSkyMode LightStorageWiiU::light_directional_get_sky_mode(RI
 	return light ? light->sky_mode : RSE::LIGHT_DIRECTIONAL_SKY_MODE_LIGHT_AND_SKY;
 }
 
+void LightStorageWiiU::light_directional_set_shadow_mode(RID p_light, RSE::LightDirectionalShadowMode p_mode) {
+	if (Light *light = light_owner.get_or_null(p_light)) {
+		light->shadow_mode = p_mode;
+	}
+}
+
+RSE::LightDirectionalShadowMode LightStorageWiiU::light_directional_get_shadow_mode(RID p_light) {
+	const Light *light = light_owner.get_or_null(p_light);
+	return light ? light->shadow_mode : RSE::LIGHT_DIRECTIONAL_SHADOW_ORTHOGONAL;
+}
+
 RSE::LightType LightStorageWiiU::light_get_type(RID p_light) const {
 	const Light *light = light_owner.get_or_null(p_light);
 	return light ? light->type : RSE::LIGHT_DIRECTIONAL;
@@ -187,30 +198,66 @@ static const char *scene_ps_glsl =
 		"uniform vec4 camera_position;\n"
 		"uniform vec4 dir_direction;\n" // Towards the light; w: specular amount.
 		"uniform vec4 dir_color;\n"
-		// Directional shadow: world -> shadow map clip space (mat4, one column
-		// per register); params x: on, y: depth bias, z: normal offset
-		// (world units), w: opacity. Depth is a float in the red channel.
+		// Directional shadow: up to four splits (cascades) in one shadow map,
+		// a quarter each (the whole map with one split). Per split: world ->
+		// split clip space (mat4, one column per register) and
+		// shadow_split (x: depth bias, y: normal offset in world units, z: one
+		// texel of depth, w: depth range in world units). params x: on, y:
+		// the size of a split in the map (1 or 0.5), w: opacity. splits: how
+		// far each split reaches along the camera's view (shadow_forward).
+		// Depth is a float in the red channel.
 		"uniform sampler2D shadow_map;\n"
-		"uniform mat4 shadow_matrix;\n"
+		"uniform mat4 shadow_matrix0;\n"
+		"uniform mat4 shadow_matrix1;\n"
+		"uniform mat4 shadow_matrix2;\n"
+		"uniform mat4 shadow_matrix3;\n"
+		"uniform vec4 shadow_split0;\n"
+		"uniform vec4 shadow_split1;\n"
+		"uniform vec4 shadow_split2;\n"
+		"uniform vec4 shadow_split3;\n"
+		"uniform vec4 shadow_splits;\n"
+		"uniform vec4 shadow_forward;\n"
 		"uniform vec4 shadow_params;\n"
 		"uniform vec4 shadow_texel;\n" // xy: 1 / size, zw: size.
-		"uniform vec4 shadow_slope;\n" // x: one texel of depth (0..1 units).
-		// Debug (rendering/wiiu/shadow_debug = 1): y is the depth range in world
-		// units, z is 1. Colours how far the surface is behind what the shadow
-		// map holds at its texel (no biases, no filtering): red = behind it
-		// (shadowed), green = in front of it (lit), full colour at 0.5 units
-		// or more; blue = nothing in the map there.
+		"uniform vec4 shadow_slope;\n" // z: 1 for the depth colours debug view.
+		// Which split P is in: its matrix, its biases and where it is in the
+		// map. False past the last split.
+		"bool shadow_split_of(vec3 P, out mat4 m, out vec4 b, out vec2 offset)\n"
+		"{\n"
+		"    float d = dot(P - camera_position.xyz, shadow_forward.xyz);\n"
+		"    if (d < shadow_splits.x) {\n"
+		"        m = shadow_matrix0; b = shadow_split0; offset = vec2(0.0, 0.0);\n"
+		"    } else if (d < shadow_splits.y) {\n"
+		"        m = shadow_matrix1; b = shadow_split1; offset = vec2(0.5, 0.0);\n"
+		"    } else if (d < shadow_splits.z) {\n"
+		"        m = shadow_matrix2; b = shadow_split2; offset = vec2(0.0, 0.5);\n"
+		"    } else if (d < shadow_splits.w) {\n"
+		"        m = shadow_matrix3; b = shadow_split3; offset = vec2(0.5, 0.5);\n"
+		"    } else {\n"
+		"        return false;\n"
+		"    }\n"
+		"    return true;\n"
+		"}\n"
+		// Debug (rendering/wiiu/shadow_debug = 1). Colours how far the surface
+		// is behind what the shadow map holds at its texel (no biases, no
+		// filtering): red = behind it (shadowed), green = in front of it
+		// (lit), full colour at 0.5 units or more; blue = nothing in the map
+		// there.
 		"vec3 shadow_debug(vec3 P)\n"
 		"{\n"
-		"    vec4 clip = shadow_matrix * vec4(P, 1.0);\n"
+		"    mat4 m; vec4 b; vec2 offset;\n"
+		"    if (!shadow_split_of(P, m, b, offset)) {\n"
+		"        return vec3(0.0, 0.0, 0.3);\n"
+		"    }\n"
+		"    vec4 clip = m * vec4(P, 1.0);\n"
 		"    vec3 c = clip.xyz / clip.w;\n"
-		"    vec2 uv = vec2(c.x * 0.5 + 0.5, 0.5 - c.y * 0.5);\n"
+		"    vec2 uv = vec2(c.x * 0.5 + 0.5, 0.5 - c.y * 0.5) * shadow_params.y + offset;\n"
 		"    vec2 texel = (floor(uv * shadow_texel.zw) + 0.5) * shadow_texel.xy;\n"
 		"    float stored = texture(shadow_map, texel).r;\n"
 		"    if (stored >= 1.0) {\n"
 		"        return vec3(0.0, 0.0, 1.0);\n"
 		"    }\n"
-		"    float behind = (c.z * 0.5 + 0.5 - stored) * shadow_slope.y;\n"
+		"    float behind = (c.z * 0.5 + 0.5 - stored) * b.w;\n"
 		"    return behind > 0.0 ? vec3(clamp(behind * 2.0, 0.1, 1.0), 0.0, 0.0) : vec3(0.0, clamp(-behind * 2.0, 0.1, 1.0), 0.0);\n"
 		"}\n"
 		"float shadow_depth(vec2 p_uv)\n"
@@ -220,18 +267,22 @@ static const char *scene_ps_glsl =
 		// 2x2 percentage-closer filtering, bilinearly weighted.
 		"float directional_shadow(vec3 P, vec3 N, vec3 L)\n"
 		"{\n"
-		"    vec3 normal_offset = N * ((1.0 - max(0.0, dot(L, N))) * shadow_params.z);\n"
-		"    vec4 clip = shadow_matrix * vec4(P + normal_offset, 1.0);\n"
+		"    mat4 m; vec4 b; vec2 offset;\n"
+		"    if (!shadow_split_of(P, m, b, offset)) {\n"
+		"        return 1.0;\n"
+		"    }\n"
+		"    vec3 normal_offset = N * ((1.0 - max(0.0, dot(L, N))) * b.y);\n"
+		"    vec4 clip = m * vec4(P + normal_offset, 1.0);\n"
 		"    vec3 c = clip.xyz / clip.w;\n"
 		"    if (any(greaterThan(abs(c), vec3(1.0)))) {\n"
 		"        return 1.0;\n"
 		"    }\n"
-		"    vec2 uv = vec2(c.x * 0.5 + 0.5, 0.5 - c.y * 0.5);\n"
+		"    vec2 uv = vec2(c.x * 0.5 + 0.5, 0.5 - c.y * 0.5) * shadow_params.y + offset;\n"
 		// Slope-scaled bias: surfaces turned edge-on to the light change depth
 		// fast across a texel (tan of the light angle, capped at 8 texels).
 		"    float ndotl = clamp(dot(L, N), 0.01, 1.0);\n"
 		"    float slope = min(sqrt(1.0 - ndotl * ndotl) / ndotl, 8.0);\n"
-		"    float depth = c.z * 0.5 + 0.5 - shadow_params.y - slope * shadow_slope.x;\n"
+		"    float depth = c.z * 0.5 + 0.5 - b.x - slope * b.z;\n"
 		"    vec2 t = uv * shadow_texel.zw - 0.5;\n"
 		"    vec2 f = fract(t);\n"
 		"    vec2 base = (floor(t) + 0.5) * shadow_texel.xy;\n"
@@ -369,7 +420,10 @@ static const char *scene_ps_glsl =
 // The shadow pass: depth from the light into a 32-bit float render target,
 // read back by directional_shadow() above. (It was packed into RGBA8 before;
 // some depths came back off by a step, which showed as bands of shadow acne
-// across lit faces.)
+// across lit faces.) That guess was wrong: the bands stayed with float depth
+// and went away with a smaller shadow_max_distance, so the cause was one map
+// spread over 100 units (now split, see render_scene). Float depth stays:
+// it's simpler.
 static const char *shadow_vs_glsl =
 		"#version 330\n"
 		"#extension GL_ARB_separate_shader_objects : enable\n"
@@ -479,7 +533,13 @@ bool RasterizerSceneWiiU::_ensure_program() {
 		}
 		loc.albedo_texture = wiiu_gx2_program_sampler_location(program, "albedo_texture");
 		loc.shadow_map = wiiu_gx2_program_sampler_location(program, "shadow_map");
-		loc.shadow_matrix = wiiu_gx2_program_uniform_offset(program, "shadow_matrix");
+		for (int i = 0; i < 4; i++) {
+			const String n = itos(i);
+			loc.shadow_matrix[i] = wiiu_gx2_program_uniform_offset(program, ("shadow_matrix" + n).utf8().get_data());
+			loc.shadow_split[i] = wiiu_gx2_program_uniform_offset(program, ("shadow_split" + n).utf8().get_data());
+		}
+		loc.shadow_splits = wiiu_gx2_program_uniform_offset(program, "shadow_splits");
+		loc.shadow_forward = wiiu_gx2_program_uniform_offset(program, "shadow_forward");
 		loc.shadow_params = wiiu_gx2_program_uniform_offset(program, "shadow_params");
 		loc.shadow_texel = wiiu_gx2_program_uniform_offset(program, "shadow_texel");
 		loc.shadow_slope = wiiu_gx2_program_uniform_offset(program, "shadow_slope");
@@ -827,13 +887,17 @@ void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_b
 		sorter.sort(opaque.ptr(), opaque.size());
 	}
 
-	// Directional shadow map: one orthographic view from the sun covering a
-	// sphere in front of the camera (radius from shadow_max_distance), drawn
-	// with the opaque surfaces the camera sees.
+	// Directional shadow map: orthographic views from the sun, one per split
+	// (see below; it used to be one covering a sphere in front of the camera,
+	// radius from shadow_max_distance), drawn with the opaque surfaces the
+	// camera sees.
 	bool use_shadow = false;
-	Projection shadow_view_projection;
-	float shadow_bias = 0.0f, shadow_normal_offset = 0.0f, shadow_opacity = 1.0f, shadow_texel_depth = 0.0f;
-	float shadow_depth_range = 1.0f;
+	Projection shadow_split_matrix[4];
+	Vector4 shadow_split_bias[4]; // Depth bias, normal offset, texel depth, depth range.
+	float shadow_split_far[4] = {};
+	int shadow_split_count = 1;
+	float shadow_split_scale = 1.0f;
+	float shadow_opacity = 1.0f;
 	// Shadow debugging, set from GDScript (ProjectSettings.set_setting):
 	// 0 off, 1 colour by depth against the map (see shadow_debug()), 2 shadow
 	// pass without culling, 3 shadow pass with the material's own cull (not
@@ -846,71 +910,139 @@ void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_b
 			shadow_target = wiiu_gx2_render_target_create_float(SHADOW_SIZE, SHADOW_SIZE);
 		}
 		if (shadow_target) {
-			const float max_distance = CLAMP(dir_light->param[RSE::LIGHT_PARAM_SHADOW_MAX_DISTANCE], 1.0f, 200.0f);
-			const float camera_far = p_camera_data->main_projection.get_z_far();
-			const float radius = MIN(max_distance, camera_far) * 0.5f;
-			const Vector3 center = cam_pos + cam_forward * radius;
-			// Light space: looks along the light (its -Z); texel-snapped so
-			// the shadows don't shimmer as the camera moves.
-			Basis basis = dir_transform.basis.orthonormalized();
-			const float texel = (2.0f * radius) / SHADOW_SIZE;
-			Vector3 ls_center = basis.xform_inv(center);
-			ls_center.x = Math::floor(ls_center.x / texel) * texel;
-			ls_center.y = Math::floor(ls_center.y / texel) * texel;
-			const float back = radius + 100.0f; // Casters behind the sphere, towards the light.
-			const Transform3D light_xf(basis, basis.xform(ls_center) + basis.get_column(2) * back);
-			Projection ortho;
-			ortho.set_orthogonal(-radius, radius, -radius, radius, 0.0f, back + radius);
-			shadow_view_projection = ortho * Projection(light_xf.affine_inverse());
-			const float depth_range = back + radius;
-			// As drivers/gles3: depth bias = shadow_bias / 100 of the depth
-			// range (0..1 depth here); normal offset = normal_bias texels,
-			// scaled in the shader by how far the surface turns from the light.
-			shadow_texel_depth = texel / depth_range;
-			shadow_bias = dir_light->param[RSE::LIGHT_PARAM_SHADOW_BIAS] / 100.0f;
-			shadow_normal_offset = dir_light->param[RSE::LIGHT_PARAM_SHADOW_NORMAL_BIAS] * texel;
+			// Splits (cascades) as Godot's: from the camera's near plane to
+			// shadow_max_distance, cut at the split offsets (fractions of it).
+			// Each covers its slice of the view frustum with its own
+			// orthographic view from the sun, in its own quarter of the map
+			// (one split: the whole map). With one map over all of
+			// shadow_max_distance (100 by default) a texel was 5 cm, and the
+			// box near the camera got bands of wrong shadow on lit faces.
+			const Projection &cam_projection = p_camera_data->main_projection;
+			const float max_distance = MIN(CLAMP(dir_light->param[RSE::LIGHT_PARAM_SHADOW_MAX_DISTANCE], 1.0f, 1000.0f), cam_projection.get_z_far());
+			const float z_near = cam_projection.get_z_near();
+			switch (dir_light->shadow_mode) {
+				case RSE::LIGHT_DIRECTIONAL_SHADOW_ORTHOGONAL:
+					shadow_split_count = 1;
+					shadow_split_far[0] = max_distance;
+					break;
+				case RSE::LIGHT_DIRECTIONAL_SHADOW_PARALLEL_2_SPLITS:
+					shadow_split_count = 2;
+					shadow_split_far[0] = max_distance * dir_light->param[RSE::LIGHT_PARAM_SHADOW_SPLIT_1_OFFSET];
+					shadow_split_far[1] = max_distance;
+					break;
+				default:
+					shadow_split_count = 4;
+					shadow_split_far[0] = max_distance * dir_light->param[RSE::LIGHT_PARAM_SHADOW_SPLIT_1_OFFSET];
+					shadow_split_far[1] = max_distance * dir_light->param[RSE::LIGHT_PARAM_SHADOW_SPLIT_2_OFFSET];
+					shadow_split_far[2] = max_distance * dir_light->param[RSE::LIGHT_PARAM_SHADOW_SPLIT_3_OFFSET];
+					shadow_split_far[3] = max_distance;
+					break;
+			}
+			for (int i = shadow_split_count; i < 4; i++) {
+				shadow_split_far[i] = shadow_split_far[shadow_split_count - 1];
+			}
+			shadow_split_scale = shadow_split_count == 1 ? 1.0f : 0.5f;
+			const float split_size = SHADOW_SIZE * shadow_split_scale;
+			// Half the view's width and height at distance d.
+			const Vector2 near_half = cam_projection.get_viewport_half_extents();
+			const bool cam_ortho = cam_projection.is_orthogonal();
+			auto half_extents = [&](float d) { return cam_ortho ? near_half : near_half * (d / z_near); };
+			const Basis basis = dir_transform.basis.orthonormalized();
+			const Basis cam_basis = p_camera_data->main_transform.basis.orthonormalized();
 			shadow_opacity = dir_light->param[RSE::LIGHT_PARAM_SHADOW_OPACITY];
-			if (shadow_debug_mode == 4) {
-				shadow_bias = 0.0f;
-				shadow_normal_offset = 0.0f;
-				shadow_texel_depth = 0.0f;
-			}
-			shadow_depth_range = depth_range;
-			static int logged_mode = -1;
-			if (logged_mode != shadow_debug_mode) {
-				logged_mode = shadow_debug_mode;
-				WHBLogPrintf("[3d] shadow debug %d: range %.3f texel %.5f bias %.6f (param %.4f) normal offset %.5f (param %.4f) texel depth %.8f",
-						shadow_debug_mode, depth_range, texel, shadow_bias, dir_light->param[RSE::LIGHT_PARAM_SHADOW_BIAS],
-						shadow_normal_offset, dir_light->param[RSE::LIGHT_PARAM_SHADOW_NORMAL_BIAS], shadow_texel_depth);
-			}
 
 			wiiu_gx2_bind_render_target(shadow_target);
 			wiiu_gx2_clear(1.0f, 1.0f, 1.0f, 1.0f);
 			wiiu_gx2_clear_depth();
 			static Regs svs;
-			for (DrawItem *item : opaque) {
-				svs.count = 0;
-				const bool fragcoord = shadow_debug_mode == 7 && shadow_program_fragcoord != nullptr;
-				svs.put(fragcoord ? shadow_mvp_fragcoord : shadow_mvp, shadow_view_projection * Projection(item->transform));
-				WiiUMeshDraw d = {};
-				d.program = fragcoord ? shadow_program_fragcoord : shadow_program;
-				d.mesh = item->mesh;
-				d.vs_regs = svs.words;
-				d.vs_reg_words = svs.count;
-				d.blend = WIIU_BLEND_DISABLED;
-				// Reversed cull, as drivers/gles3 does for directional shadows:
-				// only faces turned away from the light go into the map, so lit
-				// faces don't shadow themselves (two-sided materials stay so).
-				const WiiUCull cull = item->material.shader.cull;
-				d.cull = cull == WIIU_CULL_BACK ? WIIU_CULL_FRONT : (cull == WIIU_CULL_FRONT ? WIIU_CULL_BACK : WIIU_CULL_DISABLED);
-				if (shadow_debug_mode == 2) {
-					d.cull = WIIU_CULL_DISABLED;
-				} else if (shadow_debug_mode == 3) {
-					d.cull = cull;
+			for (int split = 0; split < shadow_split_count; split++) {
+				// A sphere around the split's slice of the frustum (it doesn't
+				// change size as the camera turns, so the texel snapping below
+				// keeps the shadows still).
+				const float d0 = split == 0 ? z_near : shadow_split_far[split - 1];
+				const float d1 = shadow_split_far[split];
+				const float mid = (d0 + d1) * 0.5f;
+				float radius = 0.0f;
+				for (int k = 0; k < 2; k++) {
+					const float d = k == 0 ? d0 : d1;
+					const Vector2 he = half_extents(d);
+					radius = MAX(radius, Vector3(he.x, he.y, d - mid).length());
 				}
-				d.depth_test = shadow_debug_mode != 5;
-				d.depth_write = true;
-				wiiu_gx2_draw_mesh(&d);
+				radius = Math::ceil(radius * 16.0f) / 16.0f;
+				const Vector3 center = cam_pos + cam_forward * mid;
+				// Light space: looks along the light (its -Z); texel-snapped so
+				// the shadows don't shimmer as the camera moves.
+				const float texel = (2.0f * radius) / split_size;
+				Vector3 ls_center = basis.xform_inv(center);
+				ls_center.x = Math::floor(ls_center.x / texel) * texel;
+				ls_center.y = Math::floor(ls_center.y / texel) * texel;
+				const float back = radius + 100.0f; // Casters behind the sphere, towards the light.
+				const Transform3D light_xf(basis, basis.xform(ls_center) + basis.get_column(2) * back);
+				Projection ortho;
+				ortho.set_orthogonal(-radius, radius, -radius, radius, 0.0f, back + radius);
+				shadow_split_matrix[split] = ortho * Projection(light_xf.affine_inverse());
+				const float depth_range = back + radius;
+				// As drivers/gles3: depth bias = shadow_bias / 100 of the depth
+				// range (0..1 depth here); normal offset = normal_bias texels,
+				// scaled in the shader by how far the surface turns from the light.
+				Vector4 &b = shadow_split_bias[split];
+				b.x = dir_light->param[RSE::LIGHT_PARAM_SHADOW_BIAS] / 100.0f;
+				b.y = dir_light->param[RSE::LIGHT_PARAM_SHADOW_NORMAL_BIAS] * texel;
+				b.z = texel / depth_range;
+				b.w = depth_range;
+				if (shadow_debug_mode == 4) {
+					b.x = b.y = b.z = 0.0f;
+				}
+				// The split's quarter of the map: clip space squeezed into it,
+				// and a scissor so nothing spills into the others.
+				const float ox = (split & 1) ? 0.5f : 0.0f;
+				const float oy = (split & 2) ? 0.5f : 0.0f;
+				const float s = shadow_split_scale;
+				const Projection atlas(Vector4(s, 0, 0, 0), Vector4(0, s, 0, 0), Vector4(0, 0, 1, 0),
+						Vector4(s + 2.0f * ox - 1.0f, 1.0f - 2.0f * oy - s, 0, 1));
+				const Projection atlas_view_projection = atlas * shadow_split_matrix[split];
+				wiiu_gx2_set_scissor((int)(ox * SHADOW_SIZE), (int)(oy * SHADOW_SIZE), (int)split_size, (int)split_size);
+				const Vector3 ls_split = basis.xform_inv(center);
+				for (DrawItem *item : opaque) {
+					// Skip what's nowhere near the split (seen from the sun).
+					const Vector3 ls_item = basis.xform_inv(item->center);
+					if (item->radius > 0.0f && Vector2(ls_item.x - ls_split.x, ls_item.y - ls_split.y).length() > radius + item->radius) {
+						continue;
+					}
+					svs.count = 0;
+					const bool fragcoord = shadow_debug_mode == 7 && shadow_program_fragcoord != nullptr;
+					svs.put(fragcoord ? shadow_mvp_fragcoord : shadow_mvp, atlas_view_projection * Projection(item->transform));
+					WiiUMeshDraw d = {};
+					d.program = fragcoord ? shadow_program_fragcoord : shadow_program;
+					d.mesh = item->mesh;
+					d.vs_regs = svs.words;
+					d.vs_reg_words = svs.count;
+					d.blend = WIIU_BLEND_DISABLED;
+					// Reversed cull, as drivers/gles3 does for directional shadows:
+					// only faces turned away from the light go into the map, so lit
+					// faces don't shadow themselves (two-sided materials stay so).
+					const WiiUCull cull = item->material.shader.cull;
+					d.cull = cull == WIIU_CULL_BACK ? WIIU_CULL_FRONT : (cull == WIIU_CULL_FRONT ? WIIU_CULL_BACK : WIIU_CULL_DISABLED);
+					if (shadow_debug_mode == 2) {
+						d.cull = WIIU_CULL_DISABLED;
+					} else if (shadow_debug_mode == 3) {
+						d.cull = cull;
+					}
+					d.depth_test = shadow_debug_mode != 5;
+					d.depth_write = true;
+					wiiu_gx2_draw_mesh(&d);
+				}
+			}
+			for (int i = shadow_split_count; i < 4; i++) {
+				shadow_split_matrix[i] = shadow_split_matrix[shadow_split_count - 1];
+				shadow_split_bias[i] = shadow_split_bias[shadow_split_count - 1];
+			}
+			static int logged_mode = -1;
+			if (logged_mode != shadow_debug_mode) {
+				logged_mode = shadow_debug_mode;
+				WHBLogPrintf("[3d] shadow debug %d: %d splits, far %.2f %.2f %.2f %.2f, split 0 bias %.6f normal offset %.5f texel depth %.8f range %.2f",
+						shadow_debug_mode, shadow_split_count, shadow_split_far[0], shadow_split_far[1], shadow_split_far[2], shadow_split_far[3],
+						shadow_split_bias[0].x, shadow_split_bias[0].y, shadow_split_bias[0].z, shadow_split_bias[0].w);
 			}
 			// Back to the viewport's target (its colour and depth are kept).
 			wiiu_gx2_bind_render_target(rt->gpu);
@@ -973,7 +1105,7 @@ void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_b
 			ps.put(loc.light_direction[i], l.direction.x, l.direction.y, l.direction.z, l.cos_angle);
 			ps.put(loc.light_extra[i], l.spot_attenuation, l.specular, 0.0f, 0.0f);
 		}
-		ps.put(loc.shadow_params, use_shadow ? 1.0f : 0.0f, shadow_bias, shadow_normal_offset, shadow_opacity);
+		ps.put(loc.shadow_params, use_shadow ? 1.0f : 0.0f, shadow_split_scale, 0.0f, shadow_opacity);
 		WiiUProgramTexture tex[2];
 		tex[0].texture = m.texture;
 		tex[0].location = loc.albedo_texture;
@@ -981,9 +1113,15 @@ void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_b
 		tex[0].repeat = m.shader.repeat;
 		uint32_t tex_count = 1;
 		if (use_shadow) {
-			ps.put(loc.shadow_matrix, shadow_view_projection);
+			for (int i = 0; i < 4; i++) {
+				ps.put(loc.shadow_matrix[i], shadow_split_matrix[i]);
+				const Vector4 &b = shadow_split_bias[i];
+				ps.put(loc.shadow_split[i], b.x, b.y, b.z, b.w);
+			}
+			ps.put(loc.shadow_splits, shadow_split_far[0], shadow_split_far[1], shadow_split_far[2], shadow_split_far[3]);
+			ps.put(loc.shadow_forward, cam_forward.x, cam_forward.y, cam_forward.z, 0.0f);
 			ps.put(loc.shadow_texel, 1.0f / SHADOW_SIZE, 1.0f / SHADOW_SIZE, (float)SHADOW_SIZE, (float)SHADOW_SIZE);
-			ps.put(loc.shadow_slope, shadow_texel_depth, shadow_depth_range, shadow_debug_mode == 1 ? 1.0f : 0.0f, 0.0f);
+			ps.put(loc.shadow_slope, 0.0f, 0.0f, shadow_debug_mode == 1 ? 1.0f : 0.0f, 0.0f);
 			tex[1].texture = wiiu_gx2_render_target_texture(shadow_target);
 			tex[1].location = loc.shadow_map;
 			tex[1].filter = 0; // Nearest: depth can't be filtered.
