@@ -198,9 +198,10 @@ static const char *scene_ps_glsl =
 		"    return dot(texture(shadow_map, p_uv).rgb, vec3(1.0, 1.0 / 255.0, 1.0 / 65025.0));\n"
 		"}\n"
 		// 2x2 percentage-closer filtering, bilinearly weighted.
-		"float directional_shadow(vec3 P, vec3 N)\n"
+		"float directional_shadow(vec3 P, vec3 N, vec3 L)\n"
 		"{\n"
-		"    vec4 clip = shadow_matrix * vec4(P + N * shadow_params.z, 1.0);\n"
+		"    vec3 normal_offset = N * ((1.0 - max(0.0, dot(L, N))) * shadow_params.z);\n"
+		"    vec4 clip = shadow_matrix * vec4(P + normal_offset, 1.0);\n"
 		"    vec3 c = clip.xyz / clip.w;\n"
 		"    if (any(greaterThan(abs(c), vec3(1.0)))) {\n"
 		"        return 1.0;\n"
@@ -308,7 +309,7 @@ static const char *scene_ps_glsl =
 		"        vec3 diffuse_light = mix(ambient_ground.rgb, ambient.rgb, N.y * 0.5 + 0.5);\n"
 		"        vec3 specular_light = vec3(0.0);\n"
 		"        if (flags.x > 0.5) {\n"
-		"            float shadow = shadow_params.x > 0.5 ? directional_shadow(P, N) : 1.0;\n"
+		"            float shadow = shadow_params.x > 0.5 ? directional_shadow(P, N, dir_direction.xyz) : 1.0;\n"
 		"            light_compute(N, dir_direction.xyz, V, dir_color.rgb * shadow, dir_direction.w, f0, roughness, diffuse_light, specular_light);\n"
 		"        }\n"
 		"        if (params.z > 0.5) {\n"
@@ -810,7 +811,11 @@ void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_b
 			ortho.set_orthogonal(-radius, radius, -radius, radius, 0.0f, back + radius);
 			shadow_view_projection = ortho * Projection(light_xf.affine_inverse());
 			const float depth_range = back + radius;
-			shadow_bias = dir_light->param[RSE::LIGHT_PARAM_SHADOW_BIAS] * texel * 2.0f / depth_range;
+			// As drivers/gles3: depth bias = shadow_bias / 100 of the depth
+			// range (0..1 depth here); normal offset = normal_bias texels,
+			// scaled in the shader by how far the surface turns from the light.
+			(void)depth_range;
+			shadow_bias = dir_light->param[RSE::LIGHT_PARAM_SHADOW_BIAS] / 100.0f;
 			shadow_normal_offset = dir_light->param[RSE::LIGHT_PARAM_SHADOW_NORMAL_BIAS] * texel;
 			shadow_opacity = dir_light->param[RSE::LIGHT_PARAM_SHADOW_OPACITY];
 
