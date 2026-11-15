@@ -35,9 +35,13 @@ def get_tools(env: "SConsEnvironment"):
 
 
 def get_opts():
-    from SCons.Variables import BoolVariable
+    from SCons.Variables import BoolVariable, EnumVariable
 
     return [
+        # Link-time optimization through LLVM's linker plugin (LLVMgold.so) in
+        # devkitPPC's GNU ld. Objects get their own suffix (.lto.o), so switching
+        # doesn't throw away the other build's objects.
+        EnumVariable("wiiu_lto", "Link-time optimization (Clang + LLVMgold.so in GNU ld)", "none", ["none", "thin", "full"]),
         BoolVariable("wiiu_udp_log", "Also send engine output to wiiu-udplogserver over the network", True),
         BoolVariable(
             "wiiu_heap_check",
@@ -160,8 +164,38 @@ def configure(env: "SConsEnvironment"):
     env.Append(LINKFLAGS=["-mcpu=750", "-meabi", "-mhard-float", "-specs=" + os.path.join(wut, "share", "wut.specs")])
     env.Append(LIBPATH=[os.path.join(wut, "lib")])
 
-    # LTO would need Clang's linker plugin in devkitPPC's ld.
+    # Godot's own lto option assumes the compiler driver links; here GNU ld
+    # (through powerpc-eabi-g++) does, so LTO is wiiu_lto below instead.
     env["lto"] = "none"
+    if env["wiiu_lto"] != "none":
+        # LLVMgold.so comes with the host's LLVM (Arch: llvm package); devkitPPC's
+        # ld supports -plugin. Codegen options that are flags rather than IR
+        # attributes have to be passed to the plugin again: emulated TLS,
+        # .ctors instead of .init_array (see -fno-use-init-array above), and
+        # function/data sections for --gc-sections.
+        gold = os.path.join(subprocess.check_output([clang, "-print-file-name=LLVMgold.so"], text=True).strip())
+        if not os.path.isfile(gold):
+            gold = "/usr/lib/LLVMgold.so"
+        if not os.path.isfile(gold):
+            print_error("wiiu_lto needs LLVMgold.so (LLVM's linker plugin); not found.")
+            sys.exit(255)
+        env.Append(CCFLAGS=["-flto=thin" if env["wiiu_lto"] == "thin" else "-flto"])
+        env.Append(
+            LINKFLAGS=[
+                "-Wl,-plugin," + gold,
+                "-Wl,-plugin-opt=mcpu=750",
+                "-Wl,-plugin-opt=O2",
+                "-Wl,-plugin-opt=-emulated-tls",
+                "-Wl,-plugin-opt=-use-ctors",
+                "-Wl,-plugin-opt=-function-sections",
+                "-Wl,-plugin-opt=-data-sections",
+                "-Wl,-plugin-opt=jobs=8",
+            ]
+        )
+        env["AR"] = "llvm-ar"
+        env["RANLIB"] = "llvm-ranlib"
+        env["OBJSUFFIX"] = ".lto.o"
+        env["LIBSUFFIX"] = ".lto.a"
 
     # compat/ holds stub POSIX headers newlib lacks (dlfcn.h, syslog.h, sys/xattr.h, sys/resource.h).
     env.Prepend(CPPPATH=["#platform/wiiu", "#platform/wiiu/compat"])
