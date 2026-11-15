@@ -195,7 +195,7 @@ static const char *scene_ps_glsl =
 		"uniform vec4 shadow_texel;\n" // xy: 1 / size, zw: size.
 		"float shadow_depth(vec2 p_uv)\n"
 		"{\n"
-		"    return dot(texture(shadow_map, p_uv), vec4(1.0, 1.0 / 255.0, 1.0 / 65025.0, 1.0 / 16581375.0));\n"
+		"    return dot(texture(shadow_map, p_uv).rgb, vec3(1.0, 1.0 / 255.0, 1.0 / 65025.0));\n"
 		"}\n"
 		// 2x2 percentage-closer filtering, bilinearly weighted.
 		"float directional_shadow(vec3 P, vec3 N)\n"
@@ -356,9 +356,15 @@ static const char *shadow_ps_glsl =
 		"layout(location = 0) out vec4 frag_color;\n"
 		"void main()\n"
 		"{\n"
-		"    vec4 enc = fract(vec4(1.0, 255.0, 65025.0, 16581375.0) * gl_FragCoord.z);\n"
-		"    enc -= enc.yzww * vec4(1.0 / 255.0, 1.0 / 255.0, 1.0 / 255.0, 0.0);\n"
-		"    frag_color = enc;\n"
+		// 24 bits in RGB, each channel an exact multiple of 1/255: the GPU
+		// rounds when it writes UNORM8, so the usual fract() packing came
+		// out up to half a step off in red (shadow acne).
+		"    float d = clamp(gl_FragCoord.z, 0.0, 1.0) * 255.0;\n"
+		"    float r = floor(d);\n"
+		"    d = (d - r) * 255.0;\n"
+		"    float g = floor(d);\n"
+		"    float b = floor((d - g) * 255.0);\n"
+		"    frag_color = vec4(r, g, b, 255.0) / 255.0;\n"
 		"}\n";
 
 bool RasterizerSceneWiiU::_ensure_shadow_program() {
