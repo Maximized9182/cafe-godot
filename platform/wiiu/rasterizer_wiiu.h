@@ -524,7 +524,7 @@ private:
 		int32_t albedo, ambient, ambient_ground, params, flags, dir_direction, dir_color, pbr, camera_position; // Pixel stage.
 		int32_t light_position[4], light_color[4], light_direction[4], light_extra[4];
 		int32_t albedo_texture; // Sampler location.
-		int32_t shadow_map, shadow_matrix, shadow_params, shadow_texel;
+		int32_t shadow_map, shadow_matrix, shadow_params, shadow_texel, shadow_slope;
 	};
 	WiiUProgram *programs[2] = {};
 	SceneLoc locs[2] = {};

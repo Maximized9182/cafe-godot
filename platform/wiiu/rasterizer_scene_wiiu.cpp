@@ -193,6 +193,7 @@ static const char *scene_ps_glsl =
 		"uniform mat4 shadow_matrix;\n"
 		"uniform vec4 shadow_params;\n"
 		"uniform vec4 shadow_texel;\n" // xy: 1 / size, zw: size.
+		"uniform vec4 shadow_slope;\n" // x: one texel of depth (0..1 units).
 		"float shadow_depth(vec2 p_uv)\n"
 		"{\n"
 		"    return dot(texture(shadow_map, p_uv).rgb, vec3(1.0, 1.0 / 255.0, 1.0 / 65025.0));\n"
@@ -207,7 +208,11 @@ static const char *scene_ps_glsl =
 		"        return 1.0;\n"
 		"    }\n"
 		"    vec2 uv = vec2(c.x * 0.5 + 0.5, 0.5 - c.y * 0.5);\n"
-		"    float depth = c.z * 0.5 + 0.5 - shadow_params.y;\n"
+		// Slope-scaled bias: surfaces turned edge-on to the light change depth
+		// fast across a texel (tan of the light angle, capped at 8 texels).
+		"    float ndotl = clamp(dot(L, N), 0.01, 1.0);\n"
+		"    float slope = min(sqrt(1.0 - ndotl * ndotl) / ndotl, 8.0);\n"
+		"    float depth = c.z * 0.5 + 0.5 - shadow_params.y - slope * shadow_slope.x;\n"
 		"    vec2 t = uv * shadow_texel.zw - 0.5;\n"
 		"    vec2 f = fract(t);\n"
 		"    vec2 base = (floor(t) + 0.5) * shadow_texel.xy;\n"
@@ -440,6 +445,7 @@ bool RasterizerSceneWiiU::_ensure_program() {
 		loc.shadow_matrix = wiiu_gx2_program_uniform_offset(program, "shadow_matrix");
 		loc.shadow_params = wiiu_gx2_program_uniform_offset(program, "shadow_params");
 		loc.shadow_texel = wiiu_gx2_program_uniform_offset(program, "shadow_texel");
+		loc.shadow_slope = wiiu_gx2_program_uniform_offset(program, "shadow_slope");
 	}
 	WHBLogPrint("[3d] 3D shader compiled");
 	return true;
@@ -788,7 +794,7 @@ void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_b
 	// with the opaque surfaces the camera sees.
 	bool use_shadow = false;
 	Projection shadow_view_projection;
-	float shadow_bias = 0.0f, shadow_normal_offset = 0.0f, shadow_opacity = 1.0f;
+	float shadow_bias = 0.0f, shadow_normal_offset = 0.0f, shadow_opacity = 1.0f, shadow_texel_depth = 0.0f;
 	if (dir_light && dir_light->shadow && !opaque.is_empty() && _ensure_shadow_program()) {
 		if (shadow_target == nullptr) {
 			shadow_target = wiiu_gx2_render_target_create(SHADOW_SIZE, SHADOW_SIZE);
@@ -814,7 +820,7 @@ void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_b
 			// As drivers/gles3: depth bias = shadow_bias / 100 of the depth
 			// range (0..1 depth here); normal offset = normal_bias texels,
 			// scaled in the shader by how far the surface turns from the light.
-			(void)depth_range;
+			shadow_texel_depth = texel / depth_range;
 			shadow_bias = dir_light->param[RSE::LIGHT_PARAM_SHADOW_BIAS] / 100.0f;
 			shadow_normal_offset = dir_light->param[RSE::LIGHT_PARAM_SHADOW_NORMAL_BIAS] * texel;
 			shadow_opacity = dir_light->param[RSE::LIGHT_PARAM_SHADOW_OPACITY];
@@ -912,6 +918,7 @@ void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_b
 		if (use_shadow) {
 			ps.put(loc.shadow_matrix, shadow_view_projection);
 			ps.put(loc.shadow_texel, 1.0f / SHADOW_SIZE, 1.0f / SHADOW_SIZE, (float)SHADOW_SIZE, (float)SHADOW_SIZE);
+			ps.put(loc.shadow_slope, shadow_texel_depth, 0.0f, 0.0f, 0.0f);
 			tex[1].texture = wiiu_gx2_render_target_texture(shadow_target);
 			tex[1].location = loc.shadow_map;
 			tex[1].filter = 0; // Nearest: packed depth can't be filtered.
