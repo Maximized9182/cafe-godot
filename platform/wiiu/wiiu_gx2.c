@@ -413,7 +413,8 @@ static int32_t scissor_x = 0, scissor_y = 0, scissor_w = 0, scissor_h = 0;
 // Screens and ProcUI
 // ---------------------------------------------------------------------------
 
-static void init_color_buffer(GX2ColorBuffer *cb, uint32_t width, uint32_t height, GX2SurfaceUse use) {
+static void init_color_buffer_format(GX2ColorBuffer *cb, uint32_t width, uint32_t height, GX2SurfaceUse use,
+		GX2SurfaceFormat format) {
 	memset(cb, 0, sizeof(*cb));
 	cb->surface.use = use;
 	cb->surface.dim = GX2_SURFACE_DIM_TEXTURE_2D;
@@ -421,12 +422,16 @@ static void init_color_buffer(GX2ColorBuffer *cb, uint32_t width, uint32_t heigh
 	cb->surface.height = height;
 	cb->surface.depth = 1;
 	cb->surface.mipLevels = 1;
-	cb->surface.format = GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8;
+	cb->surface.format = format;
 	cb->surface.aa = GX2_AA_MODE1X;
 	cb->surface.tileMode = GX2_TILE_MODE_DEFAULT;
 	cb->viewNumSlices = 1;
 	GX2CalcSurfaceSizeAndAlignment(&cb->surface);
 	GX2InitColorBufferRegs(cb);
+}
+
+static void init_color_buffer(GX2ColorBuffer *cb, uint32_t width, uint32_t height, GX2SurfaceUse use) {
+	init_color_buffer_format(cb, width, height, use, GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8);
 }
 
 static bool alloc_screen_memory(MEMHeapHandle heap, Screen *s, bool tv) {
@@ -757,13 +762,13 @@ WiiUTexture *wiiu_gx2_transparent_texture(void) {
 	return draw_transparent ? draw_transparent : draw_white;
 }
 
-WiiURenderTarget *wiiu_gx2_render_target_create(uint32_t p_width, uint32_t p_height) {
+static WiiURenderTarget *render_target_create(uint32_t p_width, uint32_t p_height, GX2SurfaceFormat p_format) {
 	WiiURenderTarget *rt = (WiiURenderTarget *)calloc(1, sizeof(WiiURenderTarget));
 	if (rt == NULL) {
 		return NULL;
 	}
-	init_color_buffer(&rt->color_buffer, p_width, p_height,
-			(GX2SurfaceUse)(GX2_SURFACE_USE_TEXTURE | GX2_SURFACE_USE_COLOR_BUFFER));
+	init_color_buffer_format(&rt->color_buffer, p_width, p_height,
+			(GX2SurfaceUse)(GX2_SURFACE_USE_TEXTURE | GX2_SURFACE_USE_COLOR_BUFFER), p_format);
 	rt->color_buffer.surface.image =
 			MEMAllocFromDefaultHeapEx(rt->color_buffer.surface.imageSize, rt->color_buffer.surface.alignment);
 	if (rt->color_buffer.surface.image == NULL) {
@@ -778,6 +783,14 @@ WiiURenderTarget *wiiu_gx2_render_target_create(uint32_t p_width, uint32_t p_hei
 	stat_render_targets++;
 	stat_render_target_bytes += rt->color_buffer.surface.imageSize;
 	return rt;
+}
+
+WiiURenderTarget *wiiu_gx2_render_target_create(uint32_t p_width, uint32_t p_height) {
+	return render_target_create(p_width, p_height, GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8);
+}
+
+WiiURenderTarget *wiiu_gx2_render_target_create_float(uint32_t p_width, uint32_t p_height) {
+	return render_target_create(p_width, p_height, GX2_SURFACE_FORMAT_FLOAT_R32);
 }
 
 void wiiu_gx2_render_target_free(WiiURenderTarget *p_rt) {

@@ -188,7 +188,7 @@ static const char *scene_ps_glsl =
 		"uniform vec4 dir_color;\n"
 		// Directional shadow: world -> shadow map clip space (mat4, one column
 		// per register); params x: on, y: depth bias, z: normal offset
-		// (world units), w: opacity. Depth is packed into RGBA8.
+		// (world units), w: opacity. Depth is a float in the red channel.
 		"uniform sampler2D shadow_map;\n"
 		"uniform mat4 shadow_matrix;\n"
 		"uniform vec4 shadow_params;\n"
@@ -196,7 +196,7 @@ static const char *scene_ps_glsl =
 		"uniform vec4 shadow_slope;\n" // x: one texel of depth (0..1 units).
 		"float shadow_depth(vec2 p_uv)\n"
 		"{\n"
-		"    return dot(texture(shadow_map, p_uv).rgb, vec3(1.0, 1.0 / 255.0, 1.0 / 65025.0));\n"
+		"    return texture(shadow_map, p_uv).r;\n"
 		"}\n"
 		// 2x2 percentage-closer filtering, bilinearly weighted.
 		"float directional_shadow(vec3 P, vec3 N, vec3 L)\n"
@@ -344,8 +344,10 @@ static const char *scene_ps_glsl =
 		"    frag_color = vec4(pow(max(color, vec3(0.0)), vec3(1.0 / 2.2)), base.a);\n"
 		"}\n";
 
-// The shadow pass: depth from the light, packed into RGBA8 (the render
-// targets are RGBA8), read back by directional_shadow() above.
+// The shadow pass: depth from the light into a 32-bit float render target,
+// read back by directional_shadow() above. (It was packed into RGBA8 before;
+// some depths came back off by a step, which showed as bands of shadow acne
+// across lit faces.)
 static const char *shadow_vs_glsl =
 		"#version 330\n"
 		"#extension GL_ARB_separate_shader_objects : enable\n"
@@ -370,12 +372,8 @@ static const char *shadow_ps_glsl =
 		// 24 bits in RGB, each channel an exact multiple of 1/255: the GPU
 		// rounds when it writes UNORM8, so the usual fract() packing came
 		// out up to half a step off in red (shadow acne).
-		"    float d = clamp(VaryingDepth, 0.0, 1.0) * 255.0;\n"
-		"    float r = floor(d);\n"
-		"    d = (d - r) * 255.0;\n"
-		"    float g = floor(d);\n"
-		"    float b = floor((d - g) * 255.0);\n"
-		"    frag_color = vec4(r, g, b, 255.0) / 255.0;\n"
+		// Now the target is FLOAT_R32, so the depth goes in as it is.
+		"    frag_color = vec4(clamp(VaryingDepth, 0.0, 1.0), 0.0, 0.0, 1.0);\n"
 		"}\n";
 
 bool RasterizerSceneWiiU::_ensure_shadow_program() {
@@ -797,7 +795,7 @@ void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_b
 	float shadow_bias = 0.0f, shadow_normal_offset = 0.0f, shadow_opacity = 1.0f, shadow_texel_depth = 0.0f;
 	if (dir_light && dir_light->shadow && !opaque.is_empty() && _ensure_shadow_program()) {
 		if (shadow_target == nullptr) {
-			shadow_target = wiiu_gx2_render_target_create(SHADOW_SIZE, SHADOW_SIZE);
+			shadow_target = wiiu_gx2_render_target_create_float(SHADOW_SIZE, SHADOW_SIZE);
 		}
 		if (shadow_target) {
 			const float max_distance = CLAMP(dir_light->param[RSE::LIGHT_PARAM_SHADOW_MAX_DISTANCE], 1.0f, 200.0f);
@@ -921,7 +919,7 @@ void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_b
 			ps.put(loc.shadow_slope, shadow_texel_depth, 0.0f, 0.0f, 0.0f);
 			tex[1].texture = wiiu_gx2_render_target_texture(shadow_target);
 			tex[1].location = loc.shadow_map;
-			tex[1].filter = 0; // Nearest: packed depth can't be filtered.
+			tex[1].filter = 0; // Nearest: depth can't be filtered.
 			tex[1].repeat = false;
 			tex_count = 2;
 		}
