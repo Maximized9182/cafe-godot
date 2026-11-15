@@ -20,6 +20,12 @@ the HOME menu.
   (mix, add, subtract, multiply, premultiplied alpha), and mipmaps for textures imported with
   them (the `*_WITH_MIPMAPS` filters). The same image goes to the TV and the GamePad.
 - **MSDF fonts** (`FontFile.multichannel_signed_distance_field`), with outlines.
+- **3D, early**: `MeshInstance3D` with primitive meshes (box, sphere, plane, cylinder...) and
+  meshes made at run time (`SurfaceTool`, `ArrayMesh` from arrays), 3D `MultiMeshInstance3D`,
+  depth, and `StandardMaterial3D` basics: albedo colour and texture, UV1 scale/offset, vertex
+  colour, unshaded, alpha transparency (sorted), alpha scissor, cull and depth modes. Lighting
+  is diffuse only: the environment's ambient light, one `DirectionalLight3D` and up to four
+  `OmniLight3D`s. Needs `cafeglsl.rpl` (see "Canvas shaders").
 - **Input**: Wii U GamePad (buttons, sticks, touchscreen, motion sensors), Wii Remote (with
   Nunchuk or Classic Controller) and Pro Controller, as Godot joypads. Button 0 is A, as on an
   Xbox pad. USB keyboards and mice work too (mouse cursor drawn on both screens).
@@ -34,7 +40,10 @@ the HOME menu.
 
 ## What doesn't (yet)
 
-- **3D**: 3D nodes exist, so scripts that use them compile, but nothing is drawn.
+- **3D, the rest**: imported models (`.glb`, `.obj`, `.mesh`: their vertex data is read
+  with the wrong byte order), shadows, spot lights, specular, sky (a sky background is a flat
+  colour), fog, glow and tone mapping, custom `spatial` shaders (drawn as plain materials),
+  skeletons and blend shapes, `Sprite3D` and `Label3D`, 3D physics.
 - **Shaders, partly**: see "Canvas shaders" below. Shaders with SDF, global/instance uniforms,
   uniform arrays or textures read in `vertex()` draw without the shader (blend mode only).
 - Networking (`HTTPRequest`, multiplayer), the editor itself.
