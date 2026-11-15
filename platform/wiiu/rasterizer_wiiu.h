@@ -2,22 +2,24 @@
 
 // Cafe Godot's 2D renderer on GX2.
 //
-// Built on Godot's dummy renderer: 3D, materials, meshes, lights and particles
-// stay dummies. Real parts:
-// - TextureStorageWiiU: GX2 textures (uploaded as RGBA8), render targets
-//   (GX2 colour buffers that can be sampled) and canvas textures.
-// - RasterizerCanvasWiiU: walks the canvas item commands (rect, nine-patch,
-//   polygon, primitive, transform, clip) and draws them as batched triangles.
-// - RasterizerWiiU: fits the root render target onto the TV and the GamePad
-//   and presents.
+// Built on Godot's dummy renderer: 3D stays a dummy. Real parts, one file each:
+// - TextureStorageWiiU (texture_storage_wiiu.cpp): GX2 textures (uploaded as
+//   RGBA8, with mipmaps), render targets (GX2 colour buffers that can be
+//   sampled) and canvas textures. UtilitiesWiiU is there too.
+// - MeshStorageWiiU (mesh_storage_wiiu.cpp): keeps 2D mesh surfaces (decoded
+//   to points, colours, UVs) and multimesh instance data, so MeshInstance2D,
+//   MultiMeshInstance2D and CPUParticles2D draw.
+// - MaterialStorageWiiU (material_storage_wiiu.cpp): canvas_item blend modes,
+//   and fragment-only canvas shaders compiled at runtime with CafeGLSL.
+// - RasterizerCanvasWiiU (rasterizer_canvas_wiiu.cpp): walks the canvas item
+//   commands (rect, nine-patch, polygon, primitive, mesh, transform, clip) and
+//   draws them as batched triangles, MSDF text included.
+// - RasterizerWiiU (rasterizer_wiiu.cpp): fits the root render target onto the
+//   TV and the GamePad and presents.
 //
-// - MeshStorageWiiU: keeps 2D mesh surfaces (decoded to points, colours, UVs)
-//   and multimesh instance data, so MeshInstance2D, MultiMeshInstance2D and
-//   CPUParticles2D draw.
-//
-// Not supported yet: canvas shaders/materials (drawn with the default "mix"
-// blend), 2D lights and shadows, MSDF/LCD text effects, GPUParticles2D,
-// skeletons and blend shapes, canvas groups, back-buffer copies, mipmaps.
+// Not supported yet: 2D lights and shadows, LCD text, canvas shaders with
+// vertex() or the screen texture, skeletons and blend shapes, canvas groups,
+// back-buffer copies.
 
 #include "core/templates/hash_map.h"
 #include "core/templates/local_vector.h"
