@@ -29,6 +29,12 @@ public:
 	bool can_any_window_draw() const override;
 	DisplayServerEnums::WindowMode window_get_mode(DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) const override { return DisplayServerEnums::WINDOW_MODE_FULLSCREEN; }
 
+	// USB mouse (keyboard_mouse_wiiu.cpp): the cursor is drawn by RasterizerWiiU.
+	void mouse_set_mode(DisplayServerEnums::MouseMode p_mode) override;
+	DisplayServerEnums::MouseMode mouse_get_mode() const override;
+	Point2i mouse_get_position() const override;
+	BitField<MouseButtonMask> mouse_get_button_state() const override;
+
 	// Window focus follows the foreground (HOME menu): see OS_WiiU::run.
 	Callable window_event_callback;
 	void window_set_window_event_callback(const Callable &p_callable, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override { window_event_callback = p_callable; }

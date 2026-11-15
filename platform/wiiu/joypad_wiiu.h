@@ -20,6 +20,12 @@
 // button is B on Nintendo pads, unlike Xbox-style JoyButton::A). The GUIDs are
 // not in Godot's mapping database, so Input passes the raw JoyButton/JoyAxis
 // values through unchanged.
+//
+// The GamePad's motion sensors go to Godot twice: as joypad motion sensors of
+// device 0 (Input.get_joy_accelerometer/gyroscope, after
+// set_joy_motion_sensors_enabled), and as the device sensors
+// (Input.get_accelerometer/gyroscope/gravity/magnetometer, as on a phone,
+// with the GamePad screen as the phone).
 class JoypadWiiU {
 public:
 	static constexpr int KPAD_CHANNELS = 4;
@@ -52,6 +58,17 @@ private:
 
 	uint32_t gamepad_hold = 0;
 	uint32_t gamepad_trigger = 0;
+
+	// Tells Input that the GamePad has motion sensors.
+	class GamePadFeatures : public Input::JoypadFeatures {
+	public:
+		bool motion_enabled = false;
+		bool has_joy_motion_sensors() const override { return true; }
+		void set_joy_motion_sensors_enabled(bool p_enable) override { motion_enabled = p_enable; }
+	};
+	GamePadFeatures gamepad_features;
+	Vector3 gravity; // Low-passed accelerometer (device sensors' gravity).
+	void process_motion(const VPADStatus &p_status);
 
 	void set_connected(int p_device, int p_kind, const String &p_name, const String &p_guid);
 	void set_disconnected(int p_device);

@@ -54,6 +54,7 @@ uint64_t OS_WiiU::get_ticks_usec() const {
 
 void OS_WiiU::initialize_joypads() {
 	joypad = memnew(JoypadWiiU(Input::get_singleton()));
+	keyboard_mouse = memnew(KeyboardMouseWiiU(Input::get_singleton()));
 }
 
 void OS_WiiU::set_main_loop(MainLoop *p_main_loop) {
@@ -73,6 +74,10 @@ void OS_WiiU::delete_main_loop() {
 
 void OS_WiiU::finalize() {
 	delete_main_loop();
+	if (keyboard_mouse) {
+		memdelete(keyboard_mouse);
+		keyboard_mouse = nullptr;
+	}
 	if (joypad) {
 		memdelete(joypad);
 		joypad = nullptr;
@@ -262,6 +267,9 @@ void OS_WiiU::run() {
 		// Read every controller once per frame, before the engine runs the frame.
 		// The same GamePad sample drives the log overlay: ZL+L+RIGHT+X+Y+TV
 		// toggles it, and while it's shown D-pad / L / R scroll it.
+		if (keyboard_mouse) {
+			keyboard_mouse->process();
+		}
 		if (joypad) {
 			joypad->process();
 			const uint32_t hold = joypad->get_gamepad_hold();

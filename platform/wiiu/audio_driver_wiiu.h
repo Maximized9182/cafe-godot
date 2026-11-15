@@ -6,6 +6,7 @@
 #include "servers/audio/audio_server.h"
 
 #include <coreinit/thread.h>
+#include <mic/mic.h>
 #include <sndcore2/voice.h>
 
 // Audio output for Cafe Godot through AX (sndcore2), modelled on Love Potion's
@@ -47,6 +48,19 @@ class AudioDriverWiiU : public AudioDriver {
 	static uint32_t proc_acquired(void *p_context);
 	void set_voices_playing(bool p_playing);
 
+	// Microphone (the GamePad's), for AudioStreamMicrophone: 16-bit mono at
+	// MIC_RATE from the system's ring buffer, resampled to MIX_RATE into
+	// Godot's input buffer by the mixer thread.
+	static constexpr int MIC_RATE = 32000;
+	static constexpr uint32_t MIC_SAMPLES = 0x2800;
+	MICHandle mic = -1;
+	int16_t *mic_buffer = nullptr;
+	volatile bool mic_active = false;
+	float mic_phase = 0.0f; // Resampler position between mic_prev and mic_next.
+	int16_t mic_prev = 0;
+	void mic_capture();
+	void mic_close();
+
 	static int os_thread_entry(int p_argc, const char **p_argv);
 	static void thread_func(void *p_udata);
 	uint32_t play_position();
@@ -59,6 +73,9 @@ public:
 	int get_mix_rate() const override { return MIX_RATE; }
 	SpeakerMode get_speaker_mode() const override { return SPEAKER_MODE_STEREO; }
 	float get_latency() override { return (float)TARGET_AHEAD / MIX_RATE; }
+
+	Error input_start() override;
+	Error input_stop() override;
 
 	void lock() override { mutex.lock(); }
 	void unlock() override { mutex.unlock(); }

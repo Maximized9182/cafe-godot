@@ -146,6 +146,9 @@ void AudioDriverWiiU::thread_func(void *p_udata) {
 		}
 
 		ad->lock();
+		if (ad->mic_active) {
+			ad->mic_capture();
+		}
 		ad->audio_server_process(RING_CHUNK, ad->mix_buffer);
 		ad->unlock();
 
@@ -250,7 +253,93 @@ void AudioDriverWiiU::start() {
 	ProcUIRegisterCallback(PROCUI_CALLBACK_ACQUIRE, proc_acquired, this, 100);
 }
 
+Error AudioDriverWiiU::input_start() {
+	MutexLock guard(mutex);
+	if (mic_active) {
+		return OK;
+	}
+	mic_buffer = (int16_t *)MEMAllocFromDefaultHeapEx(MIC_SAMPLES * sizeof(int16_t), 0x40);
+	if (mic_buffer == nullptr) {
+		return ERR_OUT_OF_MEMORY;
+	}
+	memset(mic_buffer, 0, MIC_SAMPLES * sizeof(int16_t));
+	DCFlushRange(mic_buffer, MIC_SAMPLES * sizeof(int16_t));
+	MICWorkMemory work;
+	work.sampleMaxCount = MIC_SAMPLES;
+	work.sampleBuffer = mic_buffer;
+	MICError err = MIC_ERROR_OK;
+	mic = MICInit(MIC_INSTANCE_0, 0, &work, &err);
+	if (mic < 0 || err != MIC_ERROR_OK) {
+		WHBLogPrintf("[audio] microphone: MICInit failed (%d)", (int)err);
+		mic_close();
+		return FAILED;
+	}
+	err = MICOpen(mic);
+	if (err != MIC_ERROR_OK) {
+		WHBLogPrintf("[audio] microphone: MICOpen failed (%d)", (int)err);
+		mic_close();
+		return FAILED;
+	}
+	input_buffer_init(MIX_RATE / 4); // 250 ms.
+	mic_phase = 0.0f;
+	mic_prev = 0;
+	mic_active = true;
+	WHBLogPrint("[audio] microphone open");
+	return OK;
+}
+
+Error AudioDriverWiiU::input_stop() {
+	MutexLock guard(mutex);
+	mic_close();
+	return OK;
+}
+
+void AudioDriverWiiU::mic_close() {
+	mic_active = false;
+	if (mic >= 0) {
+		MICClose(mic);
+		MICUninit(mic);
+		mic = -1;
+	}
+	if (mic_buffer) {
+		MEMFreeToDefaultHeap(mic_buffer);
+		mic_buffer = nullptr;
+	}
+}
+
+// Moves what the microphone recorded into Godot's input buffer, resampled
+// from MIC_RATE to MIX_RATE (linear) and duplicated to both channels.
+// Called with the driver locked, from the mixer thread.
+void AudioDriverWiiU::mic_capture() {
+	MICStatus status;
+	if (MICGetStatus(mic, &status) != MIC_ERROR_OK || status.availableData <= 0) {
+		return;
+	}
+	const uint32_t available = (uint32_t)status.availableData;
+	const uint32_t start = (uint32_t)status.bufferPos % MIC_SAMPLES;
+	// The system writes the ring behind the CPU cache.
+	DCInvalidateRange(mic_buffer, MIC_SAMPLES * sizeof(int16_t));
+	const float step = (float)MIC_RATE / (float)MIX_RATE;
+	for (uint32_t i = 0; i < available; i++) {
+		const int16_t next = mic_buffer[(start + i) % MIC_SAMPLES];
+		while (mic_phase < 1.0f) {
+			const float s = (float)mic_prev + ((float)next - (float)mic_prev) * mic_phase;
+			const int32_t sample = (int32_t)s << 16;
+			input_buffer_write(sample);
+			input_buffer_write(sample);
+			mic_phase += step;
+		}
+		mic_phase -= 1.0f;
+		mic_prev = next;
+	}
+	MICSetDataConsumed(mic, (int)available);
+}
+
 void AudioDriverWiiU::finish() {
+	{
+		MutexLock guard(mutex);
+		mic_close();
+	}
 	exit_thread.set();
 	if (thread_started) {
 		int result = 0;

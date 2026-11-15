@@ -1,5 +1,7 @@
 #include "display_server_wiiu.h"
 
+#include "keyboard_mouse_wiiu.h"
+
 #include "rasterizer_wiiu.h"
 #include "wiiu_gx2.h"
 
@@ -52,6 +54,27 @@ Size2i DisplayServerWiiU::window_get_size(DisplayServerEnums::WindowID p_window)
 
 Size2i DisplayServerWiiU::window_get_size_with_decorations(DisplayServerEnums::WindowID p_window) const {
 	return WIIU_WINDOW_SIZE;
+}
+
+void DisplayServerWiiU::mouse_set_mode(DisplayServerEnums::MouseMode p_mode) {
+	if (KeyboardMouseWiiU *kbm = KeyboardMouseWiiU::get_singleton()) {
+		kbm->set_mouse_mode(p_mode);
+	}
+}
+
+DisplayServerEnums::MouseMode DisplayServerWiiU::mouse_get_mode() const {
+	const KeyboardMouseWiiU *kbm = KeyboardMouseWiiU::get_singleton();
+	return kbm ? kbm->get_mouse_mode() : DisplayServerEnums::MOUSE_MODE_VISIBLE;
+}
+
+Point2i DisplayServerWiiU::mouse_get_position() const {
+	const KeyboardMouseWiiU *kbm = KeyboardMouseWiiU::get_singleton();
+	return kbm ? Point2i(kbm->get_mouse_position()) : Point2i();
+}
+
+BitField<MouseButtonMask> DisplayServerWiiU::mouse_get_button_state() const {
+	const KeyboardMouseWiiU *kbm = KeyboardMouseWiiU::get_singleton();
+	return kbm ? kbm->get_mouse_buttons() : BitField<MouseButtonMask>(MouseButtonMask::NONE);
 }
 
 // True while GX2 owns the screens and the app is in the foreground.

@@ -1,5 +1,7 @@
 #include "rasterizer_wiiu.h"
 
+#include "keyboard_mouse_wiiu.h"
+
 #include "core/io/image.h"
 #include "core/math/math_funcs.h"
 #include "core/os/os.h"
@@ -22,6 +24,45 @@ static struct {
 	Rect2 drc_rect; // Where the render target was drawn on the GamePad.
 	Rect2 window_rect; // Where Godot thinks it is in the window (BlitToScreen::dst_rect).
 } last_drc_blit;
+
+// The same for both screens ([WiiUScreen]), for drawing the mouse cursor.
+static struct {
+	bool valid = false;
+	Size2 rt_size;
+	Rect2 screen_rect;
+	Rect2 window_rect;
+} last_blit[2];
+
+// Window pixel -> render-target pixel -> screen pixel.
+static bool window_to_screen(WiiUScreen p_screen, const Vector2 &p_window, Vector2 &r_screen) {
+	const auto &b = last_blit[p_screen];
+	if (!b.valid || b.rt_size.x <= 0 || b.rt_size.y <= 0) {
+		return false;
+	}
+	Vector2 rt = p_window;
+	if (b.window_rect.size.x > 0 && b.window_rect.size.y > 0) {
+		rt = (p_window - b.window_rect.position) * b.rt_size / b.window_rect.size;
+	}
+	r_screen = b.screen_rect.position + rt * b.screen_rect.size / b.rt_size;
+	return true;
+}
+
+// An arrow cursor (white with a black edge) with its tip at p_tip.
+static void draw_cursor(const Vector2 &p_tip) {
+	const float x = p_tip.x, y = p_tip.y;
+	WiiUVertex v[6] = {};
+	const float outer[3][2] = { { x - 1.5f, y - 2.5f }, { x - 1.5f, y + 20.0f }, { x + 15.0f, y + 14.5f } };
+	const float inner[3][2] = { { x, y }, { x, y + 16.0f }, { x + 11.5f, y + 12.0f } };
+	for (int i = 0; i < 3; i++) {
+		v[i].x = outer[i][0];
+		v[i].y = outer[i][1];
+		v[i].a = 1.0f; // Black.
+		v[3 + i].x = inner[i][0];
+		v[3 + i].y = inner[i][1];
+		v[3 + i].r = v[3 + i].g = v[3 + i].b = v[3 + i].a = 1.0f;
+	}
+	wiiu_gx2_draw(nullptr, WIIU_PRIM_TRIANGLES, nullptr, 0, false, v, 6);
+}
 
 bool rasterizer_wiiu_drc_to_window(const Vector2 &p_drc, Vector2 &r_window) {
 	if (!last_drc_blit.valid || last_drc_blit.drc_rect.size.x <= 0 || last_drc_blit.drc_rect.size.y <= 0) {
@@ -93,6 +134,12 @@ void RasterizerWiiU::_blit_to_screen(WiiUScreen p_screen, const RenderingServerT
 		const Size2 size(Math::round(rw * scale), Math::round(rh * scale));
 		const Point2 pos(Math::floor(((float)sw - size.x) * 0.5f), Math::floor(((float)sh - size.y) * 0.5f));
 		cv->draw_texture_rect(wiiu_gx2_render_target_texture(rt->gpu), Rect2(pos, size), p_render_targets[i].src_rect, linear);
+		if (i == 0) {
+			last_blit[p_screen].valid = true;
+			last_blit[p_screen].rt_size = Size2(rw, rh);
+			last_blit[p_screen].screen_rect = Rect2(pos, size);
+			last_blit[p_screen].window_rect = Rect2(p_render_targets[i].dst_rect);
+		}
 		if (p_screen == WIIU_SCREEN_DRC && i == 0) {
 			last_drc_blit.valid = true;
 			last_drc_blit.rt_size = Size2(rw, rh);
@@ -124,6 +171,18 @@ void RasterizerWiiU::end_frame(bool p_present) {
 		return;
 	}
 	wiiu_stats_mark(2); // Rendering done, presenting next.
+	Vector2 cursor;
+	const KeyboardMouseWiiU *kbm = KeyboardMouseWiiU::get_singleton();
+	if (blitted && kbm && kbm->get_cursor(cursor)) {
+		for (int s = 0; s < 2; s++) {
+			const WiiUScreen screen = s == 0 ? WIIU_SCREEN_TV : WIIU_SCREEN_DRC;
+			Vector2 at;
+			if (window_to_screen(screen, cursor, at)) {
+				wiiu_gx2_bind_screen(screen);
+				draw_cursor(at);
+			}
+		}
+	}
 	wiiu_stats_frame();
 	if (wiiu_stats_visible() && blitted) {
 		for (int s = 0; s < 2; s++) {

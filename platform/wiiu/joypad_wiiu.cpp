@@ -172,6 +172,10 @@ void JoypadWiiU::set_connected(int p_device, int p_kind, const String &p_name, c
 	d.connected = true;
 	d.kind = p_kind;
 	input->joy_connection_changed(p_device, true, p_name, p_guid);
+	if (p_kind == KIND_GAMEPAD) {
+		input->set_joy_features(p_device, &gamepad_features);
+		input->set_joy_motion_sensors_rate(p_device, 60.0f); // One sample per frame.
+	}
 	// WHBLogPrintf("Joypad %d connected: %s", p_device, p_name.utf8().get_data());
 }
 
@@ -235,6 +239,7 @@ void JoypadWiiU::process_gamepad() {
 	gamepad_trigger = status.trigger;
 
 	process_touch(status.tpNormal);
+	process_motion(status);
 	wiiu_stats_set_battery(status.battery);
 
 	uint64_t buttons = map_buttons(status.hold, GAMEPAD_BUTTONS, COUNT(GAMEPAD_BUTTONS));
@@ -246,6 +251,35 @@ void JoypadWiiU::process_gamepad() {
 	// ZL/ZR are digital on the GamePad.
 	update_axis(GAMEPAD_DEVICE, JoyAxis::TRIGGER_LEFT, (status.hold & VPAD_BUTTON_ZL) ? 1.0f : 0.0f);
 	update_axis(GAMEPAD_DEVICE, JoyAxis::TRIGGER_RIGHT, (status.hold & VPAD_BUTTON_ZR) ? 1.0f : 0.0f);
+}
+
+// GamePad motion. VPAD gives acceleration in g and angular velocity in turns
+// per second (1.0 = 360 degrees/s), in the GamePad's own axes. Screen axes
+// below: x to the right of the screen, y to its top, z out of the screen.
+void JoypadWiiU::process_motion(const VPADStatus &p_status) {
+	static constexpr float GRAVITY = 9.80665f;
+	static constexpr float TURN = 6.28318531f;
+	const VPADVec3D &a = p_status.accelorometer.acc;
+	const VPADVec3D &g = p_status.gyro;
+	// VPAD's axes to screen axes (to be checked on hardware: render test /
+	// input test shows the values).
+	const Vector3 accel_screen = Vector3(a.x, a.z, -a.y) * GRAVITY; // m/s^2, gravity included.
+	const Vector3 gyro_screen = Vector3(g.x, g.z, -g.y) * TURN; // rad/s.
+	// Device sensors, as on a phone held like the GamePad screen.
+	gravity = gravity.lerp(accel_screen, 0.1f);
+	input->set_accelerometer(accel_screen);
+	input->set_gravity(gravity);
+	input->set_gyroscope(gyro_screen);
+	input->set_magnetometer(Vector3(p_status.mag.x, p_status.mag.y, p_status.mag.z));
+	// Joypad sensors, in SDL's gamepad axes (x right, y up out of the face,
+	// z toward the player, with the pad held flat): screen z is up, screen y
+	// points away from the player. Input negates the accelerometer it gets
+	// (SDL's sign); pass it the same way drivers/sdl does.
+	if (gamepad_features.motion_enabled) {
+		const Vector3 accel_sdl(accel_screen.x, accel_screen.z, -accel_screen.y);
+		const Vector3 gyro_sdl(gyro_screen.x, gyro_screen.z, -gyro_screen.y);
+		input->joy_motion_sensors(GAMEPAD_DEVICE, -accel_sdl, gyro_sdl);
+	}
 }
 
 void JoypadWiiU::process_touch(const VPADTouchData &p_touch) {

@@ -7,6 +7,7 @@ wiiu_files = [
     "godot_wiiu.cpp",
     "os_wiiu.cpp",
     "joypad_wiiu.cpp",
+    "keyboard_mouse_wiiu.cpp",
     "display_server_wiiu.cpp",
     "rasterizer_wiiu.cpp",
     "rasterizer_canvas_wiiu.cpp",
