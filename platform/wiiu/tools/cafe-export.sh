@@ -19,7 +19,9 @@
 #       --drc-image FILE   GamePad splash, fitted to 854x480 on black
 #       --boot-sound FILE  Sound played when the app starts from the Wii U Menu (any
 #                          audio ffmpeg reads, or a ready .btsnd; at most 20 s). Needs
-#                          the patched wuhbtool (platform/wiiu/tools/wuhbtool/).
+#                          the patched wuhbtool (platform/wiiu/tools/wuhbtool/). The Wii U
+#                          Menu only plays it with both splash images, so without
+#                          --tv-image/--drc-image they're made from the icon.
 #   -t, --template FILE    Cafe Godot template .rpx
 #                          (default: $CAFE_GODOT_HOME/templates/4.7.2/wiiu_template_debug.rpx)
 #   -u, --upload HOST      Upload to the Wii U at HOST (FTP, empty credentials)
@@ -184,6 +186,18 @@ if [[ -n "$tv" ]]; then
 fi
 if [[ -n "$drc" ]]; then
 	fit_image "$drc" "$work/drc.png" 854 480 && args+=("--drc-image=$work/drc.png")
+fi
+# Homebrew on Menu treats a bundle as a game (splash screens, boot sound) only
+# when it has both splash images: make them from the icon (centred on black).
+if [[ -n "$boot_sound" && ( -z "$tv" || -z "$drc" ) ]]; then
+	[[ -n "$icon" ]] || die "--boot-sound needs --tv-image and --drc-image (or an icon to make them from)"
+	splash_from_icon() { # dst W H SIZE
+		local filter=""
+		[[ "$(magick identify -format '%w' "$icon[0]" 2>/dev/null || echo 0)" -le 64 ]] && filter="-filter point"
+		magick "$icon[0]" $filter -resize "$4x$4" -background black -gravity center -extent "$2x$3" "PNG24:$1"
+	}
+	[[ -z "$tv" ]] && splash_from_icon "$work/tv.png" 1280 720 256 && args+=("--tv-image=$work/tv.png")
+	[[ -z "$drc" ]] && splash_from_icon "$work/drc.png" 854 480 192 && args+=("--drc-image=$work/drc.png")
 fi
 
 if [[ -n "$boot_sound" ]]; then
