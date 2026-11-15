@@ -832,7 +832,11 @@ void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_b
 				d.vs_regs = svs.words;
 				d.vs_reg_words = svs.count;
 				d.blend = WIIU_BLEND_DISABLED;
-				d.cull = WIIU_CULL_DISABLED; // Both sides cast (fewer light leaks).
+				// Reversed cull, as drivers/gles3 does for directional shadows:
+				// only faces turned away from the light go into the map, so lit
+				// faces don't shadow themselves (two-sided materials stay so).
+				const WiiUCull cull = item->material.shader.cull;
+				d.cull = cull == WIIU_CULL_BACK ? WIIU_CULL_FRONT : (cull == WIIU_CULL_FRONT ? WIIU_CULL_BACK : WIIU_CULL_DISABLED);
 				d.depth_test = true;
 				d.depth_write = true;
 				wiiu_gx2_draw_mesh(&d);
