@@ -8,10 +8,6 @@
 #include <vpad/input.h>
 #include <whb/log.h>
 
-// Log the GamePad's raw button bits whenever they change. Used to check which
-// buttons reach the app at all (the TV button may be taken by the system).
-static constexpr bool LOG_GAMEPAD_BITS = true;
-
 namespace {
 
 enum Kind {
@@ -237,12 +233,6 @@ void JoypadWiiU::process_gamepad() {
 	set_connected(GAMEPAD_DEVICE, KIND_GAMEPAD, kind_name(KIND_GAMEPAD), kind_guid(KIND_GAMEPAD));
 	gamepad_hold = status.hold;
 	gamepad_trigger = status.trigger;
-
-	// Debug: log the GamePad's raw button bits whenever they change.
-	// if (LOG_GAMEPAD_BITS && status.hold != gamepad_logged_hold) {
-	// 	WHBLogPrintf("[input] GamePad hold %08x", (unsigned)status.hold);
-	// 	gamepad_logged_hold = status.hold;
-	// }
 
 	process_touch(status.tpNormal);
 	wiiu_stats_set_battery(status.battery);

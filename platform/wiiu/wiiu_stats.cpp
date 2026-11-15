@@ -375,7 +375,7 @@ extern "C" void wiiu_stats_draw(WiiUScreen p_screen) {
 		quad(gx + (float)slot * bar_w, gy + gh - bh, MAX(bar_w - 1.0f, 1.0f), bh, r, g, b, 0.9f);
 	}
 	quad(gx, gy + gh * 0.5f, gw, MAX(1.0f, s), 1.0f, 1.0f, 1.0f, 0.5f);
-	wiiu_gx2_draw(WIIU_PRIM_TRIANGLES, nullptr, false, false, quads, n);
+	wiiu_gx2_draw(nullptr, WIIU_PRIM_TRIANGLES, nullptr, 0, false, quads, n);
 
 	float ty = y + PAD * s;
 	for (int i = 0; i < line_count; i++) {

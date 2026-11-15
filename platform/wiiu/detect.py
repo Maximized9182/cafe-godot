@@ -39,6 +39,11 @@ def get_opts():
 
     return [
         BoolVariable("wiiu_udp_log", "Also send engine output to wiiu-udplogserver over the network", True),
+        BoolVariable(
+            "wiiu_heap_check",
+            "Check newlib's heap on every malloc/free (crash_log.c; slow, for hunting heap overruns)",
+            False,
+        ),
         # Off by default: linking CafeGLSL (~5 MB of code) pushes .text past 32 MB,
         # which the Cafe OS loader can't run (the SCsub check below stops the build).
         ("cafeglsl_path", "CafeGLSL for Wii U (runtime GLSL compiler for canvas shaders); empty to build without", ""),
@@ -172,6 +177,8 @@ def configure(env: "SConsEnvironment"):
     )
     if env["wiiu_udp_log"]:
         env.Append(CPPDEFINES=["WIIU_UDP_LOG"])
+    if env["wiiu_heap_check"]:
+        env.Append(CPPDEFINES=["WIIU_HEAP_CHECK"])
 
     # Linked last so the platform's own objects can resolve against them.
     # CafeGLSL (https://github.com/Exzap/CafeGLSL, MIT): compiles GLSL to GX2

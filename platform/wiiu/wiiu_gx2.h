@@ -95,39 +95,52 @@ void wiiu_gx2_program_free(WiiUProgram *p_program);
 int32_t wiiu_gx2_program_uniform_offset(const WiiUProgram *p_program, const char *p_name);
 int32_t wiiu_gx2_program_sampler_location(const WiiUProgram *p_program, const char *p_name);
 
-// A canvas_item shader program for the following wiiu_gx2_draw calls (NULL:
-// the built-in shaders). p_regs: the pixel uniform registers from word 0
-// (material parameters); the draw adds the built-ins it knows (time,
-// color_texture_pixel_size, screen_pixel_size). The draw's texture goes to
-// the color_texture sampler, p_textures to theirs. The pointers must stay
-// valid until the draws are done; whoever sets a program sets NULL afterwards.
+// A texture a canvas_item shader samples besides the draw's own (sampler2D
+// uniforms): goes to sampler location `location` of the program.
 typedef struct {
 	WiiUTexture *texture;
 	int32_t location;
 	int filter; // WIIU_FILTER_* bits.
 	bool repeat;
 } WiiUProgramTexture;
-void wiiu_gx2_set_program(WiiUProgram *p_program, const uint32_t *p_regs, uint32_t p_reg_words,
-		const WiiUProgramTexture *p_textures, uint32_t p_texture_count, float p_time);
 // 1x1 textures for shader texture defaults (hint_default_black/transparent).
 WiiUTexture *wiiu_gx2_black_texture(void);
 WiiUTexture *wiiu_gx2_transparent_texture(void);
 
-// MSDF text for the following wiiu_gx2_draw calls: the texture is a
-// multichannel signed distance field (Godot's FontFile MSDF mode). p_px_range
-// 0 turns it off; p_outline is the outline size in pixels (0: fill).
-// p_px_size: screen pixels per distance-field unit (sharpness).
-void wiiu_gx2_set_msdf(float p_px_range, float p_outline, float p_px_size);
-// Blend for the following wiiu_gx2_draw calls (WIIU_BLEND_MIX by default).
-// Whoever sets another mode sets it back to mix afterwards.
-void wiiu_gx2_set_blend(WiiUBlend p_blend);
 // Texture filter for wiiu_gx2_draw: bit 0 linear (else nearest), bit 1 use the
 // texture's mipmaps (trilinear when linear).
 #define WIIU_FILTER_LINEAR 1
 #define WIIU_FILTER_MIPMAPS 2
-// Draws p_count vertices (pixel coordinates of the bound target).
-void wiiu_gx2_draw(WiiUPrimitive p_primitive, WiiUTexture *p_texture, int p_filter, bool p_repeat,
-		const WiiUVertex *p_vertices, uint32_t p_count);
+
+// How wiiu_gx2_draw shades: blend mode, MSDF text, canvas_item shader.
+// WIIU_DRAW_STATE_DEFAULT (or passing NULL) is a plain textured "mix" draw.
+typedef struct {
+	WiiUBlend blend;
+	// MSDF text: the texture is a multichannel signed distance field (Godot's
+	// FontFile MSDF mode). msdf_px_range 0 turns it off; msdf_outline is the
+	// outline size in pixels (0: fill); msdf_px_size is screen pixels per
+	// distance-field unit (sharpness).
+	float msdf_px_range;
+	float msdf_outline;
+	float msdf_px_size;
+	// A canvas_item shader (NULL: the built-in shaders). regs: its pixel
+	// uniform registers from word 0 (material parameters); the draw adds the
+	// built-ins (time, color_texture_pixel_size, screen_pixel_size). The draw's
+	// texture goes to the color_texture sampler, textures to theirs. Takes
+	// precedence over MSDF.
+	WiiUProgram *program;
+	const uint32_t *regs;
+	uint32_t reg_words;
+	const WiiUProgramTexture *textures;
+	uint32_t texture_count;
+	float time;
+} WiiUDrawState;
+#define WIIU_DRAW_STATE_DEFAULT { WIIU_BLEND_MIX, 0.0f, 0.0f, 1.0f, NULL, NULL, 0, NULL, 0, 0.0f }
+
+// Draws p_count vertices (pixel coordinates of the bound target). p_state may
+// be NULL (WIIU_DRAW_STATE_DEFAULT).
+void wiiu_gx2_draw(const WiiUDrawState *p_state, WiiUPrimitive p_primitive, WiiUTexture *p_texture, int p_filter,
+		bool p_repeat, const WiiUVertex *p_vertices, uint32_t p_count);
 
 // Numbers for the stats overlay (wiiu_stats.cpp). Draws/vertices are from the
 // last finished frame; GPU time is the frame's span on the GPU, two frames late.

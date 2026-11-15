@@ -226,5 +226,5 @@ extern "C" void wiiu_sysfont_draw(float p_x, float p_y, float p_px, const char *
 		}
 		pen += g->advance * scale;
 	}
-	wiiu_gx2_draw(WIIU_PRIM_TRIANGLES, atlas, true, false, v, n);
+	wiiu_gx2_draw(nullptr, WIIU_PRIM_TRIANGLES, atlas, WIIU_FILTER_LINEAR, false, v, n);
 }

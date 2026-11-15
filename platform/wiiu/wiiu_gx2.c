@@ -63,11 +63,6 @@ static uint64_t *gpu_ts = NULL; // [slot][top, bottom]
 static uint32_t gpu_ts_frame = 0;
 static float stat_gpu_ms = 0.0f;
 static float stat_flip_wait_ms = 0.0f;
-static WiiUBlend draw_blend = WIIU_BLEND_MIX;
-
-void wiiu_gx2_set_blend(WiiUBlend p_blend) {
-	draw_blend = p_blend;
-}
 // Draws since the last GX2Flush. GX2 keeps commands in its buffer until a
 // flush, so without these the GPU only started on a frame at present time and
 // CPU + GPU time added up (7.5 + 11.4 ms: every vblank missed, 30 fps).
@@ -132,7 +127,7 @@ static WHBGfxShaderGroup draw_shader;
 // ---------------------------------------------------------------------------
 
 // CafeGLSL is loaded at runtime from cafeglsl.rpl (built from the static
-// library as its own module, see /home/user/wiiu/cafeglsl-rpl): linked into
+// library as its own module, see platform/wiiu/cafeglsl_rpl): linked into
 // the .rpx it pushed .text past 32 MB. The calls go through these pointers.
 #include <coreinit/dynload.h>
 
@@ -179,17 +174,55 @@ static bool glsl_load(void) {
 	return true;
 }
 
+// A register-mode shader pair as wiiu_gx2_draw binds it (MSDF text, canvas_item
+// shaders): the draw texture's sampler and the register offsets of the
+// uniforms the draw fills in (-1: the shader doesn't use it).
+typedef struct {
+	GX2FetchShader *fetch;
+	GX2VertexShader *vs;
+	GX2PixelShader *ps;
+	int32_t texture_location;
+	int32_t time_offset;
+	int32_t texture_pixel_size_offset;
+	int32_t screen_pixel_size_offset;
+	int32_t msdf_params_offset;
+} RegPipeline;
+
+static int32_t ps_uniform_offset(const GX2PixelShader *p_ps, const char *p_name) {
+	GX2UniformVar *var = p_ps ? GX2GetPixelUniformVar((GX2PixelShader *)p_ps, p_name) : NULL;
+	return var ? (int32_t)var->offset : -1;
+}
+
+static int32_t ps_sampler_location(const GX2PixelShader *p_ps, const char *p_name) {
+	if (p_ps == NULL) {
+		return -1;
+	}
+	for (uint32_t i = 0; i < p_ps->samplerVarCount; i++) {
+		if (strcmp(p_ps->samplerVars[i].name, p_name) == 0) {
+			return (int32_t)p_ps->samplerVars[i].location;
+		}
+	}
+	return -1;
+}
+
+static void pipeline_init(RegPipeline *r_pipe, GX2FetchShader *p_fetch, GX2VertexShader *p_vs, GX2PixelShader *p_ps,
+		const char *p_texture_name) {
+	r_pipe->fetch = p_fetch;
+	r_pipe->vs = p_vs;
+	r_pipe->ps = p_ps;
+	r_pipe->texture_location = ps_sampler_location(p_ps, p_texture_name);
+	r_pipe->time_offset = ps_uniform_offset(p_ps, "time");
+	r_pipe->texture_pixel_size_offset = ps_uniform_offset(p_ps, "color_texture_pixel_size");
+	r_pipe->screen_pixel_size_offset = ps_uniform_offset(p_ps, "screen_pixel_size");
+	r_pipe->msdf_params_offset = ps_uniform_offset(p_ps, "params");
+}
+
 struct WiiUProgram {
 	GX2VertexShader *vs;
 	GX2PixelShader *ps;
 	GX2FetchShader fetch;
 	uint8_t *fetch_program;
-	// Canvas shader built-ins (-1: not used): the draw texture's sampler and
-	// the register offsets of the uniforms wiiu_gx2_draw fills in.
-	int32_t color_texture_location;
-	int32_t time_offset;
-	int32_t texture_pixel_size_offset;
-	int32_t screen_pixel_size_offset;
+	RegPipeline pipe;
 };
 
 bool wiiu_gx2_glsl_available(void) {
@@ -273,114 +306,22 @@ WiiUProgram *wiiu_gx2_program_compile(const char *p_vs, const char *p_ps, char *
 	GX2InitFetchShaderEx(&p->fetch, p->fetch_program, count, attribs, GX2_FETCH_SHADER_TESSELLATION_NONE,
 			GX2_TESSELLATION_MODE_DISCRETE);
 	GX2Invalidate(GX2_INVALIDATE_MODE_CPU_SHADER, p->fetch_program, size);
-	p->color_texture_location = wiiu_gx2_program_sampler_location(p, "color_texture");
-	p->time_offset = wiiu_gx2_program_uniform_offset(p, "time");
-	p->texture_pixel_size_offset = wiiu_gx2_program_uniform_offset(p, "color_texture_pixel_size");
-	p->screen_pixel_size_offset = wiiu_gx2_program_uniform_offset(p, "screen_pixel_size");
+	pipeline_init(&p->pipe, &p->fetch, p->vs, p->ps, "color_texture");
 	return p;
 }
 
 int32_t wiiu_gx2_program_uniform_offset(const WiiUProgram *p_program, const char *p_name) {
-	if (p_program == NULL || p_program->ps == NULL) {
-		return -1;
-	}
-	GX2UniformVar *var = GX2GetPixelUniformVar(p_program->ps, p_name);
-	return var ? (int32_t)var->offset : -1;
+	return p_program ? ps_uniform_offset(p_program->ps, p_name) : -1;
 }
 
 int32_t wiiu_gx2_program_sampler_location(const WiiUProgram *p_program, const char *p_name) {
-	if (p_program == NULL || p_program->ps == NULL) {
-		return -1;
-	}
-	for (uint32_t i = 0; i < p_program->ps->samplerVarCount; i++) {
-		if (strcmp(p_program->ps->samplerVars[i].name, p_name) == 0) {
-			return (int32_t)p_program->ps->samplerVars[i].location;
-		}
-	}
-	return -1;
+	return p_program ? ps_sampler_location(p_program->ps, p_name) : -1;
 }
 
-// MSDF text (shaders/msdf_fsh.glsl). Compiled at startup with CafeGLSL when
-// available, else the precompiled shaders/msdf.gsh.
-static const char *msdf_vs_glsl =
-	"#version 330\n"
-	"#extension GL_ARB_separate_shader_objects : enable\n"
-	"\n"
-	"// Vertex shader for MSDF text. The engine sends vertices already in clip\n"
-	"// space, so no matrices: this pair uses uniform registers, not blocks.\n"
-	"layout(location = 0) in vec3 VertexPosition;\n"
-	"layout(location = 1) in vec2 VertexTexCoord;\n"
-	"layout(location = 2) in vec4 VertexColor;\n"
-	"\n"
-	"layout(location = 0) out vec4 VaryingColor;\n"
-	"layout(location = 1) out vec2 VaryingTexCoord;\n"
-	"\n"
-	"void main()\n"
-	"{\n"
-	"    gl_Position = vec4(VertexPosition, 1.0);\n"
-	"    VaryingColor = VertexColor;\n"
-	"    VaryingTexCoord = VertexTexCoord;\n"
-	"}\n";
-static const char *msdf_ps_glsl =
-	"#version 330\n"
-	"#extension GL_ARB_separate_shader_objects : enable\n"
-	"\n"
-	"// MSDF text (Godot's FontFile multichannel_signed_distance_field), ported from\n"
-	"// drivers/gles3/shaders/canvas.glsl.\n"
-	"layout (location = 0) in vec4 VertexColor;\n"
-	"layout (location = 1) in vec2 VertexTexCoord;\n"
-	"\n"
-	"layout (location = 0) out vec4 VaryingColor;\n"
-	"\n"
-	"uniform sampler2D texture0;\n"
-	"\n"
-	"// x: px_range, y: outline size, z: px_size (screen pixels per distance-field\n"
-	"// unit, computed on the CPU from the glyph's on-screen scale). A loose\n"
-	"// uniform (register mode): a uniform block in memory read as zeros on the\n"
-	"// console (fills half transparent), while Cemu showed it right.\n"
-	"uniform vec4 params;\n"
-	"\n"
-	"float msdf_median(float r, float g, float b)\n"
-	"{\n"
-	"    return max(min(r, g), min(max(r, g), b));\n"
-	"}\n"
-	"\n"
-	"void main()\n"
-	"{\n"
-	"    vec4 msdf_sample = texture(texture0, VertexTexCoord);\n"
-	"    float px_range = params.x;\n"
-	"    float outline_thickness = params.y;\n"
-	"    float px_size = max(params.z, 1.0);\n"
-	"    float d = msdf_median(msdf_sample.r, msdf_sample.g, msdf_sample.b);\n"
-	"    float a;\n"
-	"    if (outline_thickness > 0.0) {\n"
-	"        float cr = clamp(outline_thickness, 0.0, (px_range / 2.0) - 1.0) / px_range;\n"
-	"        d = min(d, msdf_sample.a);\n"
-	"        a = clamp((d - 0.5 + cr) * px_size, 0.0, 1.0);\n"
-	"    } else {\n"
-	"        a = clamp((d - 0.5) * px_size + 0.5, 0.0, 1.0);\n"
-	"    }\n"
-	"    VaryingColor = vec4(VertexColor.rgb, VertexColor.a * a);\n"
-	"}\n";
-
-static WiiUProgram *msdf_program = NULL;
-static GX2FetchShader *msdf_fetch = NULL;
-static GX2VertexShader *msdf_vs = NULL;
-static GX2PixelShader *msdf_ps = NULL;
+// MSDF text (shaders/msdf_fsh.glsl, precompiled to msdf.gsh in register mode).
 static WHBGfxShaderGroup msdf_shader;
+static RegPipeline msdf_pipe;
 static bool msdf_loaded = false;
-// Register mode (uniform registers, not blocks): see shaders/msdf_fsh.glsl.
-static uint32_t msdf_params_offset = 0;
-static uint32_t msdf_sampler_location = 0;
-static float msdf_px_range = 0.0f;
-static float msdf_outline = 0.0f;
-static float msdf_px_size = 1.0f;
-
-void wiiu_gx2_set_msdf(float p_px_range, float p_outline, float p_px_size) {
-	msdf_px_range = p_px_range;
-	msdf_outline = p_outline;
-	msdf_px_size = p_px_size;
-}
 static uint32_t draw_uniform_location = 0;
 static uint32_t draw_sampler_location = 0;
 static uint32_t *draw_uniforms = NULL; // 32 words, byte-swapped
@@ -389,23 +330,6 @@ static WiiUTexture *draw_white = NULL;
 static WiiUTexture *draw_black = NULL;
 static WiiUTexture *draw_transparent = NULL;
 
-// Canvas shader program for the next draws (wiiu_gx2_set_program).
-static WiiUProgram *draw_program = NULL;
-static const uint32_t *draw_program_regs = NULL;
-static uint32_t draw_program_reg_words = 0;
-static const WiiUProgramTexture *draw_program_textures = NULL;
-static uint32_t draw_program_texture_count = 0;
-static float draw_program_time = 0.0f;
-
-void wiiu_gx2_set_program(WiiUProgram *p_program, const uint32_t *p_regs, uint32_t p_reg_words,
-		const WiiUProgramTexture *p_textures, uint32_t p_texture_count, float p_time) {
-	draw_program = p_program;
-	draw_program_regs = p_regs;
-	draw_program_reg_words = p_reg_words;
-	draw_program_textures = p_textures;
-	draw_program_texture_count = p_texture_count;
-	draw_program_time = p_time;
-}
 static WiiUTexture *draw_font = NULL; // FONT_COLUMNS glyphs per row
 static WiiUTexture *saved_frame[2] = { NULL, NULL }; // [WiiUScreen]
 
@@ -845,32 +769,9 @@ static bool draw_init(void) {
 		WHBGfxInitShaderAttribute(&msdf_shader, "VertexTexCoord", 0, 12, GX2_ATTRIB_FORMAT_FLOAT_32_32);
 		WHBGfxInitShaderAttribute(&msdf_shader, "VertexColor", 0, 20, GX2_ATTRIB_FORMAT_FLOAT_32_32_32_32);
 		WHBGfxInitFetchShader(&msdf_shader);
-		msdf_fetch = &msdf_shader.fetchShader;
-		msdf_vs = msdf_shader.vertexShader;
-		msdf_ps = msdf_shader.pixelShader;
-		{ // Runtime compile check through cafeglsl.rpl (canvas shaders use the same path).
-		char log[512];
-		const OSTime t0 = OSGetSystemTime();
-		msdf_program = wiiu_gx2_program_compile(msdf_vs_glsl, msdf_ps_glsl, log, sizeof(log));
-		const uint32_t ms = (uint32_t)OSTicksToMilliseconds(OSGetSystemTime() - t0);
-		if (msdf_program) {
-			msdf_fetch = &msdf_program->fetch;
-			msdf_vs = msdf_program->vs;
-			msdf_ps = msdf_program->ps;
-			WHBLogPrintf("[glsl] MSDF shaders compiled at runtime in %u ms (vs %u bytes, ps %u bytes)", (unsigned)ms,
-					(unsigned)msdf_vs->size, (unsigned)msdf_ps->size);
-		} else {
-			WHBLogPrintf("[glsl] runtime compile failed after %u ms, using msdf.gsh: %s", (unsigned)ms, log);
-		}
-		}
-		GX2UniformVar *params_var = GX2GetPixelUniformVar(msdf_ps, "params");
-		if (params_var != NULL) {
-			msdf_params_offset = params_var->offset;
-			for (uint32_t i = 0; i < msdf_ps->samplerVarCount; i++) {
-				if (strcmp(msdf_ps->samplerVars[i].name, "texture0") == 0) {
-					msdf_sampler_location = msdf_ps->samplerVars[i].location;
-				}
-			}
+		pipeline_init(&msdf_pipe, &msdf_shader.fetchShader, msdf_shader.vertexShader, msdf_shader.pixelShader,
+				"texture0");
+		if (msdf_pipe.msdf_params_offset >= 0) {
 			msdf_loaded = true;
 		} else {
 			WHBLogPrint("[gx2] msdf.gsh has no params uniform; MSDF text draws unfiltered");
@@ -1073,8 +974,22 @@ void wiiu_gx2_set_scissor(int32_t p_x, int32_t p_y, int32_t p_width, int32_t p_h
 	GX2SetScissor((uint32_t)scissor_x, (uint32_t)scissor_y, (uint32_t)scissor_w, (uint32_t)scissor_h);
 }
 
-void wiiu_gx2_draw(WiiUPrimitive p_primitive, WiiUTexture *p_texture, int p_filter, bool p_repeat,
-		const WiiUVertex *p_vertices, uint32_t p_count) {
+// Puts v[0..3] at register word p_offset (skipped if the shader doesn't have
+// the uniform), growing the used range.
+static void put_reg(uint32_t *r_regs, uint32_t p_max_words, uint32_t *r_words, int32_t p_offset, const float p_v[4]) {
+	if (p_offset < 0 || (uint32_t)p_offset + 4 > p_max_words) {
+		return;
+	}
+	while (*r_words < (uint32_t)p_offset + 4) {
+		r_regs[(*r_words)++] = 0;
+	}
+	memcpy(&r_regs[p_offset], p_v, 4 * sizeof(float));
+}
+
+void wiiu_gx2_draw(const WiiUDrawState *p_state, WiiUPrimitive p_primitive, WiiUTexture *p_texture, int p_filter,
+		bool p_repeat, const WiiUVertex *p_vertices, uint32_t p_count) {
+	static const WiiUDrawState default_state = WIIU_DRAW_STATE_DEFAULT;
+	const WiiUDrawState *st = p_state ? p_state : &default_state;
 	if (p_count == 0 || target_cb == NULL || !wiiu_gx2_can_draw() || scissor_w == 0 || scissor_h == 0) {
 		return;
 	}
@@ -1102,47 +1017,49 @@ void wiiu_gx2_draw(WiiUPrimitive p_primitive, WiiUTexture *p_texture, int p_filt
 	arena_used += (bytes + GX2_VERTEX_BUFFER_ALIGNMENT - 1) & ~(uint32_t)(GX2_VERTEX_BUFFER_ALIGNMENT - 1);
 
 	WiiUTexture *texture = p_texture ? p_texture : draw_white;
-	if (draw_program != NULL) {
-		// A canvas_item shader (rasterizer_wiiu.cpp), in register mode: the
-		// material's registers plus the built-ins, all in the command buffer.
-		WiiUProgram *prog = draw_program;
+	const GX2Sampler *sampler = &draw_samplers[p_filter & 3][p_repeat ? 1 : 0];
+	const RegPipeline *pipe = NULL;
+	if (st->program != NULL) {
+		pipe = &st->program->pipe;
+	} else if (msdf_loaded && st->msdf_px_range > 0.0f && p_texture != NULL) {
+		pipe = &msdf_pipe;
+	}
+	if (pipe != NULL) {
+		// Register mode: the uniforms go into the command buffer itself (a
+		// uniform block in memory read as zeros on the console).
 		GX2SetShaderMode(GX2_SHADER_MODE_UNIFORM_REGISTER);
-		GX2SetFetchShader(&prog->fetch);
-		GX2SetVertexShader(prog->vs);
-		GX2SetPixelShader(prog->ps);
+		GX2SetFetchShader(pipe->fetch);
+		GX2SetVertexShader(pipe->vs);
+		GX2SetPixelShader(pipe->ps);
 		static uint32_t regs[256 * 4];
 		const uint32_t max_words = (uint32_t)(sizeof(regs) / sizeof(regs[0]));
-		uint32_t words = draw_program_reg_words < max_words ? draw_program_reg_words : max_words;
-		if (words > 0 && draw_program_regs != NULL) {
-			memcpy(regs, draw_program_regs, words * 4);
+		uint32_t words = 0;
+		if (st->program != NULL && st->regs != NULL) {
+			words = st->reg_words < max_words ? st->reg_words : max_words;
+			memcpy(regs, st->regs, words * 4);
 		}
-		const float builtins[3][2] = {
-			{ draw_program_time, 0.0f },
-			{ 1.0f / (float)(texture->width ? texture->width : 1), 1.0f / (float)(texture->height ? texture->height : 1) },
-			{ 1.0f / (float)target_width, 1.0f / (float)target_height },
-		};
-		const int32_t offsets[3] = { prog->time_offset, prog->texture_pixel_size_offset, prog->screen_pixel_size_offset };
-		for (int i = 0; i < 3; i++) {
-			const int32_t o = offsets[i];
-			if (o < 0 || (uint32_t)o + 4 > max_words) {
-				continue;
-			}
-			while (words < (uint32_t)o + 4) {
-				regs[words++] = 0;
-			}
-			memcpy(&regs[o], builtins[i], sizeof(builtins[i]));
+		const float time[4] = { st->time, 0.0f, 0.0f, 0.0f };
+		const float tps[4] = { 1.0f / (float)(texture->width ? texture->width : 1),
+			1.0f / (float)(texture->height ? texture->height : 1), 0.0f, 0.0f };
+		const float sps[4] = { 1.0f / (float)target_width, 1.0f / (float)target_height, 0.0f, 0.0f };
+		const float msdf[4] = { st->msdf_px_range, st->msdf_outline, st->msdf_px_size, 0.0f };
+		put_reg(regs, max_words, &words, pipe->time_offset, time);
+		put_reg(regs, max_words, &words, pipe->texture_pixel_size_offset, tps);
+		put_reg(regs, max_words, &words, pipe->screen_pixel_size_offset, sps);
+		if (pipe == &msdf_pipe) {
+			put_reg(regs, max_words, &words, pipe->msdf_params_offset, msdf);
 		}
 		words = (words + 3) & ~3u;
 		if (words > 0) {
 			GX2SetPixelUniformReg(0, words, (const void *)regs);
 		}
 		GX2SetAttribBuffer(0, bytes, (uint32_t)sizeof(WiiUVertex), out);
-		if (prog->color_texture_location >= 0) {
-			GX2SetPixelTexture(&texture->texture, (uint32_t)prog->color_texture_location);
-			GX2SetPixelSampler(&draw_samplers[p_filter & 3][p_repeat ? 1 : 0], (uint32_t)prog->color_texture_location);
+		if (pipe->texture_location >= 0) {
+			GX2SetPixelTexture(&texture->texture, (uint32_t)pipe->texture_location);
+			GX2SetPixelSampler(sampler, (uint32_t)pipe->texture_location);
 		}
-		for (uint32_t i = 0; i < draw_program_texture_count; i++) {
-			const WiiUProgramTexture *t = &draw_program_textures[i];
+		for (uint32_t i = 0; st->program != NULL && i < st->texture_count; i++) {
+			const WiiUProgramTexture *t = &st->textures[i];
 			if (t->location < 0) {
 				continue;
 			}
@@ -1150,17 +1067,6 @@ void wiiu_gx2_draw(WiiUPrimitive p_primitive, WiiUTexture *p_texture, int p_filt
 			GX2SetPixelTexture(&tex->texture, (uint32_t)t->location);
 			GX2SetPixelSampler(&draw_samplers[t->filter & 3][t->repeat ? 1 : 0], (uint32_t)t->location);
 		}
-	} else if (msdf_loaded && msdf_px_range > 0.0f && p_texture != NULL) {
-		// Register mode: the parameters go into the command buffer itself.
-		GX2SetShaderMode(GX2_SHADER_MODE_UNIFORM_REGISTER);
-		const float values[4] = { msdf_px_range, msdf_outline, msdf_px_size, 0.0f };
-		GX2SetFetchShader(msdf_fetch);
-		GX2SetVertexShader(msdf_vs);
-		GX2SetPixelShader(msdf_ps);
-		GX2SetPixelUniformReg(msdf_params_offset, 4, (const void *)values);
-		GX2SetAttribBuffer(0, bytes, (uint32_t)sizeof(WiiUVertex), out);
-		GX2SetPixelTexture(&texture->texture, msdf_sampler_location);
-		GX2SetPixelSampler(&draw_samplers[p_filter & 3][p_repeat ? 1 : 0], msdf_sampler_location);
 	} else {
 		GX2SetShaderMode(GX2_SHADER_MODE_UNIFORM_BLOCK);
 		GX2SetFetchShader(&draw_shader.fetchShader);
@@ -1169,8 +1075,9 @@ void wiiu_gx2_draw(WiiUPrimitive p_primitive, WiiUTexture *p_texture, int p_filt
 		GX2SetVertexUniformBlock(draw_uniform_location, 32 * 4, draw_uniforms);
 		GX2SetAttribBuffer(0, bytes, (uint32_t)sizeof(WiiUVertex), out);
 		GX2SetPixelTexture(&texture->texture, draw_sampler_location);
-		GX2SetPixelSampler(&draw_samplers[p_filter & 3][p_repeat ? 1 : 0], draw_sampler_location);
+		GX2SetPixelSampler(sampler, draw_sampler_location);
 	}
+	const WiiUBlend draw_blend = st->blend;
 	GX2SetDepthOnlyControl(FALSE, FALSE, GX2_COMPARE_FUNC_ALWAYS);
 	GX2SetCullOnlyControl(GX2_FRONT_FACE_CCW, FALSE, FALSE);
 	GX2SetColorControl(GX2_LOGIC_OP_COPY, draw_blend == WIIU_BLEND_DISABLED ? 0x00 : 0xFF, FALSE, TRUE);
@@ -1239,7 +1146,7 @@ static void push_quad(WiiUVertex *v, float x0, float y0, float x1, float y1, flo
 void wiiu_gx2_draw_rect(float p_x, float p_y, float p_w, float p_h, float p_r, float p_g, float p_b, float p_a) {
 	WiiUVertex v[6];
 	push_quad(v, p_x, p_y, p_x + p_w, p_y + p_h, 0, 0, 1, 1, p_r, p_g, p_b, p_a);
-	wiiu_gx2_draw(WIIU_PRIM_TRIANGLES, draw_white, false, false, v, 6);
+	wiiu_gx2_draw(NULL, WIIU_PRIM_TRIANGLES, draw_white, false, false, v, 6);
 }
 
 void wiiu_gx2_draw_text(float p_x, float p_y, const char *p_text, float p_r, float p_g, float p_b, float p_a) {
@@ -1267,7 +1174,7 @@ void wiiu_gx2_draw_text(float p_x, float p_y, const char *p_text, float p_r, flo
 				p_r, p_g, p_b, p_a);
 		n += 6;
 	}
-	wiiu_gx2_draw(WIIU_PRIM_TRIANGLES, draw_font, false, false, v, n);
+	wiiu_gx2_draw(NULL, WIIU_PRIM_TRIANGLES, draw_font, false, false, v, n);
 }
 
 bool wiiu_gx2_save_frame(void) {
@@ -1310,7 +1217,7 @@ void wiiu_gx2_draw_saved_frame(WiiUScreen p_screen) {
 	}
 	WiiUVertex v[6];
 	push_quad(v, 0, 0, (float)target_width, (float)target_height, 0, 0, 1, 1, 1, 1, 1, 1);
-	wiiu_gx2_draw(WIIU_PRIM_TRIANGLES, t, false, false, v, 6);
+	wiiu_gx2_draw(NULL, WIIU_PRIM_TRIANGLES, t, false, false, v, 6);
 }
 
 void wiiu_gx2_frame_begin(void) {

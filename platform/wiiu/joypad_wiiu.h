@@ -52,7 +52,6 @@ private:
 
 	uint32_t gamepad_hold = 0;
 	uint32_t gamepad_trigger = 0;
-	uint32_t gamepad_logged_hold = 0;
 
 	void set_connected(int p_device, int p_kind, const String &p_name, const String &p_guid);
 	void set_disconnected(int p_device);

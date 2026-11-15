@@ -25,8 +25,11 @@ wiiu_files = [
 # combine with the -s that SConstruct adds for builds without debug symbols.
 env["LINKFLAGS"] = [flag for flag in env["LINKFLAGS"] if flag != "-s"]
 
-# Route abort(), allocations and sbrk through crash_log.c (crash screen, heap logging).
-env.Append(LINKFLAGS=["-Wl,--wrap=abort,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free,--wrap=_sbrk_r", "-Wl,-Map=bin/godot.wiiu.map"])
+# Route abort() and sbrk through crash_log.c (crash screen, the stats overlay's
+# heap size); with wiiu_heap_check=yes, every allocation too (heap check).
+env.Append(LINKFLAGS=["-Wl,--wrap=abort,--wrap=_sbrk_r", "-Wl,-Map=bin/godot.wiiu.map"])
+if env["wiiu_heap_check"]:
+    env.Append(LINKFLAGS=["-Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free"])
 
 # Embed the compiled GX2 shaders (shaders/*.gsh) as C arrays:
 # wiiu_shader_<name>[] and wiiu_shader_<name>_size.

@@ -954,7 +954,7 @@ static uint32_t register_count(ShaderLanguage::DataType p_type) {
 }
 
 MaterialStorageWiiU::CanvasProgram *MaterialStorageWiiU::_compile_canvas_program(RID p_shader, const String &p_code) {
-	if (!p_code.contains("canvas_item") || !wiiu_gx2_glsl_available()) {
+	if (!p_code.contains("canvas_item")) {
 		return nullptr;
 	}
 	_init_canvas_compiler();
@@ -1009,6 +1009,10 @@ MaterialStorageWiiU::CanvasProgram *MaterialStorageWiiU::_compile_canvas_program
 	}
 	if (!unsupported.is_empty()) {
 		print_line(vformat("[shader] %s: %s isn't supported yet; drawing without the shader", path, unsupported));
+		return nullptr;
+	}
+	// Loads cafeglsl.rpl on the first shader that needs it (not at start-up).
+	if (!wiiu_gx2_glsl_available()) {
 		return nullptr;
 	}
 
@@ -1433,27 +1437,19 @@ void RasterizerCanvasWiiU::_flush() {
 	static constexpr uint32_t MAX_DRAW_VERTICES = 6 * 8192;
 	for (uint32_t start = 0; start < batch.size(); start += MAX_DRAW_VERTICES) {
 		const uint32_t count = MIN(MAX_DRAW_VERTICES, batch.size() - start);
-		wiiu_gx2_set_blend(batch_blend);
-		wiiu_gx2_set_msdf(batch_msdf_range, batch_msdf_outline, batch_msdf_px_size);
-		WiiUProgram *program = nullptr;
+		WiiUDrawState state = WIIU_DRAW_STATE_DEFAULT;
+		state.blend = batch_blend;
+		state.msdf_px_range = batch_msdf_range;
+		state.msdf_outline = batch_msdf_outline;
+		state.msdf_px_size = batch_msdf_px_size;
 		if (batch_material.is_valid()) {
 			MaterialStorageWiiU *mats = MaterialStorageWiiU::get_wiiu_singleton();
-			const uint32_t *regs = nullptr;
-			uint32_t reg_words = 0;
-			const WiiUProgramTexture *textures = nullptr;
-			uint32_t texture_count = 0;
-			program = mats ? mats->get_material_program(batch_material, batch_linear, batch_repeat, regs, reg_words, textures, texture_count) : nullptr;
-			if (program) {
-				const double time = RSG::rasterizer ? RSG::rasterizer->get_total_time() : 0.0;
-				wiiu_gx2_set_program(program, regs, reg_words, textures, texture_count, (float)time);
+			state.program = mats ? mats->get_material_program(batch_material, batch_linear, batch_repeat, state.regs, state.reg_words, state.textures, state.texture_count) : nullptr;
+			if (state.program) {
+				state.time = RSG::rasterizer ? (float)RSG::rasterizer->get_total_time() : 0.0f;
 			}
 		}
-		wiiu_gx2_draw(batch_primitive, batch_texture, batch_linear, batch_repeat, batch.ptr() + start, count);
-		if (program) {
-			wiiu_gx2_set_program(nullptr, nullptr, 0, nullptr, 0, 0.0f);
-		}
-		wiiu_gx2_set_msdf(0.0f, 0.0f, 1.0f);
-		wiiu_gx2_set_blend(WIIU_BLEND_MIX);
+		wiiu_gx2_draw(&state, batch_primitive, batch_texture, batch_linear, batch_repeat, batch.ptr() + start, count);
 	}
 	batch.clear();
 }

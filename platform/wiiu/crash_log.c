@@ -108,10 +108,18 @@ static void log_static(const char *fmt, ...) {
 // Heap diagnostics
 // ---------------------------------------------------------------------------
 
+extern void *__real__sbrk_r(struct _reent *reent, ptrdiff_t incr);
+
+static void log_address(const char *label, uint32_t addr);
+static void log_backtrace(uintptr_t sp);
+
+// The heap check below wraps every malloc/calloc/realloc/free with a lock,
+// sbrk(0) and stack walks, which slows down the whole engine. It's only built
+// with `wiiu_heap_check=yes` (detect.py), which also adds the --wrap flags.
+#ifdef WIIU_HEAP_CHECK
 extern void *__real_malloc(size_t size);
 extern void *__real_calloc(size_t count, size_t size);
 extern void *__real_realloc(void *ptr, size_t size);
-extern void *__real__sbrk_r(struct _reent *reent, ptrdiff_t incr);
 
 // newlib's mallocr state: the top chunk (the one malloc grows with sbrk) is
 // bin_at(0)->fd, i.e. __malloc_av_[2] (av_[0] and av_[1] are padding). Before
@@ -123,9 +131,6 @@ extern unsigned long __malloc_top_pad;
 extern unsigned long __malloc_max_sbrked_mem;
 
 #define LARGE_ALLOC_BYTES (1024 * 1024)
-
-static void log_address(const char *label, uint32_t addr);
-static void log_backtrace(uintptr_t sp);
 
 // Heap consistency check. In newlib's mallocr the top chunk always ends at
 // the program break (top + size == sbrk(0)) unless someone else moved the
@@ -400,6 +405,7 @@ void *__wrap_realloc(void *old_ptr, size_t size) {
 	}
 	return ptr;
 }
+#endif // WIIU_HEAP_CHECK
 
 // Every heap extension or trim goes through _sbrk_r (malloc and malloc_trim
 // are its only callers). Set to true to log the complete history of the
@@ -878,7 +884,9 @@ void wiiu_crash_screen_init(void) {
 			crash_isi_callback);
 	OSSetExceptionCallbackEx(OS_EXCEPTION_MODE_GLOBAL_ALL_CORES, OS_EXCEPTION_TYPE_PROGRAM,
 			crash_program_callback);
+#ifdef WIIU_HEAP_CHECK
 	// Logging works from here on: catch corruption that happened before main.
 	heap_reporting_enabled = true;
 	heap_check("start of main", __builtin_return_address(0));
+#endif
 }
