@@ -8,6 +8,7 @@
 #include <proc_ui/procui.h>
 #include <sndcore2/core.h>
 #include <sndcore2/device.h>
+#include <math.h>
 #include <string.h>
 #include <whb/log.h>
 
@@ -319,6 +320,32 @@ void AudioDriverWiiU::mic_capture() {
 	const uint32_t start = (uint32_t)status.bufferPos % MIC_SAMPLES;
 	// The system writes the ring behind the CPU cache.
 	DCInvalidateRange(mic_buffer, MIC_SAMPLES * sizeof(int16_t));
+	// Diagnostics: is it MIC_RATE samples per second, and which byte order is
+	// quiet in silence?
+	for (uint32_t i = 0; i < available; i++) {
+		const int16_t v = mic_buffer[(start + i) % MIC_SAMPLES];
+		const int16_t w = (int16_t)__builtin_bswap16((uint16_t)v);
+		mic_stat_sq += (double)v * v;
+		mic_stat_sq_swapped += (double)w * w;
+		mic_stat_peak = MAX(mic_stat_peak, v < 0 ? -(int32_t)v : (int32_t)v);
+	}
+	mic_stat_samples += available;
+	mic_stat_max_available = MAX(mic_stat_max_available, (int32_t)available);
+	const uint64_t now = OSTicksToMilliseconds(OSGetTime());
+	if (mic_stat_start == 0) {
+		mic_stat_start = now;
+	} else if (now - mic_stat_start >= 2000) {
+		const double secs = (double)(now - mic_stat_start) / 1000.0;
+		const double n = mic_stat_samples ? (double)mic_stat_samples : 1.0;
+		WHBLogPrintf("[mic] %.0f samples/s, rms %.0f (swapped %.0f), peak %d, max per read %d, pos %d, state %d",
+				mic_stat_samples / secs, sqrt(mic_stat_sq / n), sqrt(mic_stat_sq_swapped / n), (int)mic_stat_peak,
+				(int)mic_stat_max_available, status.bufferPos, status.state);
+		mic_stat_start = now;
+		mic_stat_samples = 0;
+		mic_stat_sq = mic_stat_sq_swapped = 0.0;
+		mic_stat_peak = 0;
+		mic_stat_max_available = 0;
+	}
 	const float step = (float)MIC_RATE / (float)MIX_RATE;
 	for (uint32_t i = 0; i < available; i++) {
 		const int16_t next = mic_buffer[(start + i) % MIC_SAMPLES];

@@ -58,6 +58,13 @@ class AudioDriverWiiU : public AudioDriver {
 	volatile bool mic_active = false;
 	float mic_phase = 0.0f; // Resampler position between mic_prev and mic_next.
 	int16_t mic_prev = 0;
+	// Diagnostics (logged every 2 s): samples received, levels read as stored
+	// and byte-swapped, peak, MICGetStatus values.
+	uint64_t mic_stat_start = 0;
+	uint32_t mic_stat_samples = 0;
+	double mic_stat_sq = 0.0, mic_stat_sq_swapped = 0.0;
+	int32_t mic_stat_peak = 0;
+	int32_t mic_stat_max_available = 0;
 	void mic_capture();
 	void mic_close();
 
