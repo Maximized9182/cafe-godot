@@ -1,7 +1,7 @@
 extends Node3D
 
 # Cafe Godot 3D test: what each object checks is in its comment. Left stick
-# orbits the camera, right stick up/down zooms, X cycles the cull mode of the
+# orbits the camera, right stick looks around, X cycles the cull mode of the
 # lit materials (back -> front -> disabled): with the right front-face
 # winding, "back" shows solid objects and "front" shows their insides.
 
@@ -11,6 +11,7 @@ var label: Label
 var yaw := 0.0
 var pitch := 0.45
 var distance := 6.0
+var look := Vector2.ZERO # Right stick: yaw/pitch on top of the orbit view.
 var materials: Array[StandardMaterial3D] = []
 var cull := BaseMaterial3D.CULL_BACK
 const CULL_NAMES := ["back", "front", "disabled"]
@@ -152,7 +153,12 @@ func _process(delta: float) -> void:
 	var stick := Input.get_vector("ui_left", "ui_right", "ui_up", "ui_down")
 	yaw -= stick.x * delta * 1.5
 	pitch = clamp(pitch - stick.y * delta * 1.0, -0.2, 1.4)
-	distance = clamp(distance + Input.get_joy_axis(0, JOY_AXIS_RIGHT_Y) * delta * 4.0, 2.5, 12.0)
+	var rs := Vector2(Input.get_joy_axis(0, JOY_AXIS_RIGHT_X), Input.get_joy_axis(0, JOY_AXIS_RIGHT_Y))
+	if rs.length() > 0.2:
+		look.x -= rs.x * delta * 2.0
+		look.y = clamp(look.y - rs.y * delta * 2.0, -1.4, 1.4)
 	camera.position = Vector3(sin(yaw) * cos(pitch), sin(pitch), cos(yaw) * cos(pitch)) * distance + Vector3(0, 0.5, 0)
 	camera.look_at(Vector3(0, 0.5, 0))
-	label.text = "Cafe 3D Test   %d fps   cull: %s\nleft stick: orbit, right stick: zoom, X: cull mode" % [Engine.get_frames_per_second(), CULL_NAMES[cull]]
+	camera.rotate_y(look.x)
+	camera.rotate_object_local(Vector3.RIGHT, look.y)
+	label.text = "Cafe 3D Test   %d fps   cull: %s\nleft stick: orbit, right stick: look, X: cull mode" % [Engine.get_frames_per_second(), CULL_NAMES[cull]]
