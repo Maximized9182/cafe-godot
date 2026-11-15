@@ -58,7 +58,7 @@ func _ready() -> void:
 	add_child(omni)
 
 	# Floor: checker texture, repeated 4x (texture + uv1_scale + repeat).
-	var img := Image.create(64, 64, false, Image.FORMAT_RGBA8)
+	var img := Image.create_empty(64, 64, false, Image.FORMAT_RGBA8)
 	for y in 64:
 		for x in 64:
 			var on := ((x / 32) + (y / 32)) % 2 == 0
