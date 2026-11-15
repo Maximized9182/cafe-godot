@@ -1,6 +1,6 @@
 # General game profile (LVENGINE, Zheeometry Jash, funkin_godot, 3D tests): GDScript, 2D and 3D physics,
-# TTF fonts, Ogg/MP3 audio, 3D nodes without a 3D renderer.
-# Usage: scons platform=wiiu profile=platform/wiiu/profiles/cafe.py
+# TTF fonts, Ogg/MP3 audio, the 3D renderer. Needs wiiu_lto=full to fit under the 32 MB .text limit.
+# Usage: scons platform=wiiu profile=platform/wiiu/profiles/cafe.py wiiu_lto=full
 modules_enabled_by_default = "no"
 module_gdscript_enabled = "yes"
 module_godot_physics_2d_enabled = "yes"
@@ -24,7 +24,7 @@ module_bcdec_enabled = "yes"
 module_regex_enabled = "yes"
 # MP3 music (AudioStreamMP3), common in games.
 module_mp3_enabled = "yes"
-# 3D nodes exist (scripts that name 3D classes compile) but draw nothing.
+# 3D nodes, drawn by RasterizerSceneWiiU (platform/wiiu/rasterizer_scene_wiiu.cpp).
 disable_3d = "no"
 disable_xr = "yes"
 disable_navigation_2d = "yes"
