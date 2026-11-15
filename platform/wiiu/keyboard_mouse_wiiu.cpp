@@ -339,8 +339,12 @@ void KeyboardMouseWiiU::send_key(int p_hid, bool p_pressed, char32_t p_unicode, 
 	ev->set_physical_keycode(key);
 	ev->set_key_label(key);
 	ev->set_location(location);
-	// Typed characters only (no control codes), and only on press.
-	if (p_pressed && p_unicode >= 32 && p_unicode != 127) {
+	// Typed characters only, and only on press. nsyskbd also reports codes for
+	// modifiers, arrows and function keys (private-use characters): Godot's
+	// special keys (Key::SPECIAL) never get one, nor do control codes.
+	const bool special = ((int)key & (int)Key::SPECIAL) != 0;
+	const bool private_use = p_unicode >= 0xE000 && p_unicode <= 0xF8FF;
+	if (p_pressed && !special && !private_use && p_unicode >= 32 && p_unicode != 127) {
 		ev->set_unicode(p_unicode);
 	}
 	ev->set_ctrl_pressed(modifiers & 0x11);
