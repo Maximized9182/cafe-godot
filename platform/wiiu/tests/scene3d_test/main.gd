@@ -24,7 +24,7 @@ var env: Environment
 var background := 0
 var spinning := true
 var shadow_debug := 0
-const SHADOW_DEBUG_NAMES := ["off", "depth colours", "no cull", "material cull", "no bias"]
+const SHADOW_DEBUG_NAMES := ["off", "depth colours", "no cull", "material cull", "no bias", "no depth test", "show map", "hardware depth"]
 const BACKGROUND_NAMES := ["colour", "procedural sky", "physical sky"]
 
 

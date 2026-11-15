@@ -398,6 +398,17 @@ static const char *shadow_ps_glsl =
 		"    frag_color = vec4(clamp(VaryingDepth, 0.0, 1.0), 0.0, 0.0, 1.0);\n"
 		"}\n";
 
+// Shadow debug mode 7: the hardware's depth instead of VaryingDepth.
+static const char *shadow_ps_fragcoord_glsl =
+		"#version 330\n"
+		"#extension GL_ARB_separate_shader_objects : enable\n"
+		"layout(location = 0) in float VaryingDepth;\n"
+		"layout(location = 0) out vec4 frag_color;\n"
+		"void main()\n"
+		"{\n"
+		"    frag_color = vec4(gl_FragCoord.z + VaryingDepth * 0.0, 0.0, 0.0, 1.0);\n"
+		"}\n";
+
 bool RasterizerSceneWiiU::_ensure_shadow_program() {
 	if (shadow_program) {
 		return true;
@@ -413,6 +424,12 @@ bool RasterizerSceneWiiU::_ensure_shadow_program() {
 		return false;
 	}
 	shadow_mvp = wiiu_gx2_program_vertex_uniform_offset(shadow_program, "mvp");
+	shadow_program_fragcoord = wiiu_gx2_program_compile_3d(shadow_vs_glsl, shadow_ps_fragcoord_glsl, log, sizeof(log));
+	if (shadow_program_fragcoord) {
+		shadow_mvp_fragcoord = wiiu_gx2_program_vertex_uniform_offset(shadow_program_fragcoord, "mvp");
+	} else {
+		WHBLogPrintf("[3d] couldn't compile the gl_FragCoord.z shadow shader: %s", log);
+	}
 	return true;
 }
 
@@ -475,6 +492,7 @@ RasterizerSceneWiiU::~RasterizerSceneWiiU() {
 	wiiu_gx2_program_free(programs[0]);
 	wiiu_gx2_program_free(programs[1]);
 	wiiu_gx2_program_free(shadow_program);
+	wiiu_gx2_program_free(shadow_program_fragcoord);
 	wiiu_gx2_render_target_free(shadow_target);
 	wiiu_gx2_mesh_free(sky_triangle);
 }
@@ -819,7 +837,9 @@ void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_b
 	// Shadow debugging, set from GDScript (ProjectSettings.set_setting):
 	// 0 off, 1 colour by depth against the map (see shadow_debug()), 2 shadow
 	// pass without culling, 3 shadow pass with the material's own cull (not
-	// reversed), 4 no depth or normal bias.
+	// reversed), 4 no depth or normal bias, 5 shadow pass without the depth
+	// test, 6 the shadow map drawn in the top right corner, 7 shadow pass
+	// writing gl_FragCoord.z.
 	const int shadow_debug_mode = int(ProjectSettings::get_singleton()->get_setting("rendering/wiiu/shadow_debug", 0));
 	if (dir_light && dir_light->shadow && !opaque.is_empty() && _ensure_shadow_program()) {
 		if (shadow_target == nullptr) {
@@ -870,9 +890,10 @@ void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_b
 			static Regs svs;
 			for (DrawItem *item : opaque) {
 				svs.count = 0;
-				svs.put(shadow_mvp, shadow_view_projection * Projection(item->transform));
+				const bool fragcoord = shadow_debug_mode == 7 && shadow_program_fragcoord != nullptr;
+				svs.put(fragcoord ? shadow_mvp_fragcoord : shadow_mvp, shadow_view_projection * Projection(item->transform));
 				WiiUMeshDraw d = {};
-				d.program = shadow_program;
+				d.program = fragcoord ? shadow_program_fragcoord : shadow_program;
 				d.mesh = item->mesh;
 				d.vs_regs = svs.words;
 				d.vs_reg_words = svs.count;
@@ -887,7 +908,7 @@ void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_b
 				} else if (shadow_debug_mode == 3) {
 					d.cull = cull;
 				}
-				d.depth_test = true;
+				d.depth_test = shadow_debug_mode != 5;
 				d.depth_write = true;
 				wiiu_gx2_draw_mesh(&d);
 			}
@@ -993,6 +1014,19 @@ void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_b
 	}
 	for (DrawItem *item : transparent) {
 		draw(*item, true);
+	}
+	if (shadow_debug_mode == 6 && use_shadow) {
+		// The shadow map's red channel (0..1 depth, 1 = empty), 360 pixels.
+		const float x0 = rt->size.x - 370.0f, y0 = 10.0f, x1 = x0 + 360.0f, y1 = y0 + 360.0f;
+		const WiiUVertex v[6] = {
+			{ x0, y0, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f },
+			{ x1, y0, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f },
+			{ x1, y1, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f },
+			{ x0, y0, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f },
+			{ x1, y1, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f },
+			{ x0, y1, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f },
+		};
+		wiiu_gx2_draw(nullptr, WIIU_PRIM_TRIANGLES, wiiu_gx2_render_target_texture(shadow_target), 0, false, v, 6);
 	}
 	if (r_render_info) {
 		r_render_info->info[RSE::VIEWPORT_RENDER_INFO_TYPE_VISIBLE][RSE::VIEWPORT_RENDER_INFO_OBJECTS_IN_FRAME] += p_instances.size();

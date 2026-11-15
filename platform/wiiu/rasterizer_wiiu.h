@@ -534,6 +534,9 @@ private:
 	// Directional shadow map (packed depth in an RGBA8 render target).
 	static constexpr int SHADOW_SIZE = 2048;
 	WiiUProgram *shadow_program = nullptr;
+	// Shadow debug mode 7: the same pass writing gl_FragCoord.z.
+	WiiUProgram *shadow_program_fragcoord = nullptr;
+	int32_t shadow_mvp_fragcoord = -1;
 	bool shadow_program_failed = false;
 	int32_t shadow_mvp = -1;
 	WiiURenderTarget *shadow_target = nullptr;
