@@ -344,22 +344,27 @@ static const char *shadow_vs_glsl =
 		"#version 330\n"
 		"#extension GL_ARB_separate_shader_objects : enable\n"
 		"layout(location = 0) in vec3 VertexPosition;\n"
+		"layout(location = 0) out float VaryingDepth;\n"
 		"uniform mat4 mvp;\n"
 		"void main()\n"
 		"{\n"
 		"    gl_Position = mvp * vec4(VertexPosition, 1.0);\n"
+		// The same 0..1 depth directional_shadow() computes (orthographic:
+		// w is 1, so it interpolates linearly). gl_FragCoord.z wasn't it.
+		"    VaryingDepth = gl_Position.z / gl_Position.w * 0.5 + 0.5;\n"
 		"}\n";
 
 static const char *shadow_ps_glsl =
 		"#version 330\n"
 		"#extension GL_ARB_separate_shader_objects : enable\n"
+		"layout(location = 0) in float VaryingDepth;\n"
 		"layout(location = 0) out vec4 frag_color;\n"
 		"void main()\n"
 		"{\n"
 		// 24 bits in RGB, each channel an exact multiple of 1/255: the GPU
 		// rounds when it writes UNORM8, so the usual fract() packing came
 		// out up to half a step off in red (shadow acne).
-		"    float d = clamp(gl_FragCoord.z, 0.0, 1.0) * 255.0;\n"
+		"    float d = clamp(VaryingDepth, 0.0, 1.0) * 255.0;\n"
 		"    float r = floor(d);\n"
 		"    d = (d - r) * 255.0;\n"
 		"    float g = floor(d);\n"
