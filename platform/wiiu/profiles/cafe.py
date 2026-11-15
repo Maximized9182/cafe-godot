@@ -17,6 +17,9 @@ module_vorbis_enabled = "yes"
 # Imported textures are stored as lossless WebP inside .ctex (Godot 4 default
 # unless rendering/textures/lossless_compression/force_png is set).
 module_webp_enabled = "yes"
+# Decompresses VRAM-compressed (S3TC/BPTC, BC1-7) textures, which 3D textures are
+# imported as by default; thirdparty/misc/bcdec.h is patched for big-endian.
+module_bcdec_enabled = "yes"
 # RegEx (LVENGINE's typewriter label, scripts/utdr-label.gd).
 module_regex_enabled = "yes"
 # MP3 music (AudioStreamMP3), common in games.

@@ -108,6 +108,24 @@ BCDECDEF void bcdec_bc7(const void* compressedBlock, void* decompressedBlock, in
 
 #ifdef BCDEC_IMPLEMENTATION
 
+/* Godot (Wii U): block data is little-endian; read and write it byte by byte
+   so big-endian CPUs (PowerPC) decode it too. */
+static unsigned short bcdec__le16(const void* p) {
+    const unsigned char* b = (const unsigned char*)p;
+    return (unsigned short)(b[0] | (b[1] << 8));
+}
+static unsigned int bcdec__le32(const void* p) {
+    const unsigned char* b = (const unsigned char*)p;
+    return (unsigned int)b[0] | ((unsigned int)b[1] << 8) | ((unsigned int)b[2] << 16) | ((unsigned int)b[3] << 24);
+}
+static unsigned long long bcdec__le64(const void* p) {
+    return (unsigned long long)bcdec__le32(p) | ((unsigned long long)bcdec__le32((const unsigned char*)p + 4) << 32);
+}
+static void bcdec__st32le(void* p, unsigned int v) {
+    unsigned char* b = (unsigned char*)p;
+    b[0] = v & 0xFF; b[1] = (v >> 8) & 0xFF; b[2] = (v >> 16) & 0xFF; b[3] = (v >> 24) & 0xFF;
+}
+
 static void bcdec__color_block(const void* compressedBlock, void* decompressedBlock, int destinationPitch, int onlyOpaqueMode) {
     unsigned short c0, c1;
     unsigned int refColors[4]; /* 0xAABBGGRR */
@@ -116,8 +134,8 @@ static void bcdec__color_block(const void* compressedBlock, void* decompressedBl
     int i, j, idx;
     unsigned int r0, g0, b0, r1, g1, b1, r, g, b;
 
-    c0 = ((unsigned short*)compressedBlock)[0];
-    c1 = ((unsigned short*)compressedBlock)[1];
+    c0 = bcdec__le16(compressedBlock);
+    c1 = bcdec__le16((const char*)compressedBlock + 2);
 
     /* Unpack 565 ref colors */
     r0 = (c0 >> 11) & 0x1F;
@@ -162,14 +180,14 @@ static void bcdec__color_block(const void* compressedBlock, void* decompressedBl
         refColors[3] = 0x00000000;
     }
 
-    colorIndices = ((unsigned int*)compressedBlock)[1];
+    colorIndices = bcdec__le32((const char*)compressedBlock + 4);
 
     /* Fill out the decompressed color block */
     dstColors = (unsigned char*)decompressedBlock;
     for (i = 0; i < 4; ++i) {
         for (j = 0; j < 4; ++j) {
             idx = colorIndices & 0x03;
-            ((unsigned int*)dstColors)[j] = refColors[idx];
+            bcdec__st32le(dstColors + j * 4, refColors[idx]);
             colorIndices >>= 2;
         }
 
@@ -187,7 +205,7 @@ static void bcdec__sharp_alpha_block(const void* compressedBlock, void* decompre
 
     for (i = 0; i < 4; ++i) {
         for (j = 0; j < 4; ++j) {
-            decompressed[j * 4] = ((alpha[i] >> (4 * j)) & 0x0F) * 17;
+            decompressed[j * 4] = ((bcdec__le16(alpha + i) >> (4 * j)) & 0x0F) * 17;
         }
 
         decompressed += destinationPitch;
@@ -200,7 +218,7 @@ static void bcdec__smooth_alpha_block(const void* compressedBlock, void* decompr
     int i, j;
     unsigned long long block, indices;
 
-    block = *(unsigned long long*)compressedBlock;
+    block = bcdec__le64(compressedBlock);
     decompressed = (unsigned char*)decompressedBlock;
 
     alpha[0] = block & 0xFF;
@@ -456,8 +474,8 @@ BCDECDEF void bcdec_bc6h_half(const void* compressedBlock, void* decompressedBlo
 
     decompressed = (unsigned short*)decompressedBlock;
 
-    bstream.low = ((unsigned long long*)compressedBlock)[0];
-    bstream.high = ((unsigned long long*)compressedBlock)[1];
+    bstream.low = bcdec__le64(compressedBlock);
+    bstream.high = bcdec__le64((const char*)compressedBlock + 8);
 
     r[0] = r[1] = r[2] = r[3] = 0;
     g[0] = g[1] = g[2] = g[3] = 0;
@@ -1093,8 +1111,8 @@ BCDECDEF void bcdec_bc7(const void* compressedBlock, void* decompressedBlock, in
 
     decompressed = (unsigned char*)decompressedBlock;
 
-    bstream.low = ((unsigned long long*)compressedBlock)[0];
-    bstream.high = ((unsigned long long*)compressedBlock)[1];
+    bstream.low = bcdec__le64(compressedBlock);
+    bstream.high = bcdec__le64((const char*)compressedBlock + 8);
 
     for (mode = 0; mode < 8 && (0 == bcdec__bitstream_read_bit(&bstream)); ++mode);
 
