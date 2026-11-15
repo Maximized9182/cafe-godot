@@ -5,6 +5,8 @@ extends Node3D
 # lit materials (back -> front -> disabled): with the right front-face
 # winding, "back" shows solid objects and "front" shows their insides.
 # Y cycles the background: colour -> procedural sky -> physical sky.
+# A stops/starts the box spinning; holding R makes the right stick turn the
+# box instead of the camera (to hold it at an angle, e.g. to look at shadows).
 
 var box: MeshInstance3D
 var camera: Camera3D
@@ -18,6 +20,7 @@ var cull := BaseMaterial3D.CULL_BACK
 const CULL_NAMES := ["back", "front", "disabled"]
 var env: Environment
 var background := 0
+var spinning := true
 const BACKGROUND_NAMES := ["colour", "procedural sky", "physical sky"]
 
 
@@ -190,16 +193,26 @@ func _unhandled_input(event: InputEvent) -> void:
 		cull = (cull + 1) % 3
 		for m in materials:
 			m.cull_mode = cull
+	if event is InputEventJoypadButton and event.pressed and event.button_index == JOY_BUTTON_A:
+		spinning = not spinning
 
 
 func _process(delta: float) -> void:
-	box.rotate_y(delta * 0.8)
-	box.rotate_x(delta * 0.3)
+	if spinning:
+		box.rotate_y(delta * 0.8)
+		box.rotate_x(delta * 0.3)
 	var rs := Vector2(Input.get_joy_axis(0, JOY_AXIS_RIGHT_X), Input.get_joy_axis(0, JOY_AXIS_RIGHT_Y))
-	if rs.length() > 0.2:
+	var turn_box := Input.is_joy_button_pressed(0, JOY_BUTTON_RIGHT_SHOULDER)
+	if turn_box:
+		spinning = false
+	if rs.length() > 0.2 and turn_box:
+		# Slow, so the box can be stopped at an exact angle.
+		box.rotate_y(rs.x * delta * 0.5)
+		box.rotate_x(rs.y * delta * 0.5)
+	elif rs.length() > 0.2:
 		yaw -= rs.x * delta * LOOK_SPEED
 		pitch = clamp(pitch - rs.y * delta * LOOK_SPEED, -1.5, 1.5)
 	camera.rotation = Vector3(pitch, yaw, 0)
 	var stick := Input.get_vector("ui_left", "ui_right", "ui_up", "ui_down")
 	camera.position += camera.basis * Vector3(stick.x, 0, stick.y) * MOVE_SPEED * delta
-	label.text = "Cafe 3D Test   %d fps   cull: %s   background: %s\nleft stick: move, right stick: look, X: cull mode, Y: background" % [Engine.get_frames_per_second(), CULL_NAMES[cull], BACKGROUND_NAMES[background]]
+	label.text = "Cafe 3D Test   %d fps   cull: %s   background: %s   box: %s\nleft stick: move, right stick: look, X: cull mode, Y: background\nA: stop/start the box, hold R + right stick: turn the box" % [Engine.get_frames_per_second(), CULL_NAMES[cull], BACKGROUND_NAMES[background], "spinning" if spinning else "stopped"]
