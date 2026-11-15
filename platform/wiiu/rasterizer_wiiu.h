@@ -334,6 +334,9 @@ public:
 		WiiUTexture *texture = nullptr; // texture_albedo (nullptr: white).
 		Vector4 uv1 = Vector4(1, 1, 0, 0); // uv1_scale.xy, uv1_offset.xy.
 		float alpha_scissor_threshold = 0.5f;
+		float roughness = 1.0f;
+		float metallic = 0.0f;
+		float specular = 0.5f;
 	};
 
 private:
@@ -461,8 +464,9 @@ public:
 // buffer, before its 2D canvas. Every material draws with one built-in
 // shader: StandardMaterial3D's albedo colour and texture, UV1 scale/offset,
 // vertex colour, unshaded, transparency, alpha scissor, cull and depth
-// modes; Lambert diffuse from the environment's ambient light, one
-// directional light and up to four omni lights. No shadows, fog, tone
+// modes; Lambert diffuse and GGX specular (roughness, metallic, specular)
+// from the environment's ambient light, one directional light and the four
+// omni/spot lights nearest to each object. No shadows, fog, tone
 // mapping, skeletons, blend shapes or spatial shader code yet. Sky shaders
 // (ProceduralSkyMaterial, PanoramaSkyMaterial, PhysicalSkyMaterial, custom
 // ones) are compiled and drawn behind the scene; the ambient light from a sky
@@ -511,8 +515,8 @@ private:
 	bool program_failed = false;
 	struct {
 		int32_t mvp, model, normal_matrix, uv1; // Vertex stage.
-		int32_t albedo, ambient, ambient_ground, params, flags, dir_direction, dir_color; // Pixel stage.
-		int32_t omni_position[4], omni_color[4];
+		int32_t albedo, ambient, ambient_ground, params, flags, dir_direction, dir_color, pbr, camera_position; // Pixel stage.
+		int32_t light_position[4], light_color[4], light_direction[4], light_extra[4];
 		int32_t albedo_texture; // Sampler location.
 	} loc;
 	bool _ensure_program();

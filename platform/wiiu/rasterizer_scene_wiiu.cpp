@@ -172,32 +172,79 @@ static const char *scene_ps_glsl =
 		"layout(location = 0) out vec4 frag_color;\n"
 		"uniform sampler2D albedo_texture;\n"
 		"uniform vec4 albedo;\n" // Linear RGB, alpha.
+		"uniform vec4 pbr;\n" // x: roughness, y: metallic, z: specular.
 		"uniform vec4 ambient;\n" // Linear RGB, from above.
 		"uniform vec4 ambient_ground;\n" // Linear RGB, from below (sky ambient; else the same).
-		"uniform vec4 params;\n" // x: unshaded, y: alpha scissor threshold (< 0: off), z: omni lights, w: vertex colour.
+		"uniform vec4 params;\n" // x: unshaded, y: alpha scissor threshold (< 0: off), z: local lights, w: vertex colour.
 		"uniform vec4 flags;\n" // x: directional light on.
-		"uniform vec4 dir_direction;\n" // Towards the light.
+		"uniform vec4 camera_position;\n"
+		"uniform vec4 dir_direction;\n" // Towards the light; w: specular amount.
 		"uniform vec4 dir_color;\n"
-		"uniform vec4 omni_position0;\n" // xyz, w: 1 / range.
-		"uniform vec4 omni_position1;\n"
-		"uniform vec4 omni_position2;\n"
-		"uniform vec4 omni_position3;\n"
-		"uniform vec4 omni_color0;\n" // rgb, w: attenuation (decay).
-		"uniform vec4 omni_color1;\n"
-		"uniform vec4 omni_color2;\n"
-		"uniform vec4 omni_color3;\n"
-		"vec3 omni_light(vec4 p_pos, vec4 p_color, vec3 p_vertex, vec3 p_normal)\n"
+		// Local lights (omni and spot), the four nearest to the object:
+		// position (w: 1 / range), colour (w: attenuation), direction the
+		// spot points (w: cos of the cone angle; -2 for omni lights), extra
+		// (x: spot attenuation, y: specular amount).
+		"uniform vec4 light_position0;\n"
+		"uniform vec4 light_position1;\n"
+		"uniform vec4 light_position2;\n"
+		"uniform vec4 light_position3;\n"
+		"uniform vec4 light_color0;\n"
+		"uniform vec4 light_color1;\n"
+		"uniform vec4 light_color2;\n"
+		"uniform vec4 light_color3;\n"
+		"uniform vec4 light_direction0;\n"
+		"uniform vec4 light_direction1;\n"
+		"uniform vec4 light_direction2;\n"
+		"uniform vec4 light_direction3;\n"
+		"uniform vec4 light_extra0;\n"
+		"uniform vec4 light_extra1;\n"
+		"uniform vec4 light_extra2;\n"
+		"uniform vec4 light_extra3;\n"
+		// drivers/gles3/shaders/scene.glsl's light_compute (Lambert diffuse,
+		// Schlick-GGX specular). Light colours lack Godot's factor of PI and
+		// diffuse its 1/PI; D_GGX drops its 1/PI to match.
+		"void light_compute(vec3 N, vec3 L, vec3 V, vec3 light_color, float specular_amount, vec3 f0, float roughness,\n"
+		"        inout vec3 diffuse_light, inout vec3 specular_light)\n"
 		"{\n"
-		"    vec3 d = p_pos.xyz - p_vertex;\n"
+		"    float NdotL = min(dot(N, L), 1.0);\n"
+		"    float cNdotL = max(NdotL, 0.0);\n"
+		"    diffuse_light += light_color * cNdotL;\n"
+		"    if (cNdotL <= 0.0 || specular_amount <= 0.0) {\n"
+		"        return;\n"
+		"    }\n"
+		"    vec3 H = normalize(V + L);\n"
+		"    float cNdotH = clamp(dot(N, H), 0.0, 1.0);\n"
+		"    float cLdotH = clamp(dot(L, H), 0.0, 1.0);\n"
+		"    float cNdotV = max(dot(N, V), 1e-4);\n"
+		"    float alpha_ggx = roughness * roughness;\n"
+		"    float a = cNdotH * alpha_ggx;\n"
+		"    float k = alpha_ggx / (1.0 - cNdotH * cNdotH + a * a);\n"
+		"    float D = k * k;\n"
+		"    float G = 0.5 / mix(2.0 * cNdotL * cNdotV, cNdotL + cNdotV, alpha_ggx);\n"
+		"    float m = 1.0 - cLdotH;\n"
+		"    float m2 = m * m;\n"
+		"    float f90 = clamp(50.0 * f0.g, 0.0, 1.0);\n"
+		"    vec3 F = f0 + (f90 - f0) * (m2 * m2 * m);\n"
+		"    specular_light += cNdotL * D * F * G * light_color * specular_amount;\n"
+		"}\n"
+		"void local_light(vec4 p_pos, vec4 p_color, vec4 p_dir, vec4 p_extra, vec3 P, vec3 N, vec3 V, vec3 f0, float roughness,\n"
+		"        inout vec3 diffuse_light, inout vec3 specular_light)\n"
+		"{\n"
+		"    vec3 d = p_pos.xyz - P;\n"
 		"    float dist = length(d);\n"
-		"    vec3 l = d / max(dist, 0.0001);\n"
+		"    vec3 L = d / max(dist, 0.0001);\n"
 		"    float nd = dist * p_pos.w;\n"
 		"    nd *= nd;\n"
 		"    nd *= nd;\n"
 		"    nd = max(1.0 - nd, 0.0);\n"
 		"    nd *= nd;\n"
 		"    float att = nd * pow(max(dist, 0.0001), -p_color.w);\n"
-		"    return p_color.rgb * (max(dot(p_normal, l), 0.0) * att);\n"
+		"    if (p_dir.w > -1.5) {\n"
+		"        float scos = max(dot(-L, p_dir.xyz), p_dir.w);\n"
+		"        float spot_rim = max(0.0001, (1.0 - scos) / (1.0 - p_dir.w));\n"
+		"        att *= 1.0 - pow(spot_rim, p_extra.x);\n"
+		"    }\n"
+		"    light_compute(N, L, V, p_color.rgb * att, p_extra.y, f0, roughness, diffuse_light, specular_light);\n"
 		"}\n"
 		"void main()\n"
 		"{\n"
@@ -212,24 +259,41 @@ static const char *scene_ps_glsl =
 		"    }\n"
 		"    vec3 color = base.rgb;\n"
 		"    if (params.x < 0.5) {\n"
-		"        vec3 n = normalize(VaryingNormal);\n"
-		"        vec3 light = mix(ambient_ground.rgb, ambient.rgb, n.y * 0.5 + 0.5);\n"
+		"        vec3 N = normalize(VaryingNormal);\n"
+		"        vec3 P = VaryingWorldPos;\n"
+		"        vec3 V = normalize(camera_position.xyz - P);\n"
+		"        float roughness = clamp(pbr.x, 0.04, 1.0);\n"
+		"        float metallic = pbr.y;\n"
+		"        float dielectric = 0.16 * pbr.z * pbr.z;\n"
+		"        vec3 f0 = mix(vec3(dielectric), base.rgb, vec3(metallic));\n"
+		"        vec3 diffuse_light = mix(ambient_ground.rgb, ambient.rgb, N.y * 0.5 + 0.5);\n"
+		"        vec3 specular_light = vec3(0.0);\n"
 		"        if (flags.x > 0.5) {\n"
-		"            light += dir_color.rgb * max(dot(n, dir_direction.xyz), 0.0);\n"
+		"            light_compute(N, dir_direction.xyz, V, dir_color.rgb, dir_direction.w, f0, roughness, diffuse_light, specular_light);\n"
 		"        }\n"
 		"        if (params.z > 0.5) {\n"
-		"            light += omni_light(omni_position0, omni_color0, VaryingWorldPos, n);\n"
+		"            local_light(light_position0, light_color0, light_direction0, light_extra0, P, N, V, f0, roughness, diffuse_light, specular_light);\n"
 		"        }\n"
 		"        if (params.z > 1.5) {\n"
-		"            light += omni_light(omni_position1, omni_color1, VaryingWorldPos, n);\n"
+		"            local_light(light_position1, light_color1, light_direction1, light_extra1, P, N, V, f0, roughness, diffuse_light, specular_light);\n"
 		"        }\n"
 		"        if (params.z > 2.5) {\n"
-		"            light += omni_light(omni_position2, omni_color2, VaryingWorldPos, n);\n"
+		"            local_light(light_position2, light_color2, light_direction2, light_extra2, P, N, V, f0, roughness, diffuse_light, specular_light);\n"
 		"        }\n"
 		"        if (params.z > 3.5) {\n"
-		"            light += omni_light(omni_position3, omni_color3, VaryingWorldPos, n);\n"
+		"            local_light(light_position3, light_color3, light_direction3, light_extra3, P, N, V, f0, roughness, diffuse_light, specular_light);\n"
 		"        }\n"
-		"        color *= light;\n"
+		// Ambient reflections: the ambient colour seen along the reflection,
+		// scaled by the split-sum approximation drivers/gles3 uses (no
+		// radiance cubemap).
+		"        vec3 R = reflect(-V, N);\n"
+		"        vec3 reflected = mix(ambient_ground.rgb, ambient.rgb, R.y * 0.5 + 0.5);\n"
+		"        float ndotv = clamp(dot(N, V), 0.0, 1.0);\n"
+		"        vec4 r = roughness * vec4(-1.0, -0.0275, -0.572, 0.022) + vec4(1.0, 0.0425, 1.04, -0.04);\n"
+		"        float a004 = min(r.x * r.x, exp2(-9.28 * ndotv)) * r.x + r.y;\n"
+		"        vec2 env = vec2(-1.04, 1.04) * a004 + r.zw;\n"
+		"        specular_light += reflected * (f0 * env.x + env.y);\n"
+		"        color = base.rgb * (1.0 - metallic) * diffuse_light + specular_light;\n"
 		"    }\n"
 		"    frag_color = vec4(pow(max(color, vec3(0.0)), vec3(1.0 / 2.2)), base.a);\n"
 		"}\n";
@@ -259,9 +323,14 @@ bool RasterizerSceneWiiU::_ensure_program() {
 	loc.flags = wiiu_gx2_program_uniform_offset(program, "flags");
 	loc.dir_direction = wiiu_gx2_program_uniform_offset(program, "dir_direction");
 	loc.dir_color = wiiu_gx2_program_uniform_offset(program, "dir_color");
+	loc.pbr = wiiu_gx2_program_uniform_offset(program, "pbr");
+	loc.camera_position = wiiu_gx2_program_uniform_offset(program, "camera_position");
 	for (int i = 0; i < 4; i++) {
-		loc.omni_position[i] = wiiu_gx2_program_uniform_offset(program, (String("omni_position") + itos(i)).utf8().get_data());
-		loc.omni_color[i] = wiiu_gx2_program_uniform_offset(program, (String("omni_color") + itos(i)).utf8().get_data());
+		const String n = itos(i);
+		loc.light_position[i] = wiiu_gx2_program_uniform_offset(program, ("light_position" + n).utf8().get_data());
+		loc.light_color[i] = wiiu_gx2_program_uniform_offset(program, ("light_color" + n).utf8().get_data());
+		loc.light_direction[i] = wiiu_gx2_program_uniform_offset(program, ("light_direction" + n).utf8().get_data());
+		loc.light_extra[i] = wiiu_gx2_program_uniform_offset(program, ("light_extra" + n).utf8().get_data());
 	}
 	loc.albedo_texture = wiiu_gx2_program_sampler_location(program, "albedo_texture");
 	WHBLogPrint("[3d] 3D shader compiled");
@@ -348,6 +417,20 @@ struct DrawItem {
 	MaterialStorageWiiU::SpatialMaterial material;
 	float alpha = 1.0f; // GeometryInstance3D.transparency.
 	float depth = 0.0f; // Distance along the camera's view (transparent sort).
+	Vector3 center; // World-space centre of the surface (light selection).
+	float radius = 0.0f;
+};
+
+// An omni or spot light for the scene shader.
+struct LocalLight {
+	Vector3 position;
+	float range = 1.0f;
+	Color color;
+	float decay = 1.0f;
+	float specular = 1.0f;
+	Vector3 direction;
+	float cos_angle = -2.0f; // -2: omni.
+	float spot_attenuation = 1.0f;
 };
 
 struct SortBackToFront {
@@ -471,19 +554,17 @@ void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_b
 	}
 	wiiu_gx2_clear_depth();
 
-	// Lights: one directional, up to four omni.
+	// Lights: one directional; omni and spot lights go to the objects they
+	// reach (the four nearest, per draw).
 	bool has_dir = false;
 	Vector3 dir_direction;
 	Color dir_color;
-	int omni_count = 0;
-	Vector3 omni_position[4];
-	float omni_inv_range[4] = {};
-	Color omni_color[4];
-	float omni_decay[4] = {};
+	float dir_specular = 0.0f;
+	LocalVector<LocalLight> local_lights;
 	for (uint32_t i = 0; i < p_lights.size(); i++) {
 		const LightStorageWiiU::LightInstance *li = ls->get_light_instance(p_lights[i]);
 		const LightStorageWiiU::Light *light = li ? ls->get_light(li->light) : nullptr;
-		if (light == nullptr) {
+		if (light == nullptr || light->sky_mode == RSE::LIGHT_DIRECTIONAL_SKY_MODE_SKY_ONLY) {
 			continue;
 		}
 		const float energy = light->param[RSE::LIGHT_PARAM_ENERGY] * (light->negative ? -1.0f : 1.0f);
@@ -493,13 +574,21 @@ void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_b
 				has_dir = true;
 				dir_direction = li->transform.basis.get_column(2).normalized();
 				dir_color = c;
+				dir_specular = light->param[RSE::LIGHT_PARAM_SPECULAR];
 			}
-		} else if (light->type == RSE::LIGHT_OMNI && omni_count < 4) {
-			omni_position[omni_count] = li->transform.origin;
-			omni_inv_range[omni_count] = 1.0f / MAX(light->param[RSE::LIGHT_PARAM_RANGE], 0.0001f);
-			omni_color[omni_count] = c;
-			omni_decay[omni_count] = light->param[RSE::LIGHT_PARAM_ATTENUATION];
-			omni_count++;
+		} else if (light->type == RSE::LIGHT_OMNI || light->type == RSE::LIGHT_SPOT) {
+			LocalLight l;
+			l.position = li->transform.origin;
+			l.range = MAX(light->param[RSE::LIGHT_PARAM_RANGE], 0.0001f);
+			l.color = c;
+			l.decay = light->param[RSE::LIGHT_PARAM_ATTENUATION];
+			l.specular = light->param[RSE::LIGHT_PARAM_SPECULAR] * 2.0f; // As drivers/gles3.
+			if (light->type == RSE::LIGHT_SPOT) {
+				l.direction = -li->transform.basis.get_column(2).normalized();
+				l.cos_angle = Math::cos(Math::deg_to_rad(light->param[RSE::LIGHT_PARAM_SPOT_ANGLE]));
+				l.spot_attenuation = light->param[RSE::LIGHT_PARAM_SPOT_ATTENUATION];
+			}
+			local_lights.push_back(l);
 		}
 	}
 
@@ -535,6 +624,8 @@ void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_b
 			item.alpha = 1.0f - p_gi->transparency;
 			const Vector3 center = p_transform.xform(surface.has_aabb ? surface.aabb.get_center() : Vector3());
 			item.depth = (center - cam_pos).dot(cam_forward);
+			item.center = center;
+			item.radius = surface.has_aabb ? p_transform.basis.xform(surface.aabb.size * 0.5f).length() : 0.0f;
 			items.push_back(item);
 		}
 	};
@@ -582,16 +673,43 @@ void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_b
 		ps.put(loc.albedo, albedo);
 		ps.put(loc.ambient, ambient);
 		ps.put(loc.ambient_ground, ambient_ground);
+		// The four local lights nearest to the surface that can reach it.
+		int light_count = 0;
+		const LocalLight *chosen[4];
+		float chosen_dist[4];
+		for (const LocalLight &l : local_lights) {
+			const float dist = MAX(0.0f, l.position.distance_to(p_item.center) - p_item.radius);
+			if (dist > l.range) {
+				continue;
+			}
+			int at = light_count < 4 ? light_count++ : 4;
+			while (at > 0 && chosen_dist[at - 1] > dist) {
+				if (at < 4) {
+					chosen[at] = chosen[at - 1];
+					chosen_dist[at] = chosen_dist[at - 1];
+				}
+				at--;
+			}
+			if (at < 4) {
+				chosen[at] = &l;
+				chosen_dist[at] = dist;
+			}
+		}
 		ps.put(loc.params, m.shader.unshaded ? 1.0f : 0.0f, m.shader.alpha_scissor ? m.alpha_scissor_threshold : -1.0f,
-				(float)omni_count, m.shader.vertex_color ? 1.0f : 0.0f);
+				(float)light_count, m.shader.vertex_color ? 1.0f : 0.0f);
 		ps.put(loc.flags, has_dir ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+		ps.put(loc.pbr, m.roughness, m.metallic, m.specular, 0.0f);
+		ps.put(loc.camera_position, cam_pos.x, cam_pos.y, cam_pos.z, 1.0f);
 		if (has_dir) {
-			ps.put(loc.dir_direction, dir_direction.x, dir_direction.y, dir_direction.z, 0.0f);
+			ps.put(loc.dir_direction, dir_direction.x, dir_direction.y, dir_direction.z, dir_specular);
 			ps.put(loc.dir_color, dir_color);
 		}
-		for (int i = 0; i < omni_count; i++) {
-			ps.put(loc.omni_position[i], omni_position[i].x, omni_position[i].y, omni_position[i].z, omni_inv_range[i]);
-			ps.put(loc.omni_color[i], omni_color[i].r, omni_color[i].g, omni_color[i].b, omni_decay[i]);
+		for (int i = 0; i < light_count; i++) {
+			const LocalLight &l = *chosen[i];
+			ps.put(loc.light_position[i], l.position.x, l.position.y, l.position.z, 1.0f / l.range);
+			ps.put(loc.light_color[i], l.color.r, l.color.g, l.color.b, l.decay);
+			ps.put(loc.light_direction[i], l.direction.x, l.direction.y, l.direction.z, l.cos_angle);
+			ps.put(loc.light_extra[i], l.spot_attenuation, l.specular, 0.0f, 0.0f);
 		}
 		WiiUProgramTexture tex;
 		tex.texture = m.texture;

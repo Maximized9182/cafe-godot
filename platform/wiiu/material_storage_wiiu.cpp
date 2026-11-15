@@ -1097,6 +1097,19 @@ bool MaterialStorageWiiU::get_spatial_material(RID p_material, SpatialMaterial &
 		if (const Variant *v = md->params.getptr(StringName("alpha_scissor_threshold"))) {
 			m.alpha_scissor_threshold = *v;
 		}
+		for (const char *name : { "roughness", "metallic", "specular" }) {
+			const Variant *v = md->params.getptr(StringName(name));
+			if (v && (v->get_type() == Variant::FLOAT || v->get_type() == Variant::INT)) {
+				const float f = *v;
+				if (name[0] == 'r') {
+					m.roughness = f;
+				} else if (name[0] == 'm') {
+					m.metallic = f;
+				} else {
+					m.specular = f;
+				}
+			}
+		}
 		const Variant *tex = md->params.getptr(StringName("texture_albedo"));
 		TextureStorageWiiU *ts = TextureStorageWiiU::get_wiiu_singleton();
 		if (tex && ts) {

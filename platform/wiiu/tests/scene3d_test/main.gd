@@ -62,6 +62,29 @@ func _ready() -> void:
 	omni.omni_range = 3.0
 	add_child(omni)
 
+	# Cyan spot light shining down on the left of the floor (cone edge, specular).
+	var spot := SpotLight3D.new()
+	spot.position = Vector3(-1.0, 3.0, 1.8)
+	spot.rotation_degrees = Vector3(-90, 0, 0)
+	spot.light_color = Color(0.3, 0.9, 1.0)
+	spot.light_energy = 3.0
+	spot.spot_range = 5.0
+	spot.spot_angle = 30.0
+	add_child(spot)
+
+	# Shiny spheres: chrome (metallic 1, roughness 0.2) and glossy red plastic
+	# (roughness 0.15): sun and spot highlights, sky/ambient reflections.
+	var ball := SphereMesh.new()
+	ball.radius = 0.35
+	ball.height = 0.7
+	var chrome := _material(Color(0.9, 0.9, 0.9))
+	chrome.metallic = 1.0
+	chrome.roughness = 0.2
+	_add(ball, chrome, Vector3(1.6, 0.35, 0.9))
+	var plastic := _material(Color(0.8, 0.05, 0.05))
+	plastic.roughness = 0.15
+	_add(ball, plastic, Vector3(-0.6, 0.35, 1.6))
+
 	# Floor: checker texture, repeated 4x (texture + uv1_scale + repeat).
 	var img := Image.create_empty(64, 64, false, Image.FORMAT_RGBA8)
 	for y in 64:
