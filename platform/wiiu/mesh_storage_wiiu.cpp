@@ -433,6 +433,16 @@ AABB MeshStorageWiiU::_multimesh_get_aabb(RID p_multimesh) {
 		return mm->custom_aabb;
 	}
 	const AABB mesh_aabb = mesh_get_aabb(mm->mesh);
+	if (mm->format == RSE::MULTIMESH_TRANSFORM_3D) {
+		// 3D: the mesh bounds moved by each instance (the scene culls by them).
+		const int count = mm->visible_instances < 0 ? mm->instances : MIN(mm->visible_instances, mm->instances);
+		AABB r;
+		for (int i = 0; i < count; i++) {
+			const AABB ia = _multimesh_instance_get_transform(p_multimesh, i).xform(mesh_aabb);
+			r = i == 0 ? ia : r.merge(ia);
+		}
+		return r;
+	}
 	const Rect2 mesh_rect(mesh_aabb.position.x, mesh_aabb.position.y, mesh_aabb.size.x, mesh_aabb.size.y);
 	const int count = mm->visible_instances < 0 ? mm->instances : MIN(mm->visible_instances, mm->instances);
 	Rect2 r;

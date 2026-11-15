@@ -1,7 +1,9 @@
 extends Node3D
 
 # Cafe Godot 3D test: what each object checks is in its comment. Left stick
-# orbits the camera, right stick up/down zooms.
+# orbits the camera, right stick up/down zooms, X cycles the cull mode of the
+# lit materials (back -> front -> disabled): with the right front-face
+# winding, "back" shows solid objects and "front" shows their insides.
 
 var box: MeshInstance3D
 var camera: Camera3D
@@ -9,11 +11,15 @@ var label: Label
 var yaw := 0.0
 var pitch := 0.45
 var distance := 6.0
+var materials: Array[StandardMaterial3D] = []
+var cull := BaseMaterial3D.CULL_BACK
+const CULL_NAMES := ["back", "front", "disabled"]
 
 
 func _material(color: Color) -> StandardMaterial3D:
 	var m := StandardMaterial3D.new()
 	m.albedo_color = color
+	materials.append(m)
 	return m
 
 
@@ -59,6 +65,7 @@ func _ready() -> void:
 			img.set_pixel(x, y, Color(0.85, 0.85, 0.85) if on else Color(0.35, 0.35, 0.4))
 	img.generate_mipmaps()
 	var floor_mat := StandardMaterial3D.new()
+	materials.append(floor_mat)
 	floor_mat.albedo_texture = ImageTexture.create_from_image(img)
 	floor_mat.uv1_scale = Vector3(4, 4, 1)
 	var plane := PlaneMesh.new()
@@ -132,6 +139,13 @@ func _ready() -> void:
 	layer.add_child(label)
 
 
+func _unhandled_input(event: InputEvent) -> void:
+	if event is InputEventJoypadButton and event.pressed and event.button_index == JOY_BUTTON_X:
+		cull = (cull + 1) % 3
+		for m in materials:
+			m.cull_mode = cull
+
+
 func _process(delta: float) -> void:
 	box.rotate_y(delta * 0.8)
 	box.rotate_x(delta * 0.3)
@@ -141,4 +155,4 @@ func _process(delta: float) -> void:
 	distance = clamp(distance + Input.get_joy_axis(0, JOY_AXIS_RIGHT_Y) * delta * 4.0, 2.5, 12.0)
 	camera.position = Vector3(sin(yaw) * cos(pitch), sin(pitch), cos(yaw) * cos(pitch)) * distance + Vector3(0, 0.5, 0)
 	camera.look_at(Vector3(0, 0.5, 0))
-	label.text = "Cafe 3D Test   %d fps   left stick: orbit, right stick: zoom" % Engine.get_frames_per_second()
+	label.text = "Cafe 3D Test   %d fps   cull: %s\nleft stick: orbit, right stick: zoom, X: cull mode" % [Engine.get_frames_per_second(), CULL_NAMES[cull]]
