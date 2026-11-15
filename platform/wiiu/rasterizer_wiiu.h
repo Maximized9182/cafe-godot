@@ -273,6 +273,7 @@ class MaterialStorageWiiU : public RendererDummy::MaterialStorage {
 		uint32_t vs_reg_words = 0;
 		bool uses_screen_texture = false; // hint_screen_texture (back-buffer copy).
 		bool local_vertices = false; // Has vertex() code: the GPU transforms the item.
+		bool sky = false; // A sky shader (drawn by the 3D renderer, WiiUVertex3D layout).
 	};
 	HashMap<RID, CanvasProgram *> shader_programs;
 	// Shaders with the same GLSL share one GX2 program.
@@ -294,10 +295,20 @@ class MaterialStorageWiiU : public RendererDummy::MaterialStorage {
 
 	ShaderCompiler canvas_compiler;
 	bool canvas_compiler_ready = false;
+	ShaderCompiler sky_compiler;
+	bool sky_compiler_ready = false;
 
 	void _init_canvas_compiler();
 	void _free_canvas_program(RID p_shader);
 	CanvasProgram *_compile_canvas_program(RID p_shader, const String &p_code);
+	// Sky shaders: Godot's sky ShaderCompiler (drivers/gles3's renames) and a
+	// full-screen template; see rasterizer_scene_wiiu.cpp for the built-ins.
+	void _init_sky_compiler();
+	CanvasProgram *_compile_sky_program(RID p_shader, const String &p_code);
+	// The compiled program (cached by its GLSL) and its material parameters.
+	CanvasProgram *_make_program(const String &p_path, const String &p_vs, const String &p_ps, bool p_3d,
+			const HashMap<StringName, ShaderLanguage::ShaderNode::Uniform> &p_uniforms, bool p_local_vertices,
+			bool p_uses_screen_texture);
 
 public:
 	// What the 3D renderer (rasterizer_scene_wiiu.cpp) follows of a spatial
@@ -344,6 +355,9 @@ public:
 	bool material_has_program(RID p_material) const;
 	// True if the material's compiled shader reads the screen texture.
 	bool material_uses_screen_texture(RID p_material) const;
+	// True if the material has a compiled sky shader (get_material_program
+	// then gives its program, registers and textures).
+	bool material_is_sky(RID p_material) const;
 
 	void shader_free(RID p_rid) override;
 	void shader_set_code(RID p_shader, const String &p_code) override;
@@ -375,6 +389,7 @@ public:
 		float param[RSE::LIGHT_PARAM_MAX] = {};
 		bool negative = false;
 		uint32_t cull_mask = 0xFFFFFFFF;
+		RSE::LightDirectionalSkyMode sky_mode = RSE::LIGHT_DIRECTIONAL_SKY_MODE_LIGHT_AND_SKY;
 		Dependency dependency;
 	};
 	struct LightInstance {
@@ -406,6 +421,8 @@ public:
 	void light_set_param(RID p_light, RSE::LightParam p_param, float p_value) override;
 	void light_set_negative(RID p_light, bool p_enable) override;
 	void light_set_cull_mask(RID p_light, uint32_t p_mask) override;
+	void light_directional_set_sky_mode(RID p_light, RSE::LightDirectionalSkyMode p_mode) override;
+	RSE::LightDirectionalSkyMode light_directional_get_sky_mode(RID p_light) const override;
 
 	RSE::LightType light_get_type(RID p_light) const override;
 	AABB light_get_aabb(RID p_light) const override;
@@ -445,8 +462,11 @@ public:
 // shader: StandardMaterial3D's albedo colour and texture, UV1 scale/offset,
 // vertex colour, unshaded, transparency, alpha scissor, cull and depth
 // modes; Lambert diffuse from the environment's ambient light, one
-// directional light and up to four omni lights. No shadows, sky, fog, tone
-// mapping, skeletons, blend shapes or spatial shader code yet.
+// directional light and up to four omni lights. No shadows, fog, tone
+// mapping, skeletons, blend shapes or spatial shader code yet. Sky shaders
+// (ProceduralSkyMaterial, PanoramaSkyMaterial, PhysicalSkyMaterial, custom
+// ones) are compiled and drawn behind the scene; the ambient light from a sky
+// is a top/bottom blend read from ProceduralSkyMaterial's colours.
 class RasterizerSceneWiiU : public RasterizerSceneDummy {
 public:
 	class GeometryInstanceWiiU : public GeometryInstanceDummy {
@@ -477,12 +497,21 @@ public:
 private:
 	PagedAllocator<GeometryInstanceWiiU> wiiu_geometry_alloc;
 
+	// Skies: only the material is used (drawn every frame, no radiance cubemap).
+	struct Sky {
+		RID material;
+	};
+	mutable RID_Owner<Sky, true> sky_owner;
+	WiiUMesh *sky_triangle = nullptr; // Full-screen triangle at the far plane.
+	// Draws the environment's sky material behind everything drawn so far.
+	void _draw_sky(RID p_environment, const CameraData *p_camera, const PagedArray<RID> &p_lights);
+
 	// The built-in shader and where its uniforms are (-1: optimized out).
 	WiiUProgram *program = nullptr;
 	bool program_failed = false;
 	struct {
 		int32_t mvp, model, normal_matrix, uv1; // Vertex stage.
-		int32_t albedo, ambient, params, flags, dir_direction, dir_color; // Pixel stage.
+		int32_t albedo, ambient, ambient_ground, params, flags, dir_direction, dir_color; // Pixel stage.
 		int32_t omni_position[4], omni_color[4];
 		int32_t albedo_texture; // Sampler location.
 	} loc;
@@ -492,6 +521,11 @@ public:
 	RenderGeometryInstance *geometry_instance_create(RID p_base) override;
 	void geometry_instance_free(RenderGeometryInstance *p_geometry_instance) override;
 	Ref<RenderSceneBuffers> render_buffers_create() override;
+
+	RID sky_allocate() override;
+	void sky_initialize(RID p_rid) override {}
+	void sky_set_material(RID p_sky, RID p_material) override;
+	bool free(RID p_rid) override;
 
 	void render_scene(const Ref<RenderSceneBuffers> &p_render_buffers, const CameraData *p_camera_data, const CameraData *p_prev_camera_data, const PagedArray<RenderGeometryInstance *> &p_instances, const PagedArray<RID> &p_lights, const PagedArray<RID> &p_reflection_probes, const PagedArray<RID> &p_voxel_gi_instances, const PagedArray<RID> &p_decals, const PagedArray<RID> &p_lightmaps, const PagedArray<RID> &p_fog_volumes, RID p_environment, RID p_camera_attributes, RID p_compositor, RID p_shadow_atlas, RID p_occluder_debug_tex, RID p_reflection_atlas, RID p_reflection_probe, int p_reflection_probe_pass, float p_screen_mesh_lod_threshold, const RenderShadowData *p_render_shadows, int p_render_shadow_count, const RenderSDFGIData *p_render_sdfgi_regions, int p_render_sdfgi_region_count, float p_window_output_max_value, const RenderSDFGIUpdateData *p_sdfgi_update_data = nullptr, RenderingServerTypes::RenderInfo *r_render_info = nullptr) override;
 

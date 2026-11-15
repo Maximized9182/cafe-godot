@@ -1,6 +1,7 @@
 #include "rasterizer_wiiu.h"
 
 #include "core/math/math_funcs.h"
+#include "core/os/os.h"
 #include "core/templates/sort_array.h"
 #include "servers/rendering/rendering_server_globals.h"
 
@@ -68,6 +69,17 @@ void LightStorageWiiU::light_set_cull_mask(RID p_light, uint32_t p_mask) {
 		light->cull_mask = p_mask;
 		light->dependency.changed_notify(Dependency::DEPENDENCY_CHANGED_CULL_MASK);
 	}
+}
+
+void LightStorageWiiU::light_directional_set_sky_mode(RID p_light, RSE::LightDirectionalSkyMode p_mode) {
+	if (Light *light = light_owner.get_or_null(p_light)) {
+		light->sky_mode = p_mode;
+	}
+}
+
+RSE::LightDirectionalSkyMode LightStorageWiiU::light_directional_get_sky_mode(RID p_light) const {
+	const Light *light = light_owner.get_or_null(p_light);
+	return light ? light->sky_mode : RSE::LIGHT_DIRECTIONAL_SKY_MODE_LIGHT_AND_SKY;
 }
 
 RSE::LightType LightStorageWiiU::light_get_type(RID p_light) const {
@@ -160,7 +172,8 @@ static const char *scene_ps_glsl =
 		"layout(location = 0) out vec4 frag_color;\n"
 		"uniform sampler2D albedo_texture;\n"
 		"uniform vec4 albedo;\n" // Linear RGB, alpha.
-		"uniform vec4 ambient;\n" // Linear RGB.
+		"uniform vec4 ambient;\n" // Linear RGB, from above.
+		"uniform vec4 ambient_ground;\n" // Linear RGB, from below (sky ambient; else the same).
 		"uniform vec4 params;\n" // x: unshaded, y: alpha scissor threshold (< 0: off), z: omni lights, w: vertex colour.
 		"uniform vec4 flags;\n" // x: directional light on.
 		"uniform vec4 dir_direction;\n" // Towards the light.
@@ -200,7 +213,7 @@ static const char *scene_ps_glsl =
 		"    vec3 color = base.rgb;\n"
 		"    if (params.x < 0.5) {\n"
 		"        vec3 n = normalize(VaryingNormal);\n"
-		"        vec3 light = ambient.rgb;\n"
+		"        vec3 light = mix(ambient_ground.rgb, ambient.rgb, n.y * 0.5 + 0.5);\n"
 		"        if (flags.x > 0.5) {\n"
 		"            light += dir_color.rgb * max(dot(n, dir_direction.xyz), 0.0);\n"
 		"        }\n"
@@ -241,6 +254,7 @@ bool RasterizerSceneWiiU::_ensure_program() {
 	loc.uv1 = wiiu_gx2_program_vertex_uniform_offset(program, "uv1");
 	loc.albedo = wiiu_gx2_program_uniform_offset(program, "albedo");
 	loc.ambient = wiiu_gx2_program_uniform_offset(program, "ambient");
+	loc.ambient_ground = wiiu_gx2_program_uniform_offset(program, "ambient_ground");
 	loc.params = wiiu_gx2_program_uniform_offset(program, "params");
 	loc.flags = wiiu_gx2_program_uniform_offset(program, "flags");
 	loc.dir_direction = wiiu_gx2_program_uniform_offset(program, "dir_direction");
@@ -256,6 +270,7 @@ bool RasterizerSceneWiiU::_ensure_program() {
 
 RasterizerSceneWiiU::~RasterizerSceneWiiU() {
 	wiiu_gx2_program_free(program);
+	wiiu_gx2_mesh_free(sky_triangle);
 }
 
 RenderGeometryInstance *RasterizerSceneWiiU::geometry_instance_create(RID p_base) {
@@ -277,6 +292,24 @@ Ref<RenderSceneBuffers> RasterizerSceneWiiU::render_buffers_create() {
 	Ref<RenderSceneBuffersWiiU> rb;
 	rb.instantiate();
 	return rb;
+}
+
+RID RasterizerSceneWiiU::sky_allocate() {
+	return sky_owner.make_rid(Sky());
+}
+
+void RasterizerSceneWiiU::sky_set_material(RID p_sky, RID p_material) {
+	if (Sky *sky = sky_owner.get_or_null(p_sky)) {
+		sky->material = p_material;
+	}
+}
+
+bool RasterizerSceneWiiU::free(RID p_rid) {
+	if (sky_owner.owns(p_rid)) {
+		sky_owner.free(p_rid);
+		return true;
+	}
+	return RasterizerSceneDummy::free(p_rid);
 }
 
 // Shader registers: vec4s at word offsets (-1: not in the shader).
@@ -322,10 +355,40 @@ struct SortBackToFront {
 };
 } // namespace
 
-// ProceduralSkyMaterial's default horizon and the ambient it gives: the sky
-// itself isn't drawn yet.
+// ProceduralSkyMaterial's default horizon: the background under a sky until
+// the sky shader draws over it (and the whole sky if it can't be compiled).
 static const Color SKY_FALLBACK_BG = Color(0.6463f, 0.6558f, 0.6708f);
-static const Color SKY_FALLBACK_AMBIENT = Color(0.5f, 0.55f, 0.6f);
+
+static Color material_color(RID p_material, const char *p_param, const Color &p_default) {
+	const Variant v = RSG::material_storage->material_get_param(p_material, StringName(p_param));
+	return v.get_type() == Variant::COLOR ? Color(v) : p_default;
+}
+
+// The ambient light a sky gives, from above and from below (sRGB). The sky's
+// radiance isn't integrated: ProceduralSkyMaterial and PhysicalSkyMaterial
+// colours give a top/bottom pair, other skies a grey-blue guess.
+static void sky_ambient(RID p_material, Color &r_top, Color &r_bottom) {
+	r_top = Color(0.5f, 0.55f, 0.6f);
+	r_bottom = Color(0.35f, 0.33f, 0.3f);
+	if (p_material.is_null()) {
+		return;
+	}
+	const Color none(-1, -1, -1);
+	const Color top = material_color(p_material, "sky_top_color", none);
+	if (top.r >= 0.0f) {
+		const Color horizon = material_color(p_material, "sky_horizon_color", top);
+		const Color ground = material_color(p_material, "ground_bottom_color", horizon);
+		const Color ground_horizon = material_color(p_material, "ground_horizon_color", ground);
+		r_top = top.lerp(horizon, 0.5f);
+		r_bottom = ground.lerp(ground_horizon, 0.5f);
+		return;
+	}
+	const Color rayleigh = material_color(p_material, "rayleigh_color", none);
+	if (rayleigh.r >= 0.0f) {
+		r_top = rayleigh;
+		r_bottom = material_color(p_material, "ground_color", r_bottom);
+	}
+}
 
 void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_buffers, const CameraData *p_camera_data, const CameraData *p_prev_camera_data, const PagedArray<RenderGeometryInstance *> &p_instances, const PagedArray<RID> &p_lights, const PagedArray<RID> &p_reflection_probes, const PagedArray<RID> &p_voxel_gi_instances, const PagedArray<RID> &p_decals, const PagedArray<RID> &p_lightmaps, const PagedArray<RID> &p_fog_volumes, RID p_environment, RID p_camera_attributes, RID p_compositor, RID p_shadow_atlas, RID p_occluder_debug_tex, RID p_reflection_atlas, RID p_reflection_probe, int p_reflection_probe_pass, float p_screen_mesh_lod_threshold, const RenderShadowData *p_render_shadows, int p_render_shadow_count, const RenderSDFGIData *p_render_sdfgi_regions, int p_render_sdfgi_region_count, float p_window_output_max_value, const RenderSDFGIUpdateData *p_sdfgi_update_data, RenderingServerTypes::RenderInfo *r_render_info) {
 	RenderSceneBuffersWiiU *rb = Object::cast_to<RenderSceneBuffersWiiU>(p_render_buffers.ptr());
@@ -347,6 +410,8 @@ void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_b
 	bool clear = rt->clear_requested;
 	Color clear_color = rt->clear_color;
 	Color ambient(0, 0, 0);
+	Color ambient_ground(0, 0, 0);
+	bool draw_sky = false;
 	if (is_environment(p_environment)) {
 		const float bg_energy = environment_get_bg_energy_multiplier(p_environment);
 		Color bg = clear_color;
@@ -363,6 +428,7 @@ void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_b
 				bg = SKY_FALLBACK_BG;
 				clear_color = bg;
 				clear = true;
+				draw_sky = true;
 				break;
 			default: // Canvas, keep: what is already there.
 				clear = false;
@@ -377,11 +443,22 @@ void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_b
 				break;
 			default: // Background or sky.
 				if (environment_get_background(p_environment) == RSE::ENV_BG_SKY || environment_get_ambient_source(p_environment) == RSE::ENV_AMBIENT_SOURCE_SKY) {
-					ambient = SKY_FALLBACK_AMBIENT.srgb_to_linear() * ambient_energy;
+					// Sky light mixed with the ambient colour by sky_contribution, as in drivers/gles3.
+					const Sky *sky = sky_owner.get_or_null(environment_get_sky(p_environment));
+					Color top, bottom;
+					sky_ambient(sky ? sky->material : RID(), top, bottom);
+					const float mix = environment_get_ambient_sky_contribution(p_environment);
+					const Color color = environment_get_ambient_light(p_environment).srgb_to_linear() * ambient_energy;
+					ambient = color.lerp(top.srgb_to_linear() * (bg_energy * ambient_energy), mix);
+					ambient_ground = color.lerp(bottom.srgb_to_linear() * (bg_energy * ambient_energy), mix);
 				} else {
 					ambient = bg.srgb_to_linear() * (bg_energy * ambient_energy);
 				}
 				break;
+		}
+		if (environment_get_ambient_source(p_environment) != RSE::ENV_AMBIENT_SOURCE_SKY &&
+				!(environment_get_ambient_source(p_environment) == RSE::ENV_AMBIENT_SOURCE_BG && environment_get_background(p_environment) == RSE::ENV_BG_SKY)) {
+			ambient_ground = ambient;
 		}
 	}
 	if (clear) {
@@ -504,6 +581,7 @@ void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_b
 		albedo.a = m.albedo.a * p_item.alpha;
 		ps.put(loc.albedo, albedo);
 		ps.put(loc.ambient, ambient);
+		ps.put(loc.ambient_ground, ambient_ground);
 		ps.put(loc.params, m.shader.unshaded ? 1.0f : 0.0f, m.shader.alpha_scissor ? m.alpha_scissor_threshold : -1.0f,
 				(float)omni_count, m.shader.vertex_color ? 1.0f : 0.0f);
 		ps.put(loc.flags, has_dir ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
@@ -539,6 +617,9 @@ void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_b
 	for (DrawItem *item : opaque) {
 		draw(*item, false);
 	}
+	if (draw_sky) {
+		_draw_sky(p_environment, p_camera_data, p_lights);
+	}
 	for (DrawItem *item : transparent) {
 		draw(*item, true);
 	}
@@ -546,4 +627,81 @@ void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_b
 		r_render_info->info[RSE::VIEWPORT_RENDER_INFO_TYPE_VISIBLE][RSE::VIEWPORT_RENDER_INFO_OBJECTS_IN_FRAME] += p_instances.size();
 		r_render_info->info[RSE::VIEWPORT_RENDER_INFO_TYPE_VISIBLE][RSE::VIEWPORT_RENDER_INFO_DRAW_CALLS_IN_FRAME] += items.size();
 	}
+}
+
+void RasterizerSceneWiiU::_draw_sky(RID p_environment, const CameraData *p_camera, const PagedArray<RID> &p_lights) {
+	const Sky *sky = sky_owner.get_or_null(environment_get_sky(p_environment));
+	MaterialStorageWiiU *ms = MaterialStorageWiiU::get_wiiu_singleton();
+	LightStorageWiiU *ls = LightStorageWiiU::get_wiiu_singleton();
+	if (sky == nullptr || sky->material.is_null() || ms == nullptr || !ms->material_is_sky(sky->material)) {
+		return; // The flat fallback colour stays.
+	}
+	WiiUDrawState st = WIIU_DRAW_STATE_DEFAULT;
+	if (!ms->get_material_program(sky->material, WIIU_FILTER_LINEAR | WIIU_FILTER_MIPMAPS, true, st)) {
+		return;
+	}
+	if (sky_triangle == nullptr) {
+		// One triangle covering the screen (clip space; the shader puts it at z = 1).
+		WiiUVertex3D v[3] = {};
+		v[0].x = -1.0f;
+		v[0].y = -1.0f;
+		v[1].x = 3.0f;
+		v[1].y = -1.0f;
+		v[2].x = -1.0f;
+		v[2].y = 3.0f;
+		sky_triangle = wiiu_gx2_mesh_create(WIIU_PRIM_TRIANGLES, v, 3, nullptr, 0);
+		if (sky_triangle == nullptr) {
+			return;
+		}
+	}
+	WiiUProgram *sky_program = st.program;
+
+	static Regs vs, ps;
+	// Clip position -> world-space view direction: the inverse of the
+	// projection times the camera rotation (no translation).
+	const Transform3D rotation(p_camera->main_transform.basis.orthonormalized().inverse(), Vector3());
+	const Projection inv_view_projection = (p_camera->main_projection * Projection(rotation)).inverse();
+	vs.count = 0;
+	vs.put(wiiu_gx2_program_vertex_uniform_offset(sky_program, "sky_inv_view_projection"), inv_view_projection);
+
+	ps.count = MIN(st.reg_words, (uint32_t)(256 * 4));
+	if (ps.count > 0) {
+		memcpy(ps.words, st.regs, ps.count * 4);
+	}
+	ps.put(wiiu_gx2_program_uniform_offset(sky_program, "sky_params"), (float)(OS::get_singleton()->get_ticks_usec() / 1000000.0),
+			environment_get_bg_energy_multiplier(p_environment), 0.0f, 0.0f);
+	const Vector3 pos = p_camera->main_transform.origin;
+	ps.put(wiiu_gx2_program_uniform_offset(sky_program, "sky_position"), pos.x, pos.y, pos.z, 1.0f);
+	// Directional lights that show in the sky (drivers/gles3: sky_globals).
+	int count = 0;
+	for (uint32_t i = 0; i < p_lights.size() && count < 4; i++) {
+		const LightStorageWiiU::LightInstance *li = ls ? ls->get_light_instance(p_lights[i]) : nullptr;
+		const LightStorageWiiU::Light *light = li ? ls->get_light(li->light) : nullptr;
+		if (light == nullptr || light->type != RSE::LIGHT_DIRECTIONAL || light->sky_mode == RSE::LIGHT_DIRECTIONAL_SKY_MODE_LIGHT_ONLY) {
+			continue;
+		}
+		const Vector3 dir = li->transform.basis.xform(Vector3(0, 0, 1)).normalized();
+		const float energy = light->param[RSE::LIGHT_PARAM_ENERGY] * (light->negative ? -1.0f : 1.0f);
+		const String n = itos(count);
+		ps.put(wiiu_gx2_program_uniform_offset(sky_program, ("sky_light" + n + "_direction").utf8().get_data()), dir.x, dir.y, dir.z, energy);
+		ps.put(wiiu_gx2_program_uniform_offset(sky_program, ("sky_light" + n + "_color").utf8().get_data()), light->color.r,
+				light->color.g, light->color.b, Math::deg_to_rad(light->param[RSE::LIGHT_PARAM_SIZE]));
+		count++;
+	}
+	ps.put(wiiu_gx2_program_uniform_offset(sky_program, "sky_light_count"), (float)count, 0.0f, 0.0f, 0.0f);
+
+	WiiUMeshDraw d = {};
+	d.program = sky_program;
+	d.mesh = sky_triangle;
+	d.vs_regs = vs.words;
+	d.vs_reg_words = vs.count;
+	d.ps_regs = ps.words;
+	d.ps_reg_words = ps.count;
+	d.textures = st.textures;
+	d.texture_count = st.texture_count;
+	d.blend = WIIU_BLEND_DISABLED;
+	d.cull = WIIU_CULL_DISABLED;
+	d.depth_test = true; // Only where nothing was drawn (depth still 1.0).
+	d.depth_write = false;
+	wiiu_gx2_draw_mesh(&d);
 }

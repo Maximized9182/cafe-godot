@@ -184,6 +184,158 @@ void MaterialStorageWiiU::_init_canvas_compiler() {
 	canvas_compiler_ready = true;
 }
 
+static bool is_float_or_vector(ShaderLanguage::DataType p_type);
+static String loose_uniforms(const ShaderCompiler::GeneratedCode &p_gen);
+static String locate_varyings(const String &p_globals);
+
+// drivers/gles3's sky renames, with the built-ins the 3D renderer fills in
+// (rasterizer_scene_wiiu.cpp _draw_sky): sky_params (x: time, y: energy
+// multiplier), sky_position (camera), sky_light_count (x) and per directional
+// light sky_lightN_direction (xyz towards the light, w energy) and
+// sky_lightN_color (rgb, w angular size in radians). Half/quarter resolution
+// passes and the radiance cubemap don't exist here.
+void MaterialStorageWiiU::_init_sky_compiler() {
+	if (sky_compiler_ready) {
+		return;
+	}
+	ShaderCompiler::DefaultIdentifierActions actions;
+	actions.renames["COLOR"] = "color";
+	actions.renames["ALPHA"] = "alpha";
+	actions.renames["EYEDIR"] = "cube_normal";
+	actions.renames["POSITION"] = "sky_position.xyz";
+	actions.renames["SKY_COORDS"] = "panorama_coords";
+	actions.renames["SCREEN_UV"] = "uv";
+	actions.renames["TIME"] = "sky_params.x";
+	actions.renames["FRAGCOORD"] = "gl_FragCoord";
+	actions.renames["PI"] = String::num(Math::PI);
+	actions.renames["TAU"] = String::num(Math::TAU);
+	actions.renames["E"] = String::num(Math::E);
+	actions.renames["HALF_RES_COLOR"] = "half_res_color";
+	actions.renames["QUARTER_RES_COLOR"] = "quarter_res_color";
+	actions.renames["RADIANCE"] = "radiance";
+	actions.renames["FOG"] = "custom_fog";
+	for (int i = 0; i < 4; i++) {
+		const String n = itos(i);
+		actions.renames["LIGHT" + n + "_ENABLED"] = "(sky_light_count.x > " + n + ".5)";
+		actions.renames["LIGHT" + n + "_DIRECTION"] = "sky_light" + n + "_direction.xyz";
+		actions.renames["LIGHT" + n + "_ENERGY"] = "sky_light" + n + "_direction.w";
+		actions.renames["LIGHT" + n + "_COLOR"] = "sky_light" + n + "_color.rgb";
+		actions.renames["LIGHT" + n + "_SIZE"] = "sky_light" + n + "_color.w";
+	}
+	actions.renames["AT_CUBEMAP_PASS"] = "false";
+	actions.renames["AT_HALF_RES_PASS"] = "false";
+	actions.renames["AT_QUARTER_RES_PASS"] = "false";
+	actions.render_mode_defines["disable_fog"] = "#define DISABLE_FOG\n";
+	actions.render_mode_defines["use_debanding"] = "#define USE_DEBANDING\n";
+	actions.default_filter = ShaderLanguage::FILTER_LINEAR_MIPMAP;
+	actions.default_repeat = ShaderLanguage::REPEAT_ENABLE;
+	actions.global_buffer_array_variable = "global_shader_uniforms";
+	sky_compiler.initialize(actions);
+	sky_compiler_ready = true;
+}
+
+// Full-screen triangle at the far plane (WiiUVertex3D positions in clip
+// space); sky_inv_view_projection turns a clip position into a world-space
+// view direction (rotation only).
+static const char *sky_vs_glsl =
+		"#version 330\n"
+		"#extension GL_ARB_separate_shader_objects : enable\n"
+		"layout(location = 0) in vec3 VertexPosition;\n"
+		"layout(location = 0) out vec4 VaryingDirection;\n"
+		"uniform mat4 sky_inv_view_projection;\n"
+		"void main()\n"
+		"{\n"
+		"    gl_Position = vec4(VertexPosition.xy, 1.0, 1.0);\n"
+		"    VaryingDirection = sky_inv_view_projection * vec4(VertexPosition.xy, 1.0, 1.0);\n"
+		"}\n";
+
+// drivers/gles3/shaders/sky.glsl's fragment main() for the background pass.
+// Like there, the sky is computed in sRGB space (colour uniforms and textures
+// as they are); the render target is sRGB, so the result goes out unchanged.
+static String sky_fragment_glsl(const ShaderCompiler::GeneratedCode &p_gen) {
+	String s = "#version 330\n"
+			   "#extension GL_ARB_separate_shader_objects : enable\n"
+			   "layout(location = 0) in vec4 VaryingDirection;\n"
+			   "layout(location = 0) out vec4 frag_color;\n"
+			   "uniform vec4 sky_params;\n"
+			   "uniform vec4 sky_position;\n"
+			   "uniform vec4 sky_light_count;\n";
+	for (int i = 0; i < 4; i++) {
+		s += "uniform vec4 sky_light" + itos(i) + "_direction;\n";
+		s += "uniform vec4 sky_light" + itos(i) + "_color;\n";
+	}
+	s += loose_uniforms(p_gen);
+	s += locate_varyings(p_gen.stage_globals[ShaderCompiler::STAGE_FRAGMENT]);
+	s += "void main()\n"
+		 "{\n"
+		 "\tvec3 cube_normal = normalize(VaryingDirection.xyz / VaryingDirection.w);\n"
+		 "\tvec2 uv = gl_FragCoord.xy;\n"
+		 "\tvec2 panorama_coords = vec2(atan(cube_normal.x, -cube_normal.z), acos(clamp(cube_normal.y, -1.0, 1.0)));\n"
+		 "\tif (panorama_coords.x < 0.0) {\n"
+		 "\t\tpanorama_coords.x += " + String::num(Math::PI) + " * 2.0;\n"
+		 "\t}\n"
+		 "\tpanorama_coords /= vec2(" + String::num(Math::PI) + " * 2.0, " + String::num(Math::PI) + ");\n"
+		 "\tvec3 color = vec3(0.0, 0.0, 0.0);\n"
+		 "\tfloat alpha = 1.0;\n"
+		 "\tvec4 half_res_color = vec4(1.0);\n"
+		 "\tvec4 quarter_res_color = vec4(1.0);\n"
+		 "\tvec4 custom_fog = vec4(0.0);\n"
+		 "\t{\n";
+	if (const String *code = p_gen.code.getptr("sky")) {
+		s += *code;
+	}
+	s += "\n\t}\n"
+		 "\tcolor *= sky_params.y;\n"
+		 "\tfrag_color = vec4(clamp(color, vec3(0.0), vec3(1.0)), 1.0);\n"
+		 "}\n";
+	return s;
+}
+
+MaterialStorageWiiU::CanvasProgram *MaterialStorageWiiU::_compile_sky_program(RID p_shader, const String &p_code) {
+	if (!p_code.contains("shader_type sky")) {
+		return nullptr;
+	}
+	_init_sky_compiler();
+	const String *path_ptr = shader_paths.getptr(p_shader);
+	const String path = path_ptr ? *path_ptr : String("(sky shader)");
+	HashMap<StringName, ShaderLanguage::ShaderNode::Uniform> uniforms;
+	ShaderCompiler::IdentifierActions actions;
+	actions.entry_point_stages["sky"] = ShaderCompiler::STAGE_FRAGMENT;
+	bool dummy = false;
+	actions.render_mode_flags["use_half_res_pass"] = &dummy;
+	actions.render_mode_flags["use_quarter_res_pass"] = &dummy;
+	actions.uniforms = &uniforms;
+	ShaderCompiler::GeneratedCode gen;
+	if (sky_compiler.compile(RSE::SHADER_SKY, p_code, &actions, path, gen) != OK) {
+		return nullptr;
+	}
+	String unsupported;
+	if (gen.uses_global_textures || p_code.contains("RADIANCE")) {
+		unsupported = "RADIANCE / global textures";
+	}
+	for (const KeyValue<StringName, ShaderLanguage::ShaderNode::Uniform> &E : uniforms) {
+		if (!unsupported.is_empty()) {
+			break;
+		}
+		const ShaderLanguage::ShaderNode::Uniform &u = E.value;
+		if (u.scope != ShaderLanguage::ShaderNode::Uniform::SCOPE_LOCAL) {
+			unsupported = "global/instance uniform " + String(E.key);
+		} else if (u.array_size > 0) {
+			unsupported = "uniform array " + String(E.key);
+		} else if (ShaderLanguage::is_sampler_type(u.type) ? u.type != ShaderLanguage::TYPE_SAMPLER2D : !is_float_or_vector(u.type)) {
+			unsupported = "uniform type of " + String(E.key);
+		}
+	}
+	if (!unsupported.is_empty()) {
+		print_line(vformat("[sky] %s: %s isn't supported yet; the sky draws as a flat colour", path, unsupported));
+		return nullptr;
+	}
+	if (!wiiu_gx2_glsl_available()) {
+		return nullptr;
+	}
+	return _make_program(path, sky_vs_glsl, sky_fragment_glsl(gen), true, uniforms, false, false);
+}
+
 // The fragment template: drivers/gles3/shaders/canvas.glsl's fragment main()
 // without lights, normal maps and the screen/SDF textures. Vertex colour
 // already holds the item's modulate, as GLES3's color_interp does.
@@ -450,6 +602,17 @@ MaterialStorageWiiU::CanvasProgram *MaterialStorageWiiU::_compile_canvas_program
 
 	const String ps = canvas_fragment_glsl(gen);
 	const String vs = local_vertices ? canvas_vertex_glsl(gen) : String(canvas_vs_glsl);
+	return _make_program(path, vs, ps, false, uniforms, local_vertices, gen.uses_screen_texture);
+}
+
+MaterialStorageWiiU::CanvasProgram *MaterialStorageWiiU::_make_program(const String &p_path, const String &p_vs,
+		const String &p_ps, bool p_3d, const HashMap<StringName, ShaderLanguage::ShaderNode::Uniform> &p_uniforms,
+		bool p_local_vertices, bool p_uses_screen_texture) {
+	const String &path = p_path;
+	const String &vs = p_vs;
+	const String &ps = p_ps;
+	const bool local_vertices = p_local_vertices;
+	const HashMap<StringName, ShaderLanguage::ShaderNode::Uniform> &uniforms = p_uniforms;
 	const String key = vs + "\n// ----\n" + ps; // Key into program_cache.
 	WiiUProgram *program = nullptr;
 	if (CachedProgram *cached = program_cache.getptr(key)) {
@@ -460,7 +623,8 @@ MaterialStorageWiiU::CanvasProgram *MaterialStorageWiiU::_compile_canvas_program
 		const uint64_t start = OS::get_singleton()->get_ticks_msec();
 		const CharString ps_utf8 = ps.utf8();
 		const CharString vs_utf8 = vs.utf8();
-		program = wiiu_gx2_program_compile(vs_utf8.get_data(), ps_utf8.get_data(), log, sizeof(log));
+		program = p_3d ? wiiu_gx2_program_compile_3d(vs_utf8.get_data(), ps_utf8.get_data(), log, sizeof(log))
+						: wiiu_gx2_program_compile(vs_utf8.get_data(), ps_utf8.get_data(), log, sizeof(log));
 		const uint64_t ms = OS::get_singleton()->get_ticks_msec() - start;
 		if (program == nullptr) {
 			print_line(vformat("[shader] %s: GLSL compile failed after %d ms; drawing without the shader", path, ms));
@@ -469,7 +633,7 @@ MaterialStorageWiiU::CanvasProgram *MaterialStorageWiiU::_compile_canvas_program
 					print_line("[shader] " + line);
 				}
 			}
-			if (local_vertices) {
+			if (local_vertices || p_3d) {
 				print_numbered(vs);
 			}
 			print_numbered(ps);
@@ -491,7 +655,8 @@ MaterialStorageWiiU::CanvasProgram *MaterialStorageWiiU::_compile_canvas_program
 	cp->program = program;
 	cp->source = key;
 	cp->serial = ++program_serial;
-	cp->uses_screen_texture = gen.uses_screen_texture;
+	cp->uses_screen_texture = p_uses_screen_texture;
+	cp->sky = p_3d;
 	cp->local_vertices = local_vertices;
 	for (const KeyValue<StringName, ShaderLanguage::ShaderNode::Uniform> &E : uniforms) {
 		const ShaderLanguage::ShaderNode::Uniform &u = E.value;
@@ -576,6 +741,9 @@ void MaterialStorageWiiU::shader_set_code(RID p_shader, const String &p_code) {
 	}
 	_free_canvas_program(p_shader);
 	CanvasProgram *cp = _compile_canvas_program(p_shader, p_code);
+	if (cp == nullptr) {
+		cp = _compile_sky_program(p_shader, p_code);
+	}
 	if (cp) {
 		shader_programs.insert(p_shader, cp);
 	}
@@ -791,6 +959,15 @@ static int filter_bits(ShaderLanguage::TextureFilter p_filter, int p_default) {
 		default:
 			return p_default;
 	}
+}
+
+bool MaterialStorageWiiU::material_is_sky(RID p_material) const {
+	const RID *shader = material_shader.getptr(p_material);
+	if (shader == nullptr) {
+		return false;
+	}
+	CanvasProgram *const *cp = shader_programs.getptr(*shader);
+	return cp && (*cp)->sky;
 }
 
 bool MaterialStorageWiiU::material_uses_local_vertices(RID p_material) const {
