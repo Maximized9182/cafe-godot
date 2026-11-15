@@ -32,19 +32,19 @@ the HOME menu.
 ## What doesn't (yet)
 
 - **3D**: 3D nodes exist, so scripts that use them compile, but nothing is drawn.
-- **Shaders, partly**: see "Canvas shaders" below. Shaders with `vertex()` code, the screen
-  texture, SDF, global/instance uniforms or uniform arrays draw without the shader (blend mode
-  only).
+- **Shaders, partly**: see "Canvas shaders" below. Shaders with SDF, global/instance uniforms,
+  uniform arrays or textures read in `vertex()` draw without the shader (blend mode only).
 - Networking (`HTTPRequest`, multiplayer), the editor itself.
 - Known issue: rarely, pressing HOME freezes the console in some games. Still being
   investigated.
 
 ## Canvas shaders
 
-`canvas_item` shaders with a `fragment()` (and no `vertex()` code) work: Godot's shader compiler
-turns them into GLSL, and [CafeGLSL](https://github.com/Exzap/CafeGLSL) compiles that for GX2 on
-the console when the shader loads (a few ms each). Uniforms, `set_shader_parameter`, `sampler2D`
-parameters, `TIME`, `TEXTURE`, `UV`, `COLOR`, `SCREEN_UV` and friends are supported. `light()` is
+`canvas_item` shaders work: Godot's shader compiler turns them into GLSL, and
+[CafeGLSL](https://github.com/Exzap/CafeGLSL) compiles that for GX2 on the console when the
+shader loads (a few ms each). `fragment()` and `vertex()`, uniforms, `set_shader_parameter`,
+`sampler2D` parameters, varyings, the screen texture (`hint_screen_texture`, and `BackBufferCopy`
+nodes), `TIME`, `TEXTURE`, `UV`, `COLOR`, `SCREEN_UV` and friends are supported. `light()` is
 ignored.
 
 This needs `cafeglsl.rpl` on the SD card at `sd:/wiiu/libs/cafeglsl.rpl`. Build it with
