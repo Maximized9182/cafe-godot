@@ -20,8 +20,11 @@ the HOME menu.
   (mix, add, subtract, multiply, premultiplied alpha), and mipmaps for textures imported with
   them (the `*_WITH_MIPMAPS` filters). The same image goes to the TV and the GamePad.
 - **MSDF fonts** (`FontFile.multichannel_signed_distance_field`), with outlines.
-- **Input**: Wii U GamePad (buttons, sticks, touchscreen), Wii Remote (with Nunchuk or Classic
-  Controller) and Pro Controller, as Godot joypads. Button 0 is A, as on an Xbox pad.
+- **Input**: Wii U GamePad (buttons, sticks, touchscreen, motion sensors), Wii Remote (with
+  Nunchuk or Classic Controller) and Pro Controller, as Godot joypads. Button 0 is A, as on an
+  Xbox pad. USB keyboards and mice work too (mouse cursor drawn on both screens).
+- **Microphone**: the GamePad's, through `AudioStreamMicrophone` (enable
+  `audio/driver/enable_input`).
 - **Audio** through AX, with Ogg Vorbis, MP3 and WAV.
 - **GDScript**, 2D physics, `RichTextLabel`, RegEx, interactive music
   (`AudioStreamSynchronized` and friends).
