@@ -14,7 +14,8 @@
 #   -n, --name NAME        App name on the Wii U Menu (default: config/name)
 #   -s, --short-name NAME  Short name (default: the name)
 #   -a, --author NAME      Author (default: "Cafe Godot")
-#   -i, --icon FILE        Icon, scaled to 128x128 (default: the project icon)
+#   -i, --icon FILE        Icon, scaled to 128x128 (default: the project icon, else
+#                          the Godot logo, default_icon.png next to this script)
 #       --tv-image FILE    TV splash, fitted to 1280x720 on black
 #       --drc-image FILE   GamePad splash, fitted to 854x480 on black
 #       --boot-sound FILE  Sound played when the app starts from the Wii U Menu (any
@@ -181,6 +182,11 @@ resolve_res() { # setting
 
 if [[ -z "$icon" ]]; then
 	icon="$(resolve_res config/icon)"
+fi
+# No project icon: Godot's default project icon (editor/icons/DefaultProjectIcon.svg).
+if [[ -z "$icon" || ! -f "$icon" ]]; then
+	icon="$(dirname "$(readlink -f "$0")")/default_icon.png"
+	[[ -f "$icon" ]] || icon=""
 fi
 if [[ -n "$icon" ]]; then
 	if command -v magick >/dev/null && fit_image "$icon" "$work/icon.png" 128 128 2>/dev/null; then
