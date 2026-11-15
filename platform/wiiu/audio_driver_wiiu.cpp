@@ -284,6 +284,8 @@ Error AudioDriverWiiU::input_start() {
 	input_buffer_init(MIX_RATE / 4); // 250 ms.
 	mic_phase = 0.0f;
 	mic_prev = 0;
+	mic_fifo_read = 0;
+	mic_fifo_count = 0;
 	mic_active = true;
 	WHBLogPrint("[audio] microphone open");
 	return OK;
@@ -308,58 +310,76 @@ void AudioDriverWiiU::mic_close() {
 	}
 }
 
-// Moves what the microphone recorded into Godot's input buffer, resampled
-// from MIC_RATE to MIX_RATE (linear) and duplicated to both channels.
-// Called with the driver locked, from the mixer thread.
+// Moves what the microphone recorded into a FIFO, then writes exactly
+// RING_CHUNK frames (the mixer chunk about to be mixed) into Godot's input
+// buffer, resampled from MIC_RATE to MIX_RATE (linear), both channels.
+// Called with the driver locked, from the mixer thread, once per chunk.
 void AudioDriverWiiU::mic_capture() {
 	MICStatus status;
-	if (MICGetStatus(mic, &status) != MIC_ERROR_OK || status.availableData <= 0) {
-		return;
+	if (MICGetStatus(mic, &status) == MIC_ERROR_OK && status.availableData > 0) {
+		const uint32_t available = (uint32_t)status.availableData;
+		const uint32_t start = (uint32_t)status.bufferPos % MIC_SAMPLES;
+		// The system writes the ring behind the CPU cache.
+		DCInvalidateRange(mic_buffer, MIC_SAMPLES * sizeof(int16_t));
+		for (uint32_t i = 0; i < available; i++) {
+			const int16_t v = mic_buffer[(start + i) % MIC_SAMPLES];
+			mic_stat_sq += (double)v * v;
+			mic_stat_peak = MAX(mic_stat_peak, v < 0 ? -(int32_t)v : (int32_t)v);
+			if (mic_fifo_count == MIC_FIFO) {
+				mic_fifo_read = (mic_fifo_read + 1) % MIC_FIFO; // Full: drop the oldest.
+				mic_fifo_count--;
+			}
+			mic_fifo[(mic_fifo_read + mic_fifo_count) % MIC_FIFO] = v;
+			mic_fifo_count++;
+		}
+		mic_stat_samples += available;
+		MICSetDataConsumed(mic, (int)available);
 	}
-	const uint32_t available = (uint32_t)status.availableData;
-	const uint32_t start = (uint32_t)status.bufferPos % MIC_SAMPLES;
-	// The system writes the ring behind the CPU cache.
-	DCInvalidateRange(mic_buffer, MIC_SAMPLES * sizeof(int16_t));
-	// Diagnostics: is it MIC_RATE samples per second, and which byte order is
-	// quiet in silence?
-	for (uint32_t i = 0; i < available; i++) {
-		const int16_t v = mic_buffer[(start + i) % MIC_SAMPLES];
-		const int16_t w = (int16_t)__builtin_bswap16((uint16_t)v);
-		mic_stat_sq += (double)v * v;
-		mic_stat_sq_swapped += (double)w * w;
-		mic_stat_peak = MAX(mic_stat_peak, v < 0 ? -(int32_t)v : (int32_t)v);
+	// Clock drift: keep the FIFO near its target so latency stays bounded.
+	if (mic_fifo_count > MIC_FIFO_TARGET * 3) {
+		const uint32_t drop = mic_fifo_count - MIC_FIFO_TARGET;
+		mic_fifo_read = (mic_fifo_read + drop) % MIC_FIFO;
+		mic_fifo_count -= drop;
+		mic_stat_trimmed += drop;
 	}
-	mic_stat_samples += available;
-	mic_stat_max_available = MAX(mic_stat_max_available, (int32_t)available);
+
+	const float step = (float)MIC_RATE / (float)MIX_RATE;
+	for (uint32_t f = 0; f < RING_CHUNK; f++) {
+		while (mic_phase >= 1.0f) {
+			if (mic_fifo_count > 0) {
+				mic_prev = mic_fifo[mic_fifo_read];
+				mic_fifo_read = (mic_fifo_read + 1) % MIC_FIFO;
+				mic_fifo_count--;
+			} else {
+				mic_stat_underruns++; // Hold the last sample.
+			}
+			mic_phase -= 1.0f;
+		}
+		const int16_t next = mic_fifo_count > 0 ? mic_fifo[mic_fifo_read] : mic_prev;
+		const float s = (float)mic_prev + ((float)next - (float)mic_prev) * mic_phase;
+		const int32_t sample = (int32_t)s << 16;
+		input_buffer_write(sample);
+		input_buffer_write(sample);
+		mic_phase += step;
+	}
+
+	// Diagnostics every 2 s.
 	const uint64_t now = OSTicksToMilliseconds(OSGetTime());
 	if (mic_stat_start == 0) {
 		mic_stat_start = now;
 	} else if (now - mic_stat_start >= 2000) {
 		const double secs = (double)(now - mic_stat_start) / 1000.0;
 		const double n = mic_stat_samples ? (double)mic_stat_samples : 1.0;
-		WHBLogPrintf("[mic] %.0f samples/s, rms %.0f (swapped %.0f), peak %d, max per read %d, pos %d, state %d",
-				mic_stat_samples / secs, sqrt(mic_stat_sq / n), sqrt(mic_stat_sq_swapped / n), (int)mic_stat_peak,
-				(int)mic_stat_max_available, status.bufferPos, status.state);
+		WHBLogPrintf("[mic] %.0f samples/s, rms %.0f, peak %d, fifo %u, underruns %u, trimmed %u",
+				mic_stat_samples / secs, sqrt(mic_stat_sq / n), (int)mic_stat_peak, (unsigned)mic_fifo_count,
+				(unsigned)mic_stat_underruns, (unsigned)mic_stat_trimmed);
 		mic_stat_start = now;
 		mic_stat_samples = 0;
-		mic_stat_sq = mic_stat_sq_swapped = 0.0;
+		mic_stat_sq = 0.0;
 		mic_stat_peak = 0;
-		mic_stat_max_available = 0;
+		mic_stat_underruns = 0;
+		mic_stat_trimmed = 0;
 	}
-	const float step = (float)MIC_RATE / (float)MIX_RATE;
-	for (uint32_t i = 0; i < available; i++) {
-		const int16_t next = mic_buffer[(start + i) % MIC_SAMPLES];
-		while (mic_phase < 1.0f) {
-			const float s = (float)mic_prev + ((float)next - (float)mic_prev) * mic_phase;
-			const int32_t sample = (int32_t)s << 16;
-			input_buffer_write(sample);
-			input_buffer_write(sample);
-			mic_phase += step;
-		}
-		mic_phase -= 1.0f;
-		mic_prev = next;
-	}
-	MICSetDataConsumed(mic, (int)available);
 }
 
 void AudioDriverWiiU::finish() {

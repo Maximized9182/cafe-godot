@@ -56,15 +56,26 @@ class AudioDriverWiiU : public AudioDriver {
 	MICHandle mic = -1;
 	int16_t *mic_buffer = nullptr;
 	volatile bool mic_active = false;
-	float mic_phase = 0.0f; // Resampler position between mic_prev and mic_next.
+	float mic_phase = 0.0f; // Resampler position between mic_prev and the next sample.
 	int16_t mic_prev = 0;
-	// Diagnostics (logged every 2 s): samples received, levels read as stored
-	// and byte-swapped, peak, MICGetStatus values.
+	// The mic delivers 512-sample bursts on its own clock, while Godot's
+	// AudioStreamMicrophone reads the input buffer at the output clock and
+	// never resyncs once the buffer has filled. So the input buffer gets
+	// exactly one mixer chunk per mixer chunk (locked to the output), from a
+	// FIFO that absorbs the bursts and is trimmed when the clocks drift.
+	static constexpr uint32_t MIC_FIFO = 8192;
+	static constexpr uint32_t MIC_FIFO_TARGET = 1024; // ~32 ms of mic audio.
+	int16_t mic_fifo[MIC_FIFO];
+	uint32_t mic_fifo_read = 0;
+	uint32_t mic_fifo_count = 0;
+	uint32_t mic_stat_underruns = 0;
+	uint32_t mic_stat_trimmed = 0;
+	// Diagnostics (logged every 2 s): samples received, level, peak; FIFO state.
+	// Checked 2026-11-15: 32000 samples/s, native byte order.
 	uint64_t mic_stat_start = 0;
 	uint32_t mic_stat_samples = 0;
-	double mic_stat_sq = 0.0, mic_stat_sq_swapped = 0.0;
+	double mic_stat_sq = 0.0;
 	int32_t mic_stat_peak = 0;
-	int32_t mic_stat_max_available = 0;
 	void mic_capture();
 	void mic_close();
 
