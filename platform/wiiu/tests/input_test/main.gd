@@ -68,7 +68,6 @@ func _ready() -> void:
 	meter.size = Vector2(0, 30)
 	add_child(meter)
 
-	Input.set_joy_motion_sensors_enabled(0, true)
 
 func _input(event: InputEvent) -> void:
 	if event is InputEventKey:
@@ -81,6 +80,9 @@ func _input(event: InputEvent) -> void:
 			wheel -= 1
 
 func _process(delta: float) -> void:
+	# The GamePad connects on the first frame, after _ready.
+	if Input.has_joy_motion_sensors(0) and not Input.is_joy_motion_sensors_enabled(0):
+		Input.set_joy_motion_sensors_enabled(0, true)
 	if capture.can_get_buffer(1):
 		var frames := capture.get_buffer(capture.get_frames_available())
 		var peak := 0.0
@@ -108,7 +110,7 @@ func _process(delta: float) -> void:
 		"Microphone: peak %.3f (talk or blow into the GamePad)" % mic_peak,
 		"",
 		"Lie the GamePad flat face up: gravity z ~ +9.8. Hold it upright facing you: gravity y ~ +9.8.",
-		"Tilt right: the ball rolls right.",
+		"Hold it upright and turn it so the right edge points down: accelerometer x ~ -9.8; the ball rolls right.",
 	])
 
 func _v(v: Vector3) -> String:

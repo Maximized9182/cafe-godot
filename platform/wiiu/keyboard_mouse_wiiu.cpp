@@ -6,6 +6,8 @@
 #include "core/templates/local_vector.h"
 #include "servers/display/display_server.h"
 
+#include <stdio.h>
+
 #include <nsyshid/hid.h>
 #include <nsyskbd/nsyskbd.h>
 #include <whb/log.h>
@@ -181,6 +183,8 @@ struct Mouse {
 	uint32_t handle = 0;
 	uint8_t interface_index = 0;
 	uint32_t size = 0;
+	int logged_reports = 0; // Diagnostics: the first reports go to the log.
+	int logged_errors = 0;
 };
 Mouse mice[MAX_MICE];
 // IOS transfers need 64-byte aligned buffers.
@@ -196,8 +200,24 @@ void mouse_read_done(uint32_t p_handle, int32_t p_error, uint8_t *p_buffer, uint
 		return;
 	}
 	if (p_error < 0) {
-		// Unplugged (the detach callback follows) or a transfer error: stop.
+		if (m->logged_errors < 8) {
+			m->logged_errors++;
+			WHBLogPrintf("[input] mouse read error %d (0x%08x)", (int)p_error, (unsigned)p_error);
+		}
+		// Unplugged (the detach callback follows) or a transfer error: try
+		// again a few times, then give up.
+		if (m->logged_errors < 8) {
+			mouse_read(m);
+		}
 		return;
+	}
+	if (m->logged_reports < 6) {
+		m->logged_reports++;
+		char hex[3 * 16 + 1] = {};
+		for (uint32_t i = 0; i < p_bytes && i < 16; i++) {
+			snprintf(hex + 3 * i, 4, "%02x ", p_buffer[i]);
+		}
+		WHBLogPrintf("[input] mouse report (%u bytes): %s", (unsigned)p_bytes, hex);
 	}
 	if (p_bytes >= 3) {
 		MutexLock lock(queue_mutex);
@@ -222,9 +242,7 @@ void mouse_protocol_set(uint32_t p_handle, int32_t p_error, uint8_t *p_buffer, u
 	(void)p_buffer;
 	(void)p_bytes;
 	Mouse *m = (Mouse *)p_context;
-	if (p_error < 0) {
-		WHBLogPrintf("[input] mouse: SetProtocol(boot) failed (%d), reading anyway", (int)p_error);
-	}
+	WHBLogPrintf("[input] mouse: SetProtocol(boot) returned %d", (int)p_error);
 	if (m->active) {
 		mouse_read(m);
 	}
@@ -242,9 +260,15 @@ int32_t hid_attach(HIDClient *p_client, HIDDevice *p_device, HIDAttachEvent p_at
 				Mouse &m = mice[i];
 				m.handle = p_device->handle;
 				m.interface_index = p_device->interfaceIndex;
-				m.size = p_device->maxPacketSizeRx > 0 && p_device->maxPacketSizeRx <= 64 ? p_device->maxPacketSizeRx : 8;
+				// The whole buffer: a transfer ends at the device's short packet.
+				m.size = sizeof(mouse_buffers[i]);
+				m.logged_reports = 0;
+				m.logged_errors = 0;
 				m.active = true;
-				WHBLogPrintf("[input] mouse connected (%04x:%04x)", (unsigned)p_device->vid, (unsigned)p_device->pid);
+				// vid/pid are little-endian (USB order).
+				WHBLogPrintf("[input] mouse connected (%04x:%04x, interface %u, max packet %u)",
+						(unsigned)__builtin_bswap16(p_device->vid), (unsigned)__builtin_bswap16(p_device->pid),
+						(unsigned)p_device->interfaceIndex, (unsigned)p_device->maxPacketSizeRx);
 				HIDSetProtocol(m.handle, m.interface_index, 0, mouse_protocol_set, &m);
 				return 1;
 			}
