@@ -112,6 +112,16 @@ struct WiiURenderTarget {
 	GX2ColorBuffer color_buffer;
 	WiiUTexture texture; // Shares the colour buffer's image.
 	WiiUTexture *back_buffer; // Screen texture copy, made on first use.
+	GX2DepthBuffer *depth; // For 3D, made on first use (wiiu_gx2_clear_depth).
+};
+
+struct WiiUMesh {
+	GX2PrimitiveMode primitive;
+	WiiUVertex3D *vertices;
+	uint32_t vertex_count;
+	void *indices; // NULL: vertices in order.
+	uint32_t index_count;
+	GX2IndexType index_type;
 };
 
 static bool gx2_active = false;
@@ -262,7 +272,45 @@ void wiiu_gx2_program_free(WiiUProgram *p_program) {
 	free(p_program);
 }
 
+// A vertex input of a program's fetch shader: where it is in the vertex.
+typedef struct {
+	const char *name;
+	uint32_t offset;
+	GX2AttribFormat format;
+	uint32_t mask;
+} ProgramAttrib;
+
+#define SEL_XYZ1 GX2_SEL_MASK(GX2_SQ_SEL_X, GX2_SQ_SEL_Y, GX2_SQ_SEL_Z, GX2_SQ_SEL_1)
+#define SEL_XY01 GX2_SEL_MASK(GX2_SQ_SEL_X, GX2_SQ_SEL_Y, GX2_SQ_SEL_0, GX2_SQ_SEL_1)
+#define SEL_XYZW GX2_SEL_MASK(GX2_SQ_SEL_X, GX2_SQ_SEL_Y, GX2_SQ_SEL_Z, GX2_SQ_SEL_W)
+
+// WiiUVertex (canvas).
+static const ProgramAttrib layout_2d[] = {
+	{ "VertexPosition", 0, GX2_ATTRIB_FORMAT_FLOAT_32_32_32, SEL_XYZ1 },
+	{ "VertexTexCoord", 12, GX2_ATTRIB_FORMAT_FLOAT_32_32, SEL_XY01 },
+	{ "VertexColor", 20, GX2_ATTRIB_FORMAT_FLOAT_32_32_32_32, SEL_XYZW },
+};
+// WiiUVertex3D (meshes).
+static const ProgramAttrib layout_3d[] = {
+	{ "VertexPosition", 0, GX2_ATTRIB_FORMAT_FLOAT_32_32_32, SEL_XYZ1 },
+	{ "VertexNormal", 12, GX2_ATTRIB_FORMAT_FLOAT_32_32_32, GX2_SEL_MASK(GX2_SQ_SEL_X, GX2_SQ_SEL_Y, GX2_SQ_SEL_Z, GX2_SQ_SEL_0) },
+	{ "VertexTexCoord", 24, GX2_ATTRIB_FORMAT_FLOAT_32_32, SEL_XY01 },
+	{ "VertexColor", 32, GX2_ATTRIB_FORMAT_FLOAT_32_32_32_32, SEL_XYZW },
+};
+
+static WiiUProgram *program_compile(const char *p_vs, const char *p_ps, const ProgramAttrib *p_layout,
+		uint32_t p_layout_count, char *r_log, int p_log_size);
+
 WiiUProgram *wiiu_gx2_program_compile(const char *p_vs, const char *p_ps, char *r_log, int p_log_size) {
+	return program_compile(p_vs, p_ps, layout_2d, sizeof(layout_2d) / sizeof(layout_2d[0]), r_log, p_log_size);
+}
+
+WiiUProgram *wiiu_gx2_program_compile_3d(const char *p_vs, const char *p_ps, char *r_log, int p_log_size) {
+	return program_compile(p_vs, p_ps, layout_3d, sizeof(layout_3d) / sizeof(layout_3d[0]), r_log, p_log_size);
+}
+
+static WiiUProgram *program_compile(const char *p_vs, const char *p_ps, const ProgramAttrib *p_layout,
+		uint32_t p_layout_count, char *r_log, int p_log_size) {
 	if (r_log && p_log_size > 0) {
 		r_log[0] = '\0';
 	}
@@ -284,20 +332,12 @@ WiiUProgram *wiiu_gx2_program_compile(const char *p_vs, const char *p_ps, char *
 	GX2Invalidate(GX2_INVALIDATE_MODE_CPU_SHADER, p->vs->program, p->vs->size);
 	GX2Invalidate(GX2_INVALIDATE_MODE_CPU_SHADER, p->ps->program, p->ps->size);
 
-	// Fetch shader: our vertex layout (WiiUVertex) for the inputs the shader has.
-	static const struct {
-		const char *name;
-		uint32_t offset;
-		GX2AttribFormat format;
-		uint32_t mask;
-	} layout[3] = {
-		{ "VertexPosition", 0, GX2_ATTRIB_FORMAT_FLOAT_32_32_32, GX2_SEL_MASK(GX2_SQ_SEL_X, GX2_SQ_SEL_Y, GX2_SQ_SEL_Z, GX2_SQ_SEL_1) },
-		{ "VertexTexCoord", 12, GX2_ATTRIB_FORMAT_FLOAT_32_32, GX2_SEL_MASK(GX2_SQ_SEL_X, GX2_SQ_SEL_Y, GX2_SQ_SEL_0, GX2_SQ_SEL_1) },
-		{ "VertexColor", 20, GX2_ATTRIB_FORMAT_FLOAT_32_32_32_32, GX2_SEL_MASK(GX2_SQ_SEL_X, GX2_SQ_SEL_Y, GX2_SQ_SEL_Z, GX2_SQ_SEL_W) },
-	};
-	GX2AttribStream attribs[3];
+	// Fetch shader: our vertex layout (WiiUVertex or WiiUVertex3D) for the
+	// inputs the shader has.
+	const ProgramAttrib *layout = p_layout;
+	GX2AttribStream attribs[4];
 	uint32_t count = 0;
-	for (int i = 0; i < 3; i++) {
+	for (uint32_t i = 0; i < p_layout_count && i < 4; i++) {
 		for (uint32_t v = 0; v < p->vs->attribVarCount; v++) {
 			if (strcmp(p->vs->attribVars[v].name, layout[i].name) == 0) {
 				GX2AttribStream *a = &attribs[count++];
@@ -760,6 +800,11 @@ void wiiu_gx2_render_target_free(WiiURenderTarget *p_rt) {
 		MEMFreeToDefaultHeap(p_rt->back_buffer->texture.surface.image);
 		free(p_rt->back_buffer);
 	}
+	if (p_rt->depth) {
+		stat_render_target_bytes -= p_rt->depth->surface.imageSize;
+		MEMFreeToDefaultHeap(p_rt->depth->surface.image);
+		free(p_rt->depth);
+	}
 	free(p_rt);
 }
 
@@ -973,6 +1018,11 @@ static void finish_target(void) {
 static void apply_target(void) {
 	GX2SetContextState(gx2_context);
 	GX2SetColorBuffer(target_cb, GX2_RENDER_TARGET_0);
+	// GX2SetContextState above restores the saved state, so the depth buffer
+	// is bound again every time (3D draws need it; 2D draws turn depth off).
+	if (target_rt != NULL && target_rt->depth != NULL) {
+		GX2SetDepthBuffer(target_rt->depth);
+	}
 	GX2SetViewport(0.0f, 0.0f, (float)target_width, (float)target_height, 0.0f, 1.0f);
 	GX2SetScissor((uint32_t)scissor_x, (uint32_t)scissor_y, (uint32_t)scissor_w, (uint32_t)scissor_h);
 }
@@ -1051,6 +1101,40 @@ static void put_reg(uint32_t *r_regs, uint32_t p_max_words, uint32_t *r_words, i
 		r_regs[(*r_words)++] = 0;
 	}
 	memcpy(&r_regs[p_offset], p_v, 4 * sizeof(float));
+}
+
+// Colour writes and blending for a draw.
+static void set_blend(WiiUBlend p_blend) {
+	GX2SetColorControl(GX2_LOGIC_OP_COPY, p_blend == WIIU_BLEND_DISABLED ? 0x00 : 0xFF, FALSE, TRUE);
+	// The blend factors Godot's GLES3 renderer uses for each canvas blend mode
+	// (straight alpha; colour first, then alpha).
+	switch (p_blend) {
+		case WIIU_BLEND_ADD:
+			GX2SetBlendControl(GX2_RENDER_TARGET_0, GX2_BLEND_MODE_SRC_ALPHA, GX2_BLEND_MODE_ONE,
+					GX2_BLEND_COMBINE_MODE_ADD, TRUE, GX2_BLEND_MODE_SRC_ALPHA, GX2_BLEND_MODE_ONE,
+					GX2_BLEND_COMBINE_MODE_ADD);
+			break;
+		case WIIU_BLEND_SUB: // dst - src * alpha.
+			GX2SetBlendControl(GX2_RENDER_TARGET_0, GX2_BLEND_MODE_SRC_ALPHA, GX2_BLEND_MODE_ONE,
+					GX2_BLEND_COMBINE_MODE_REV_SUB, TRUE, GX2_BLEND_MODE_SRC_ALPHA, GX2_BLEND_MODE_ONE,
+					GX2_BLEND_COMBINE_MODE_REV_SUB);
+			break;
+		case WIIU_BLEND_MUL:
+			GX2SetBlendControl(GX2_RENDER_TARGET_0, GX2_BLEND_MODE_DST_COLOR, GX2_BLEND_MODE_ZERO,
+					GX2_BLEND_COMBINE_MODE_ADD, TRUE, GX2_BLEND_MODE_DST_ALPHA, GX2_BLEND_MODE_ZERO,
+					GX2_BLEND_COMBINE_MODE_ADD);
+			break;
+		case WIIU_BLEND_PREMUL_ALPHA:
+			GX2SetBlendControl(GX2_RENDER_TARGET_0, GX2_BLEND_MODE_ONE, GX2_BLEND_MODE_INV_SRC_ALPHA,
+					GX2_BLEND_COMBINE_MODE_ADD, TRUE, GX2_BLEND_MODE_ONE, GX2_BLEND_MODE_INV_SRC_ALPHA,
+					GX2_BLEND_COMBINE_MODE_ADD);
+			break;
+		default: // Mix (and disabled, where the mask above turns blending off).
+			GX2SetBlendControl(GX2_RENDER_TARGET_0, GX2_BLEND_MODE_SRC_ALPHA, GX2_BLEND_MODE_INV_SRC_ALPHA,
+					GX2_BLEND_COMBINE_MODE_ADD, TRUE, GX2_BLEND_MODE_ONE, GX2_BLEND_MODE_INV_SRC_ALPHA,
+					GX2_BLEND_COMBINE_MODE_ADD);
+			break;
+	}
 }
 
 void wiiu_gx2_draw(const WiiUDrawState *p_state, WiiUPrimitive p_primitive, WiiUTexture *p_texture, int p_filter,
@@ -1187,36 +1271,7 @@ void wiiu_gx2_draw(const WiiUDrawState *p_state, WiiUPrimitive p_primitive, WiiU
 	const WiiUBlend draw_blend = st->blend;
 	GX2SetDepthOnlyControl(FALSE, FALSE, GX2_COMPARE_FUNC_ALWAYS);
 	GX2SetCullOnlyControl(GX2_FRONT_FACE_CCW, FALSE, FALSE);
-	GX2SetColorControl(GX2_LOGIC_OP_COPY, draw_blend == WIIU_BLEND_DISABLED ? 0x00 : 0xFF, FALSE, TRUE);
-	// The blend factors Godot's GLES3 renderer uses for each canvas blend mode
-	// (straight alpha; colour first, then alpha).
-	switch (draw_blend) {
-		case WIIU_BLEND_ADD:
-			GX2SetBlendControl(GX2_RENDER_TARGET_0, GX2_BLEND_MODE_SRC_ALPHA, GX2_BLEND_MODE_ONE,
-					GX2_BLEND_COMBINE_MODE_ADD, TRUE, GX2_BLEND_MODE_SRC_ALPHA, GX2_BLEND_MODE_ONE,
-					GX2_BLEND_COMBINE_MODE_ADD);
-			break;
-		case WIIU_BLEND_SUB: // dst - src * alpha.
-			GX2SetBlendControl(GX2_RENDER_TARGET_0, GX2_BLEND_MODE_SRC_ALPHA, GX2_BLEND_MODE_ONE,
-					GX2_BLEND_COMBINE_MODE_REV_SUB, TRUE, GX2_BLEND_MODE_SRC_ALPHA, GX2_BLEND_MODE_ONE,
-					GX2_BLEND_COMBINE_MODE_REV_SUB);
-			break;
-		case WIIU_BLEND_MUL:
-			GX2SetBlendControl(GX2_RENDER_TARGET_0, GX2_BLEND_MODE_DST_COLOR, GX2_BLEND_MODE_ZERO,
-					GX2_BLEND_COMBINE_MODE_ADD, TRUE, GX2_BLEND_MODE_DST_ALPHA, GX2_BLEND_MODE_ZERO,
-					GX2_BLEND_COMBINE_MODE_ADD);
-			break;
-		case WIIU_BLEND_PREMUL_ALPHA:
-			GX2SetBlendControl(GX2_RENDER_TARGET_0, GX2_BLEND_MODE_ONE, GX2_BLEND_MODE_INV_SRC_ALPHA,
-					GX2_BLEND_COMBINE_MODE_ADD, TRUE, GX2_BLEND_MODE_ONE, GX2_BLEND_MODE_INV_SRC_ALPHA,
-					GX2_BLEND_COMBINE_MODE_ADD);
-			break;
-		default: // Mix (and disabled, where the mask above turns blending off).
-			GX2SetBlendControl(GX2_RENDER_TARGET_0, GX2_BLEND_MODE_SRC_ALPHA, GX2_BLEND_MODE_INV_SRC_ALPHA,
-					GX2_BLEND_COMBINE_MODE_ADD, TRUE, GX2_BLEND_MODE_ONE, GX2_BLEND_MODE_INV_SRC_ALPHA,
-					GX2_BLEND_COMBINE_MODE_ADD);
-			break;
-	}
+	set_blend(draw_blend);
 	GX2DrawEx(p_primitive == WIIU_PRIM_LINES ? GX2_PRIMITIVE_MODE_LINES : GX2_PRIMITIVE_MODE_TRIANGLES,
 			p_count, 0, 1);
 	stat_draws++;
@@ -1224,6 +1279,161 @@ void wiiu_gx2_draw(const WiiUDrawState *p_state, WiiUPrimitive p_primitive, WiiU
 	if (++draws_since_flush >= DRAWS_PER_FLUSH) {
 		draws_since_flush = 0;
 		GX2Flush(); // Let the GPU start while the CPU builds the rest.
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 3D: meshes in GPU memory, depth buffers, mesh draws
+// ---------------------------------------------------------------------------
+
+WiiUMesh *wiiu_gx2_mesh_create(WiiUPrimitive p_primitive, const WiiUVertex3D *p_vertices, uint32_t p_vertex_count,
+		const uint32_t *p_indices, uint32_t p_index_count) {
+	if (p_vertices == NULL || p_vertex_count == 0) {
+		return NULL;
+	}
+	WiiUMesh *m = (WiiUMesh *)calloc(1, sizeof(WiiUMesh));
+	if (m == NULL) {
+		return NULL;
+	}
+	m->primitive = p_primitive == WIIU_PRIM_LINES ? GX2_PRIMITIVE_MODE_LINES : GX2_PRIMITIVE_MODE_TRIANGLES;
+	const uint32_t vbytes = p_vertex_count * (uint32_t)sizeof(WiiUVertex3D);
+	m->vertices = (WiiUVertex3D *)MEMAllocFromDefaultHeapEx(vbytes, GX2_VERTEX_BUFFER_ALIGNMENT);
+	if (m->vertices == NULL) {
+		free(m);
+		return NULL;
+	}
+	memcpy(m->vertices, p_vertices, vbytes);
+	m->vertex_count = p_vertex_count;
+	GX2Invalidate((GX2InvalidateMode)(GX2_INVALIDATE_MODE_CPU | GX2_INVALIDATE_MODE_ATTRIBUTE_BUFFER), m->vertices, vbytes);
+	if (p_indices != NULL && p_index_count > 0) {
+		// 16-bit indices when they fit (big-endian, as the CPU writes them).
+		const bool small = p_vertex_count <= 0x10000;
+		const uint32_t ibytes = p_index_count * (small ? 2u : 4u);
+		m->indices = MEMAllocFromDefaultHeapEx(ibytes, GX2_INDEX_BUFFER_ALIGNMENT);
+		if (m->indices == NULL) {
+			MEMFreeToDefaultHeap(m->vertices);
+			free(m);
+			return NULL;
+		}
+		if (small) {
+			uint16_t *out = (uint16_t *)m->indices;
+			for (uint32_t i = 0; i < p_index_count; i++) {
+				out[i] = (uint16_t)(p_indices[i] < p_vertex_count ? p_indices[i] : 0);
+			}
+		} else {
+			uint32_t *out = (uint32_t *)m->indices;
+			for (uint32_t i = 0; i < p_index_count; i++) {
+				out[i] = p_indices[i] < p_vertex_count ? p_indices[i] : 0;
+			}
+		}
+		m->index_count = p_index_count;
+		m->index_type = small ? GX2_INDEX_TYPE_U16 : GX2_INDEX_TYPE_U32;
+		GX2Invalidate(GX2_INVALIDATE_MODE_CPU, m->indices, ibytes);
+	}
+	stat_texture_bytes += vbytes; // Counted with the textures (GPU memory in MEM2).
+	return m;
+}
+
+void wiiu_gx2_mesh_free(WiiUMesh *p_mesh) {
+	if (p_mesh == NULL) {
+		return;
+	}
+	// The GPU may still draw it from the last frame (see wiiu_gx2_texture_free).
+	if (gx2_acquired) {
+		GX2DrawDone();
+	}
+	stat_texture_bytes -= p_mesh->vertex_count * (uint32_t)sizeof(WiiUVertex3D);
+	MEMFreeToDefaultHeap(p_mesh->vertices);
+	if (p_mesh->indices) {
+		MEMFreeToDefaultHeap(p_mesh->indices);
+	}
+	free(p_mesh);
+}
+
+void wiiu_gx2_clear_depth(void) {
+	if (target_rt == NULL || !wiiu_gx2_can_draw()) {
+		return;
+	}
+	if (target_rt->depth == NULL) {
+		GX2DepthBuffer *db = (GX2DepthBuffer *)calloc(1, sizeof(GX2DepthBuffer));
+		if (db == NULL) {
+			return;
+		}
+		db->surface.use = GX2_SURFACE_USE_DEPTH_BUFFER;
+		db->surface.dim = GX2_SURFACE_DIM_TEXTURE_2D;
+		db->surface.width = target_rt->color_buffer.surface.width;
+		db->surface.height = target_rt->color_buffer.surface.height;
+		db->surface.depth = 1;
+		db->surface.mipLevels = 1;
+		db->surface.format = GX2_SURFACE_FORMAT_FLOAT_R32;
+		db->surface.aa = GX2_AA_MODE1X;
+		db->surface.tileMode = GX2_TILE_MODE_DEFAULT;
+		db->viewNumSlices = 1;
+		db->depthClear = 1.0f;
+		GX2CalcSurfaceSizeAndAlignment(&db->surface);
+		GX2InitDepthBufferRegs(db);
+		db->surface.image = MEMAllocFromDefaultHeapEx(db->surface.imageSize, db->surface.alignment);
+		if (db->surface.image == NULL) {
+			WHBLogPrintf("[gx2] out of memory for a %ux%u depth buffer", (unsigned)db->surface.width,
+					(unsigned)db->surface.height);
+			free(db);
+			return;
+		}
+		// Only the GPU writes it (see wiiu_gx2_render_target_create).
+		GX2Invalidate(GX2_INVALIDATE_MODE_CPU, db->surface.image, db->surface.imageSize);
+		target_rt->depth = db;
+		stat_render_target_bytes += db->surface.imageSize;
+	}
+	GX2ClearDepthStencilEx(target_rt->depth, 1.0f, 0, GX2_CLEAR_FLAGS_DEPTH);
+	// GX2ClearDepthStencilEx changes GPU state; restore ours (binds the depth buffer).
+	apply_target();
+}
+
+void wiiu_gx2_draw_mesh(const WiiUMeshDraw *p_draw) {
+	const WiiUMesh *m = p_draw->mesh;
+	const WiiUProgram *program = p_draw->program;
+	if (m == NULL || program == NULL || target_cb == NULL || !wiiu_gx2_can_draw() || scissor_w == 0 || scissor_h == 0) {
+		return;
+	}
+	const bool has_depth = target_rt != NULL && target_rt->depth != NULL;
+	GX2SetShaderMode(GX2_SHADER_MODE_UNIFORM_REGISTER);
+	GX2SetFetchShader(program->pipe.fetch);
+	GX2SetVertexShader(program->vs);
+	GX2SetPixelShader(program->ps);
+	if (p_draw->vs_regs != NULL && p_draw->vs_reg_words > 0) {
+		GX2SetVertexUniformReg(0, (p_draw->vs_reg_words + 3) & ~3u, p_draw->vs_regs);
+	}
+	if (p_draw->ps_regs != NULL && p_draw->ps_reg_words > 0) {
+		GX2SetPixelUniformReg(0, (p_draw->ps_reg_words + 3) & ~3u, p_draw->ps_regs);
+	}
+	for (uint32_t i = 0; i < p_draw->texture_count; i++) {
+		const WiiUProgramTexture *t = &p_draw->textures[i];
+		if (t->location < 0) {
+			continue;
+		}
+		WiiUTexture *tex = t->texture ? t->texture : draw_white;
+		GX2SetPixelTexture(&tex->texture, (uint32_t)t->location);
+		GX2SetPixelSampler(&draw_samplers[t->filter & 3][t->repeat ? 1 : 0], (uint32_t)t->location);
+	}
+	GX2SetAttribBuffer(0, m->vertex_count * (uint32_t)sizeof(WiiUVertex3D), (uint32_t)sizeof(WiiUVertex3D), m->vertices);
+	GX2SetDepthOnlyControl(has_depth && p_draw->depth_test ? TRUE : FALSE, has_depth && p_draw->depth_write ? TRUE : FALSE,
+			GX2_COMPARE_FUNC_LEQUAL);
+	// Clip-space z from -1 to 1 (OpenGL style, Godot's Projection), not 0 to 1.
+	GX2SetRasterizerClipControlEx(TRUE, TRUE, FALSE);
+	// Godot's front faces are clockwise.
+	GX2SetCullOnlyControl(GX2_FRONT_FACE_CW, p_draw->cull == WIIU_CULL_FRONT ? TRUE : FALSE,
+			p_draw->cull == WIIU_CULL_BACK ? TRUE : FALSE);
+	set_blend(p_draw->blend);
+	if (m->indices != NULL) {
+		GX2DrawIndexedEx(m->primitive, m->index_count, m->index_type, m->indices, 0, 1);
+	} else {
+		GX2DrawEx(m->primitive, m->vertex_count, 0, 1);
+	}
+	stat_draws++;
+	stat_vertices += m->indices != NULL ? m->index_count : m->vertex_count;
+	if (++draws_since_flush >= DRAWS_PER_FLUSH) {
+		draws_since_flush = 0;
+		GX2Flush();
 	}
 }
 

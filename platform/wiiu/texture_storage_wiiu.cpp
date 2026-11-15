@@ -374,5 +374,27 @@ bool UtilitiesWiiU::free(RID p_rid) {
 		ts->canvas_texture_free(p_rid);
 		return true;
 	}
+	LightStorageWiiU *ls = LightStorageWiiU::get_wiiu_singleton();
+	if (ls && ls->owns_light(p_rid)) {
+		ls->light_free(p_rid);
+		return true;
+	}
 	return RendererDummy::Utilities::free(p_rid);
+}
+
+RSE::InstanceType UtilitiesWiiU::get_base_type(RID p_rid) const {
+	LightStorageWiiU *ls = LightStorageWiiU::get_wiiu_singleton();
+	if (ls && ls->owns_light(p_rid)) {
+		return RSE::INSTANCE_LIGHT;
+	}
+	return RendererDummy::Utilities::get_base_type(p_rid);
+}
+
+void UtilitiesWiiU::base_update_dependency(RID p_base, DependencyTracker *p_instance) {
+	LightStorageWiiU *ls = LightStorageWiiU::get_wiiu_singleton();
+	if (ls && ls->owns_light(p_base)) {
+		p_instance->update_dependency(&ls->get_light(p_base)->dependency);
+		return;
+	}
+	RendererDummy::Utilities::base_update_dependency(p_base, p_instance);
 }

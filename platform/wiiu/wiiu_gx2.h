@@ -163,6 +163,59 @@ typedef struct {
 void wiiu_gx2_draw(const WiiUDrawState *p_state, WiiUPrimitive p_primitive, WiiUTexture *p_texture, int p_filter,
 		bool p_repeat, const WiiUVertex *p_vertices, uint32_t p_count);
 
+// ---------------------------------------------------------------------------
+// 3D (the scene renderer, rasterizer_scene_wiiu.cpp)
+// ---------------------------------------------------------------------------
+
+// One vertex of a 3D mesh: model-space position and normal, UV, colour.
+typedef struct {
+	float x, y, z;
+	float nx, ny, nz;
+	float u, v;
+	float r, g, b, a;
+} WiiUVertex3D;
+
+// A mesh surface kept in GPU memory (vertices, and indices if it has them).
+typedef struct WiiUMesh WiiUMesh;
+// p_indices may be NULL (vertices in order). NULL when out of memory.
+WiiUMesh *wiiu_gx2_mesh_create(WiiUPrimitive p_primitive, const WiiUVertex3D *p_vertices, uint32_t p_vertex_count,
+		const uint32_t *p_indices, uint32_t p_index_count);
+void wiiu_gx2_mesh_free(WiiUMesh *p_mesh);
+
+// A program for meshes (same as wiiu_gx2_program_compile, with the
+// WiiUVertex3D layout): vertex inputs VertexPosition (vec3), VertexNormal
+// (vec3), VertexTexCoord (vec2), VertexColor (vec4).
+WiiUProgram *wiiu_gx2_program_compile_3d(const char *p_vs, const char *p_ps, char *r_log, int p_log_size);
+
+// Gives the bound render target a depth buffer (made on first use, same
+// size) and clears it to the far plane.
+void wiiu_gx2_clear_depth(void);
+
+typedef enum {
+	WIIU_CULL_DISABLED = 0,
+	WIIU_CULL_BACK,
+	WIIU_CULL_FRONT,
+} WiiUCull;
+
+// One mesh draw into the bound render target. The registers are the
+// program's uniforms (both stages, word offsets from
+// wiiu_gx2_program_*uniform_offset); vertices are not touched on the CPU.
+typedef struct {
+	WiiUProgram *program;
+	const WiiUMesh *mesh;
+	const uint32_t *vs_regs;
+	uint32_t vs_reg_words;
+	const uint32_t *ps_regs;
+	uint32_t ps_reg_words;
+	const WiiUProgramTexture *textures;
+	uint32_t texture_count;
+	WiiUBlend blend;
+	WiiUCull cull;
+	bool depth_test;
+	bool depth_write;
+} WiiUMeshDraw;
+void wiiu_gx2_draw_mesh(const WiiUMeshDraw *p_draw);
+
 // Numbers for the stats overlay (wiiu_stats.cpp). Draws/vertices are from the
 // last finished frame; GPU time is the frame's span on the GPU, two frames late.
 typedef struct {

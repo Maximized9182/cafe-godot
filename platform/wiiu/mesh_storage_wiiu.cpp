@@ -17,7 +17,68 @@ MeshStorageWiiU::MeshStorageWiiU() {
 }
 
 MeshStorageWiiU::~MeshStorageWiiU() {
+	for (KeyValue<RID, LocalVector<Surface>> &E : mesh_surfaces) {
+		_free_gpu(E.value);
+	}
 	wiiu_singleton = nullptr;
+}
+
+// The 3D copy of a surface (WiiUVertex3D in GPU memory): positions, normals
+// (or none: facing +Z), UVs and colours (white without them).
+static void _upload_3d(MeshStorageWiiU::Surface &r_surface, const Array &p_arrays, const PackedVector3Array &p_vertices) {
+	const int count = p_vertices.size();
+	LocalVector<WiiUVertex3D> out;
+	out.resize(count);
+	PackedVector3Array normals;
+	if (p_arrays[RSE::ARRAY_NORMAL].get_type() == Variant::PACKED_VECTOR3_ARRAY) {
+		normals = p_arrays[RSE::ARRAY_NORMAL];
+	}
+	PackedVector2Array uvs;
+	if (p_arrays[RSE::ARRAY_TEX_UV].get_type() == Variant::PACKED_VECTOR2_ARRAY) {
+		uvs = p_arrays[RSE::ARRAY_TEX_UV];
+	}
+	PackedColorArray colors;
+	if (p_arrays[RSE::ARRAY_COLOR].get_type() == Variant::PACKED_COLOR_ARRAY) {
+		colors = p_arrays[RSE::ARRAY_COLOR];
+	}
+	const bool has_normals = normals.size() == count;
+	const bool has_uvs = uvs.size() == count;
+	const bool has_colors = colors.size() == count;
+	for (int i = 0; i < count; i++) {
+		WiiUVertex3D &o = out[i];
+		o.x = p_vertices[i].x;
+		o.y = p_vertices[i].y;
+		o.z = p_vertices[i].z;
+		const Vector3 n = has_normals ? normals[i] : Vector3(0, 0, 1);
+		o.nx = n.x;
+		o.ny = n.y;
+		o.nz = n.z;
+		o.u = has_uvs ? uvs[i].x : 0.0f;
+		o.v = has_uvs ? uvs[i].y : 0.0f;
+		const Color c = has_colors ? colors[i] : Color(1, 1, 1, 1);
+		o.r = c.r;
+		o.g = c.g;
+		o.b = c.b;
+		o.a = c.a;
+	}
+	LocalVector<uint32_t> indices;
+	if (p_arrays[RSE::ARRAY_INDEX].get_type() == Variant::PACKED_INT32_ARRAY) {
+		const PackedInt32Array idx = p_arrays[RSE::ARRAY_INDEX];
+		indices.resize(idx.size());
+		for (int i = 0; i < idx.size(); i++) {
+			indices[i] = (uint32_t)idx[i];
+		}
+	}
+	const WiiUPrimitive prim = r_surface.primitive == RSE::PRIMITIVE_LINES ? WIIU_PRIM_LINES : WIIU_PRIM_TRIANGLES;
+	r_surface.gpu = wiiu_gx2_mesh_create(prim, out.ptr(), (uint32_t)count, indices.size() ? indices.ptr() : nullptr,
+			indices.size());
+}
+
+void MeshStorageWiiU::_free_gpu(LocalVector<Surface> &p_surfaces) {
+	for (Surface &s : p_surfaces) {
+		wiiu_gx2_mesh_free(s.gpu);
+		s.gpu = nullptr;
+	}
 }
 
 // Decodes a surface into points/colours/UVs/indices once, when it is added.
@@ -42,6 +103,16 @@ void MeshStorageWiiU::_decode_surface(RID p_mesh, const RenderingServerTypes::Su
 			s.points.resize(v.size());
 			for (int i = 0; i < v.size(); i++) {
 				s.points[i] = Vector2(v[i].x, v[i].y);
+			}
+			if (v.size() > 0) {
+				s.aabb = AABB(v[0], Vector3());
+				for (int i = 1; i < v.size(); i++) {
+					s.aabb.expand_to(v[i]);
+				}
+				s.has_aabb = true;
+			}
+			if (p_surface.primitive == RSE::PRIMITIVE_TRIANGLES || p_surface.primitive == RSE::PRIMITIVE_LINES) {
+				_upload_3d(s, arrays, v);
 			}
 		}
 		if (arrays[RSE::ARRAY_COLOR].get_type() == Variant::PACKED_COLOR_ARRAY) {
@@ -80,6 +151,9 @@ void MeshStorageWiiU::_decode_surface(RID p_mesh, const RenderingServerTypes::Su
 }
 
 void MeshStorageWiiU::mesh_free(RID p_rid) {
+	if (LocalVector<Surface> *surfaces = mesh_surfaces.getptr(p_rid)) {
+		_free_gpu(*surfaces);
+	}
 	mesh_surfaces.erase(p_rid);
 	mesh_custom_aabbs.erase(p_rid);
 	RendererDummy::MeshStorage::mesh_free(p_rid);
@@ -96,12 +170,16 @@ void MeshStorageWiiU::mesh_surface_remove(RID p_mesh, int p_surface) {
 	RendererDummy::MeshStorage::mesh_surface_remove(p_mesh, p_surface);
 	LocalVector<Surface> *surfaces = mesh_surfaces.getptr(p_mesh);
 	if (surfaces && p_surface >= 0 && p_surface < (int)surfaces->size()) {
+		wiiu_gx2_mesh_free((*surfaces)[p_surface].gpu);
 		surfaces->remove_at(p_surface);
 	}
 }
 
 void MeshStorageWiiU::mesh_clear(RID p_mesh) {
 	RendererDummy::MeshStorage::mesh_clear(p_mesh);
+	if (LocalVector<Surface> *surfaces = mesh_surfaces.getptr(p_mesh)) {
+		_free_gpu(*surfaces);
+	}
 	mesh_surfaces.erase(p_mesh);
 }
 
@@ -123,6 +201,18 @@ AABB MeshStorageWiiU::mesh_get_aabb(RID p_mesh, RID p_skeleton) {
 	const LocalVector<Surface> *surfaces = mesh_surfaces.getptr(p_mesh);
 	if (surfaces == nullptr || surfaces->size() == 0) {
 		return AABB();
+	}
+	// 3D surfaces: their 3D bounds (the scene culls by them).
+	bool has_3d = false;
+	AABB aabb;
+	for (const Surface &surface : *surfaces) {
+		if (surface.has_aabb) {
+			aabb = has_3d ? aabb.merge(surface.aabb) : surface.aabb;
+			has_3d = true;
+		}
+	}
+	if (has_3d) {
+		return aabb;
 	}
 	Rect2 r = (*surfaces)[0].rect;
 	for (uint32_t i = 1; i < surfaces->size(); i++) {

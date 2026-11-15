@@ -11,6 +11,7 @@ wiiu_files = [
     "display_server_wiiu.cpp",
     "rasterizer_wiiu.cpp",
     "rasterizer_canvas_wiiu.cpp",
+    "rasterizer_scene_wiiu.cpp",
     "texture_storage_wiiu.cpp",
     "mesh_storage_wiiu.cpp",
     "material_storage_wiiu.cpp",

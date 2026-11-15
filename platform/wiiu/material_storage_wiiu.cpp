@@ -58,6 +58,64 @@ static WiiUBlend blend_from_shader_code(const String &p_code) {
 	return WIIU_BLEND_MIX;
 }
 
+// The render modes and features of a spatial shader that the 3D renderer
+// (rasterizer_scene_wiiu.cpp) follows. StandardMaterial3D's generated code
+// is the main case: its transparency, alpha scissor, vertex colour and
+// texture filter settings show up as these lines.
+static bool spatial_from_shader_code(const String &p_code, MaterialStorageWiiU::SpatialShader &r_shader) {
+	if (!p_code.contains("shader_type spatial")) {
+		return false;
+	}
+	MaterialStorageWiiU::SpatialShader sh;
+	int at = p_code.find("render_mode");
+	while (at != -1) {
+		const int end = p_code.find(";", at);
+		if (end == -1) {
+			break;
+		}
+		const String modes = p_code.substr(at + 11, end - at - 11);
+		for (const String &m : modes.split(",")) {
+			const String mode = m.strip_edges();
+			if (mode == "unshaded") {
+				sh.unshaded = true;
+			} else if (mode == "cull_disabled") {
+				sh.cull = WIIU_CULL_DISABLED;
+			} else if (mode == "cull_front") {
+				sh.cull = WIIU_CULL_FRONT;
+			} else if (mode == "blend_add") {
+				sh.blend = WIIU_BLEND_ADD;
+			} else if (mode == "blend_sub") {
+				sh.blend = WIIU_BLEND_SUB;
+			} else if (mode == "blend_mul") {
+				sh.blend = WIIU_BLEND_MUL;
+			} else if (mode == "blend_premul_alpha") {
+				sh.blend = WIIU_BLEND_PREMUL_ALPHA;
+			} else if (mode == "depth_test_disabled") {
+				sh.depth_test = false;
+			} else if (mode == "depth_draw_never") {
+				sh.depth_draw = 0;
+			} else if (mode == "depth_draw_always") {
+				sh.depth_draw = 2;
+			}
+		}
+		at = p_code.find("render_mode", end);
+	}
+	sh.alpha_scissor = p_code.contains("ALPHA_SCISSOR_THRESHOLD") || p_code.contains("ALPHA_HASH_SCALE");
+	sh.transparent = !sh.alpha_scissor && (p_code.contains("ALPHA *=") || p_code.contains("ALPHA =") || sh.blend != WIIU_BLEND_MIX);
+	sh.vertex_color = p_code.contains("albedo_tex *= COLOR");
+	const int tex = p_code.find("sampler2D texture_albedo");
+	if (tex != -1) {
+		const int end = p_code.find(";", tex);
+		const String hints = p_code.substr(tex, end == -1 ? -1 : end - tex);
+		const bool linear = !hints.contains("filter_nearest");
+		const bool mipmaps = hints.contains("mipmap");
+		sh.filter = (linear ? WIIU_FILTER_LINEAR : 0) | (mipmaps ? WIIU_FILTER_MIPMAPS : 0);
+		sh.repeat = !hints.contains("repeat_disable");
+	}
+	r_shader = sh;
+	return true;
+}
+
 // The names drivers/gles3 gives the canvas built-ins (its CanvasShaderData);
 // the fragment template below declares the ones a fragment() can use.
 void MaterialStorageWiiU::_init_canvas_compiler() {
@@ -493,6 +551,7 @@ void MaterialStorageWiiU::_free_canvas_program(RID p_shader) {
 void MaterialStorageWiiU::shader_free(RID p_rid) {
 	shader_blend.erase(p_rid);
 	shader_paths.erase(p_rid);
+	spatial_shaders.erase(p_rid);
 	_free_canvas_program(p_rid);
 	RendererDummy::MaterialStorage::shader_free(p_rid);
 }
@@ -508,6 +567,12 @@ void MaterialStorageWiiU::shader_set_code(RID p_shader, const String &p_code) {
 		shader_blend.erase(p_shader);
 	} else {
 		shader_blend[p_shader] = b;
+	}
+	SpatialShader spatial;
+	if (spatial_from_shader_code(p_code, spatial)) {
+		spatial_shaders[p_shader] = spatial;
+	} else {
+		spatial_shaders.erase(p_shader);
 	}
 	_free_canvas_program(p_shader);
 	CanvasProgram *cp = _compile_canvas_program(p_shader, p_code);
@@ -816,5 +881,62 @@ bool MaterialStorageWiiU::get_material_program(RID p_material, int p_filter, boo
 	r_state.textures = md.textures.ptr();
 	r_state.texture_count = md.textures.size();
 	r_state.local_vertices = cp->local_vertices;
+	return true;
+}
+
+// StandardMaterial3D's parameters (other spatial shaders: whichever of these
+// names they have, white otherwise).
+static Color param_color(const HashMap<StringName, Variant> &p_params, const char *p_name, const Color &p_default) {
+	const Variant *v = p_params.getptr(StringName(p_name));
+	return v && v->get_type() == Variant::COLOR ? Color(*v) : p_default;
+}
+
+static Vector3 param_vec3(const HashMap<StringName, Variant> &p_params, const char *p_name, const Vector3 &p_default) {
+	const Variant *v = p_params.getptr(StringName(p_name));
+	if (v && v->get_type() == Variant::VECTOR3) {
+		return *v;
+	}
+	if (v && v->get_type() == Variant::VECTOR2) {
+		const Vector2 v2 = *v;
+		return Vector3(v2.x, v2.y, p_default.z);
+	}
+	return p_default;
+}
+
+bool MaterialStorageWiiU::get_spatial_material(RID p_material, SpatialMaterial &r_material) const {
+	const RID *shader = material_shader.getptr(p_material);
+	const SpatialShader *sh = shader ? spatial_shaders.getptr(*shader) : nullptr;
+	if (sh == nullptr) {
+		return false;
+	}
+	SpatialMaterial m;
+	m.shader = *sh;
+	const MaterialData *md = material_data.getptr(p_material);
+	if (md) {
+		m.albedo = param_color(md->params, "albedo", Color(1, 1, 1, 1));
+		const Vector3 scale = param_vec3(md->params, "uv1_scale", Vector3(1, 1, 1));
+		const Vector3 offset = param_vec3(md->params, "uv1_offset", Vector3());
+		m.uv1 = Vector4(scale.x, scale.y, offset.x, offset.y);
+		if (const Variant *v = md->params.getptr(StringName("alpha_scissor_threshold"))) {
+			m.alpha_scissor_threshold = *v;
+		}
+		const Variant *tex = md->params.getptr(StringName("texture_albedo"));
+		TextureStorageWiiU *ts = TextureStorageWiiU::get_wiiu_singleton();
+		if (tex && ts) {
+			RID rid;
+			if (tex->get_type() == Variant::RID) {
+				rid = *tex;
+			} else if (tex->get_type() == Variant::OBJECT) {
+				Ref<Texture2D> t = *tex;
+				if (t.is_valid()) {
+					rid = t->get_rid();
+				}
+			}
+			if (rid.is_valid()) {
+				m.texture = ts->resolve(rid).texture;
+			}
+		}
+	}
+	r_material = m;
 	return true;
 }

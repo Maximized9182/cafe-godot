@@ -98,6 +98,10 @@ RasterizerWiiU::RasterizerWiiU() {
 	mesh_storage = memnew(MeshStorageWiiU);
 	memdelete(material_storage);
 	material_storage = memnew(MaterialStorageWiiU);
+	memdelete(light_storage);
+	light_storage = memnew(LightStorageWiiU);
+	memdelete(scene);
+	scene = memnew(RasterizerSceneWiiU);
 }
 
 void RasterizerWiiU::begin_frame(double p_frame_step) {
