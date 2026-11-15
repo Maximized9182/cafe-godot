@@ -446,21 +446,17 @@ static volatile bool crash_in_progress;
 // focus notifications. Never called during a crash.
 void (*wiiu_proc_focus_callback)(bool p_focused) = NULL;
 
-static bool proc_release_pending = false;
 static bool proc_in_background = false;
 
-// WHBProcIsRunning, except that on "release foreground" the app gets one more
-// frame before ProcUIDrawDoneRelease (like SDL2's Wii U backend), so the game
-// sees the focus loss first (e.g. pauses) and the HOME menu opens on top of
-// that frame.
+// WHBProcIsRunning, plus Godot's focus notifications. On "release foreground"
+// the game is told first (focus out, paused), then the foreground is released
+// right away, as WHBProcIsRunning does. (Until 2026-11-15 the game got one more
+// frame before ProcUIDrawDoneRelease, like SDL2's Wii U backend; a long frame,
+// such as a scene load, then delayed the HOME menu. Suspect for the rare HOME
+// freeze, so it's off.)
 bool wiiu_proc_is_running(void) {
 	if (!proc_running) {
 		return false;
-	}
-	if (proc_release_pending) {
-		proc_release_pending = false;
-		proc_in_background = true;
-		ProcUIDrawDoneRelease();
 	}
 	switch (ProcUIProcessMessages(TRUE)) {
 		case PROCUI_STATUS_EXITING:
@@ -468,10 +464,11 @@ bool wiiu_proc_is_running(void) {
 			ProcUIShutdown();
 			break;
 		case PROCUI_STATUS_RELEASE_FOREGROUND:
-			proc_release_pending = true;
 			if (wiiu_proc_focus_callback && !crash_in_progress) {
 				wiiu_proc_focus_callback(false);
 			}
+			proc_in_background = true;
+			ProcUIDrawDoneRelease();
 			break;
 		case PROCUI_STATUS_IN_FOREGROUND:
 			if (proc_in_background) {
