@@ -17,6 +17,9 @@
 #   -i, --icon FILE        Icon, scaled to 128x128 (default: the project icon)
 #       --tv-image FILE    TV splash, fitted to 1280x720 on black
 #       --drc-image FILE   GamePad splash, fitted to 854x480 on black
+#       --boot-sound FILE  Sound played when the app starts from the Wii U Menu (any
+#                          audio ffmpeg reads, or a ready .btsnd; at most 20 s). Needs
+#                          the patched wuhbtool (platform/wiiu/tools/wuhbtool/).
 #   -t, --template FILE    Cafe Godot template .rpx
 #                          (default: $CAFE_GODOT_HOME/templates/4.7.2/wiiu_template_debug.rpx)
 #   -u, --upload HOST      Upload to the Wii U at HOST (FTP, empty credentials)
@@ -30,7 +33,7 @@
 #   -h, --help             Show this help
 #
 # Environment: CAFE_GODOT_HOME (default ~/.local/share/cafe-godot) holds templates/ and
-# bin/wuhbtool (from devkitPro's wut-tools).
+# bin/wuhbtool (from devkitPro's wut-tools, or the patched one for --boot-sound).
 
 set -euo pipefail
 
@@ -44,7 +47,7 @@ usage() { sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; }
 die() { echo "cafe-export: $*" >&2; exit 1; }
 
 project="" out="" preset="" name="" short_name="" author="Cafe Godot"
-icon="" tv="" drc="" upload="" pack_on_sd=""
+icon="" tv="" drc="" boot_sound="" upload="" pack_on_sd=""
 while [[ $# -gt 0 ]]; do
 	case "$1" in
 		-p|--preset) preset="$2"; shift 2 ;;
@@ -54,6 +57,7 @@ while [[ $# -gt 0 ]]; do
 		-i|--icon) icon="$2"; shift 2 ;;
 		--tv-image) tv="$2"; shift 2 ;;
 		--drc-image) drc="$2"; shift 2 ;;
+		--boot-sound) boot_sound="$2"; shift 2 ;;
 		-t|--template) TEMPLATE="$2"; shift 2 ;;
 		-u|--upload) upload="$2"; shift 2 ;;
 		--pack-on-sd) pack_on_sd="${2#/}"; pack_on_sd="${pack_on_sd%/}"; shift 2 ;;
@@ -180,6 +184,17 @@ if [[ -n "$tv" ]]; then
 fi
 if [[ -n "$drc" ]]; then
 	fit_image "$drc" "$work/drc.png" 854 480 && args+=("--drc-image=$work/drc.png")
+fi
+
+if [[ -n "$boot_sound" ]]; then
+	"$WUHBTOOL" --help 2>&1 | grep -q -- "boot-sound" ||
+		die "$WUHBTOOL has no --boot-sound: build the patched one (platform/wiiu/tools/wuhbtool/build.sh)"
+	if [[ "$boot_sound" == *.btsnd ]]; then
+		args+=("--boot-sound=$boot_sound")
+	else
+		python3 "$(dirname "$0")/make_btsnd.py" "$boot_sound" "$work/bootSound.btsnd" >&2 || die "couldn't convert $boot_sound"
+		args+=("--boot-sound=$work/bootSound.btsnd")
+	fi
 fi
 
 "$WUHBTOOL" "${args[@]}" > "$work/wuhb.log" 2>&1 || { cat "$work/wuhb.log" >&2; die "wuhbtool failed"; }
