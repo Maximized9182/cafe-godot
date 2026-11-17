@@ -414,7 +414,7 @@ static int32_t scissor_x = 0, scissor_y = 0, scissor_w = 0, scissor_h = 0;
 // ---------------------------------------------------------------------------
 
 static void init_color_buffer_format(GX2ColorBuffer *cb, uint32_t width, uint32_t height, GX2SurfaceUse use,
-		GX2SurfaceFormat format) {
+		GX2SurfaceFormat format, GX2TileMode tile_mode) {
 	memset(cb, 0, sizeof(*cb));
 	cb->surface.use = use;
 	cb->surface.dim = GX2_SURFACE_DIM_TEXTURE_2D;
@@ -424,14 +424,14 @@ static void init_color_buffer_format(GX2ColorBuffer *cb, uint32_t width, uint32_
 	cb->surface.mipLevels = 1;
 	cb->surface.format = format;
 	cb->surface.aa = GX2_AA_MODE1X;
-	cb->surface.tileMode = GX2_TILE_MODE_DEFAULT;
+	cb->surface.tileMode = tile_mode;
 	cb->viewNumSlices = 1;
 	GX2CalcSurfaceSizeAndAlignment(&cb->surface);
 	GX2InitColorBufferRegs(cb);
 }
 
 static void init_color_buffer(GX2ColorBuffer *cb, uint32_t width, uint32_t height, GX2SurfaceUse use) {
-	init_color_buffer_format(cb, width, height, use, GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8);
+	init_color_buffer_format(cb, width, height, use, GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8, GX2_TILE_MODE_DEFAULT);
 }
 
 static bool alloc_screen_memory(MEMHeapHandle heap, Screen *s, bool tv) {
@@ -762,13 +762,14 @@ WiiUTexture *wiiu_gx2_transparent_texture(void) {
 	return draw_transparent ? draw_transparent : draw_white;
 }
 
-static WiiURenderTarget *render_target_create(uint32_t p_width, uint32_t p_height, GX2SurfaceFormat p_format) {
+static WiiURenderTarget *render_target_create(uint32_t p_width, uint32_t p_height, GX2SurfaceFormat p_format,
+		GX2TileMode p_tile_mode) {
 	WiiURenderTarget *rt = (WiiURenderTarget *)calloc(1, sizeof(WiiURenderTarget));
 	if (rt == NULL) {
 		return NULL;
 	}
 	init_color_buffer_format(&rt->color_buffer, p_width, p_height,
-			(GX2SurfaceUse)(GX2_SURFACE_USE_TEXTURE | GX2_SURFACE_USE_COLOR_BUFFER), p_format);
+			(GX2SurfaceUse)(GX2_SURFACE_USE_TEXTURE | GX2_SURFACE_USE_COLOR_BUFFER), p_format, p_tile_mode);
 	rt->color_buffer.surface.image =
 			MEMAllocFromDefaultHeapEx(rt->color_buffer.surface.imageSize, rt->color_buffer.surface.alignment);
 	if (rt->color_buffer.surface.image == NULL) {
@@ -786,11 +787,21 @@ static WiiURenderTarget *render_target_create(uint32_t p_width, uint32_t p_heigh
 }
 
 WiiURenderTarget *wiiu_gx2_render_target_create(uint32_t p_width, uint32_t p_height) {
-	return render_target_create(p_width, p_height, GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8);
+	return render_target_create(p_width, p_height, GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8, GX2_TILE_MODE_DEFAULT);
 }
 
 WiiURenderTarget *wiiu_gx2_render_target_create_float(uint32_t p_width, uint32_t p_height) {
-	return render_target_create(p_width, p_height, GX2_SURFACE_FORMAT_FLOAT_R32);
+	// Test: linear (not tiled) memory, in case drawing and sampling a big
+	// tiled target disagree on the layout (the shadow map's bands repeat about
+	// every 8 texels).
+	WiiURenderTarget *rt = render_target_create(p_width, p_height, GX2_SURFACE_FORMAT_FLOAT_R32, GX2_TILE_MODE_LINEAR_ALIGNED);
+	if (rt) {
+		const GX2Surface *s = &rt->color_buffer.surface;
+		WHBLogPrintf("[gx2] float target %ux%u: tile mode %u, pitch %u, swizzle %08x, align %u, size %u; texture tile mode %u",
+				(unsigned)s->width, (unsigned)s->height, (unsigned)s->tileMode, (unsigned)s->pitch, (unsigned)s->swizzle,
+				(unsigned)s->alignment, (unsigned)s->imageSize, (unsigned)rt->texture.texture.surface.tileMode);
+	}
+	return rt;
 }
 
 void wiiu_gx2_render_target_free(WiiURenderTarget *p_rt) {
@@ -1395,6 +1406,9 @@ void wiiu_gx2_clear_depth(void) {
 		// Only the GPU writes it (see wiiu_gx2_render_target_create).
 		GX2Invalidate(GX2_INVALIDATE_MODE_CPU, db->surface.image, db->surface.imageSize);
 		target_rt->depth = db;
+		WHBLogPrintf("[gx2] depth buffer %ux%u: tile mode %u, pitch %u, swizzle %08x", (unsigned)db->surface.width,
+				(unsigned)db->surface.height, (unsigned)db->surface.tileMode, (unsigned)db->surface.pitch,
+				(unsigned)db->surface.swizzle);
 		stat_render_target_bytes += db->surface.imageSize;
 	}
 	GX2ClearDepthStencilEx(target_rt->depth, 1.0f, 0, GX2_CLEAR_FLAGS_DEPTH);
