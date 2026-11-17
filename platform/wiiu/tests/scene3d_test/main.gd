@@ -10,7 +10,8 @@ extends Node3D
 # B cycles the renderer's shadow debug modes (rendering/wiiu/shadow_debug, see
 # platform/wiiu/rasterizer_scene_wiiu.cpp). Shadow tests on the D-pad: up hides
 # everything but the box and the floor, down resets the box's rotation,
-# left/right set the sun's shadow distance to 15/100.
+# L switches the sun's shadow distance between 100 and 15 (not on the D-pad:
+# TV + D-pad left is the screenshot plugin's button combo).
 
 var box: MeshInstance3D
 var camera: Camera3D
@@ -213,10 +214,8 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventJoypadButton and event.pressed and event.button_index == JOY_BUTTON_DPAD_DOWN:
 		box.basis = Basis()
 		spinning = false
-	if event is InputEventJoypadButton and event.pressed and event.button_index == JOY_BUTTON_DPAD_LEFT:
-		sun.directional_shadow_max_distance = 15.0
-	if event is InputEventJoypadButton and event.pressed and event.button_index == JOY_BUTTON_DPAD_RIGHT:
-		sun.directional_shadow_max_distance = 100.0
+	if event is InputEventJoypadButton and event.pressed and event.button_index == JOY_BUTTON_LEFT_SHOULDER:
+		sun.directional_shadow_max_distance = 15.0 if sun.directional_shadow_max_distance > 15.0 else 100.0
 	if event is InputEventJoypadButton and event.pressed and event.button_index == JOY_BUTTON_A:
 		spinning = not spinning
 
@@ -239,4 +238,4 @@ func _process(delta: float) -> void:
 	camera.rotation = Vector3(pitch, yaw, 0)
 	var stick := Input.get_vector("ui_left", "ui_right", "ui_up", "ui_down")
 	camera.position += camera.basis * Vector3(stick.x, 0, stick.y) * MOVE_SPEED * delta
-	label.text = "Cafe 3D Test   %d fps   cull: %s   background: %s   box: %s\nleft stick: move, right stick: look, X: cull mode, Y: background\nA: stop/start the box, hold R + right stick: turn the box, B: shadow debug (%s)\nD-pad: up %s others, down reset box, left/right shadow distance 15/100 (now %d)" % [Engine.get_frames_per_second(), CULL_NAMES[cull], BACKGROUND_NAMES[background], "spinning" if spinning else "stopped", SHADOW_DEBUG_NAMES[shadow_debug], "show" if others_hidden else "hide", sun.directional_shadow_max_distance]
+	label.text = "Cafe 3D Test   %d fps   cull: %s   background: %s   box: %s\nleft stick: move, right stick: look, X: cull mode, Y: background\nA: stop/start the box, hold R + right stick: turn the box, B: shadow debug (%s)\nD-pad: up %s others, down reset box; L: shadow distance 100/15 (now %d)" % [Engine.get_frames_per_second(), CULL_NAMES[cull], BACKGROUND_NAMES[background], "spinning" if spinning else "stopped", SHADOW_DEBUG_NAMES[shadow_debug], "show" if others_hidden else "hide", sun.directional_shadow_max_distance]
