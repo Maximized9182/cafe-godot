@@ -30,7 +30,7 @@ var shadow_debug := 0
 var sun: DirectionalLight3D
 var floor_mi: MeshInstance3D
 var others_hidden := false
-const SHADOW_DEBUG_NAMES := ["off", "depth colours", "no cull", "material cull", "no bias", "no depth test", "show map", "hardware depth", "depth stripes", "map stats"]
+const SHADOW_DEBUG_NAMES := ["off", "depth colours", "no cull", "material cull", "no bias", "no depth test", "show map", "hardware depth", "depth stripes", "map stats", "bias x4", "bias x16", "no normal offset", "no slope bias", "no filter", "front faces + big bias", "bare"]
 const BACKGROUND_NAMES := ["colour", "procedural sky", "physical sky"]
 
 

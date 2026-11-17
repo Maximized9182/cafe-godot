@@ -297,6 +297,9 @@ static const char *scene_ps_glsl =
 		"    float s01 = step(depth, shadow_depth(base + vec2(0.0, shadow_texel.y)));\n"
 		"    float s11 = step(depth, shadow_depth(base + shadow_texel.xy));\n"
 		"    float s = mix(mix(s00, s10, f.x), mix(s01, s11, f.x), f.y);\n"
+		"    if (shadow_slope.x > 0.5) {\n"
+		"        s = step(depth, shadow_depth((floor(uv * shadow_texel.zw) + 0.5) * shadow_texel.xy));\n"
+		"    }\n"
 		"    return mix(1.0, s, shadow_params.w);\n"
 		"}\n"
 		// Local lights (omni and spot), the four nearest to the object:
@@ -699,6 +702,26 @@ static void sky_ambient(RID p_material, Color &r_top, Color &r_bottom) {
 	}
 }
 
+// Shadow bias experiments for rendering/wiiu/shadow_debug = 10, 11, ...:
+// multipliers for the depth bias, normal offset and slope bias, whether the
+// casters keep their material's culling (front faces go into the map) and
+// whether the lookup skips the 2x2 filter.
+struct ShadowExperiment {
+	float bias, normal, slope;
+	bool material_cull;
+	bool point;
+};
+static const ShadowExperiment SHADOW_EXPERIMENTS[] = {
+	{ 4, 1, 1, false, false }, // 10: depth bias x4
+	{ 16, 1, 1, false, false }, // 11: depth bias x16
+	{ 1, 0, 1, false, false }, // 12: no normal offset
+	{ 1, 1, 0, false, false }, // 13: no slope bias
+	{ 1, 1, 1, false, true }, // 14: no filtering
+	{ 8, 4, 4, true, false }, // 15: front faces in the map, big biases
+	{ 0, 0, 0, false, true }, // 16: nothing: no biases, no filtering
+};
+static const int SHADOW_EXPERIMENT_COUNT = sizeof(SHADOW_EXPERIMENTS) / sizeof(SHADOW_EXPERIMENTS[0]);
+
 void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_buffers, const CameraData *p_camera_data, const CameraData *p_prev_camera_data, const PagedArray<RenderGeometryInstance *> &p_instances, const PagedArray<RID> &p_lights, const PagedArray<RID> &p_reflection_probes, const PagedArray<RID> &p_voxel_gi_instances, const PagedArray<RID> &p_decals, const PagedArray<RID> &p_lightmaps, const PagedArray<RID> &p_fog_volumes, RID p_environment, RID p_camera_attributes, RID p_compositor, RID p_shadow_atlas, RID p_occluder_debug_tex, RID p_reflection_atlas, RID p_reflection_probe, int p_reflection_probe_pass, float p_screen_mesh_lod_threshold, const RenderShadowData *p_render_shadows, int p_render_shadow_count, const RenderSDFGIData *p_render_sdfgi_regions, int p_render_sdfgi_region_count, float p_window_output_max_value, const RenderSDFGIUpdateData *p_sdfgi_update_data, RenderingServerTypes::RenderInfo *r_render_info) {
 	RenderSceneBuffersWiiU *rb = Object::cast_to<RenderSceneBuffersWiiU>(p_render_buffers.ptr());
 	TextureStorageWiiU *ts = TextureStorageWiiU::get_wiiu_singleton();
@@ -999,6 +1022,13 @@ void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_b
 				if (shadow_debug_mode == 4) {
 					b.x = b.y = b.z = 0.0f;
 				}
+				// Modes 10+: experiments with the biases (see the table).
+				if (shadow_debug_mode >= 10 && shadow_debug_mode < 10 + SHADOW_EXPERIMENT_COUNT) {
+					const ShadowExperiment &e = SHADOW_EXPERIMENTS[shadow_debug_mode - 10];
+					b.x *= e.bias;
+					b.y *= e.normal;
+					b.z *= e.slope;
+				}
 				// The split's quarter of the map: clip space squeezed into it,
 				// and a scissor so nothing spills into the others.
 				const float ox = (split & 1) ? 0.5f : 0.0f;
@@ -1029,6 +1059,9 @@ void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_b
 					// faces don't shadow themselves (two-sided materials stay so).
 					const WiiUCull cull = item->material.shader.cull;
 					d.cull = cull == WIIU_CULL_BACK ? WIIU_CULL_FRONT : (cull == WIIU_CULL_FRONT ? WIIU_CULL_BACK : WIIU_CULL_DISABLED);
+					if (shadow_debug_mode >= 10 && shadow_debug_mode < 10 + SHADOW_EXPERIMENT_COUNT && SHADOW_EXPERIMENTS[shadow_debug_mode - 10].material_cull) {
+						d.cull = cull;
+					}
 					if (shadow_debug_mode == 2) {
 						d.cull = WIIU_CULL_DISABLED;
 					} else if (shadow_debug_mode == 3) {
@@ -1133,7 +1166,7 @@ void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_b
 			ps.put(loc.shadow_splits, shadow_split_far[0], shadow_split_far[1], shadow_split_far[2], shadow_split_far[3]);
 			ps.put(loc.shadow_forward, cam_forward.x, cam_forward.y, cam_forward.z, 0.0f);
 			ps.put(loc.shadow_texel, 1.0f / SHADOW_SIZE, 1.0f / SHADOW_SIZE, (float)SHADOW_SIZE, (float)SHADOW_SIZE);
-			ps.put(loc.shadow_slope, 0.0f, 0.0f, (shadow_debug_mode == 1 || shadow_debug_mode == 8) ? 1.0f : 0.0f, shadow_debug_mode == 8 ? 1.0f : 0.0f);
+			ps.put(loc.shadow_slope, (shadow_debug_mode >= 10 && shadow_debug_mode < 10 + SHADOW_EXPERIMENT_COUNT && SHADOW_EXPERIMENTS[shadow_debug_mode - 10].point) ? 1.0f : 0.0f, 0.0f, (shadow_debug_mode == 1 || shadow_debug_mode == 8) ? 1.0f : 0.0f, shadow_debug_mode == 8 ? 1.0f : 0.0f);
 			tex[1].texture = wiiu_gx2_render_target_texture(shadow_target);
 			tex[1].location = loc.shadow_map;
 			tex[1].filter = 0; // Nearest: depth can't be filtered.
