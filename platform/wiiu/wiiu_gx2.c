@@ -812,7 +812,7 @@ void wiiu_gx2_debug_float_stats(WiiURenderTarget *p_rt) {
 	}
 	GX2DrawDone();
 	const GX2Surface *s = &p_rt->color_buffer.surface;
-	GX2Invalidate(GX2_INVALIDATE_MODE_CPU, s->image, s->imageSize);
+	DCInvalidateRange(s->image, s->imageSize);
 	const float *img = (const float *)s->image;
 	enum { SLOTS = 8192 };
 	static uint32_t slots[SLOTS];
