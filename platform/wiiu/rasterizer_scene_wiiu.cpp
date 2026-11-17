@@ -257,6 +257,12 @@ static const char *scene_ps_glsl =
 		"    if (stored >= 1.0) {\n"
 		"        return vec3(0.0, 0.0, 1.0);\n"
 		"    }\n"
+		// Mode 8 (shadow_slope.w = 1): red = the stored depth, green = this
+		// surface's, both as a sawtooth repeating every quarter unit. Smooth
+		// ramps = full precision; flat steps in red = the map lost precision.
+		"    if (shadow_slope.w > 0.5) {\n"
+		"        return vec3(fract(stored * b.w * 4.0), fract((c.z * 0.5 + 0.5) * b.w * 4.0), 0.0);\n"
+		"    }\n"
 		"    float behind = (c.z * 0.5 + 0.5 - stored) * b.w;\n"
 		"    return behind > 0.0 ? vec3(clamp(behind * 2.0, 0.1, 1.0), 0.0, 0.0) : vec3(0.0, clamp(-behind * 2.0, 0.1, 1.0), 0.0);\n"
 		"}\n"
@@ -903,7 +909,7 @@ void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_b
 	// pass without culling, 3 shadow pass with the material's own cull (not
 	// reversed), 4 no depth or normal bias, 5 shadow pass without the depth
 	// test, 6 the shadow map drawn in the top right corner, 7 shadow pass
-	// writing gl_FragCoord.z.
+	// writing gl_FragCoord.z, 8 stored and surface depth as sawtooth stripes.
 	const int shadow_debug_mode = int(ProjectSettings::get_singleton()->get_setting("rendering/wiiu/shadow_debug", 0));
 	if (dir_light && dir_light->shadow && !opaque.is_empty() && _ensure_shadow_program()) {
 		if (shadow_target == nullptr) {
@@ -1121,7 +1127,7 @@ void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_b
 			ps.put(loc.shadow_splits, shadow_split_far[0], shadow_split_far[1], shadow_split_far[2], shadow_split_far[3]);
 			ps.put(loc.shadow_forward, cam_forward.x, cam_forward.y, cam_forward.z, 0.0f);
 			ps.put(loc.shadow_texel, 1.0f / SHADOW_SIZE, 1.0f / SHADOW_SIZE, (float)SHADOW_SIZE, (float)SHADOW_SIZE);
-			ps.put(loc.shadow_slope, 0.0f, 0.0f, shadow_debug_mode == 1 ? 1.0f : 0.0f, 0.0f);
+			ps.put(loc.shadow_slope, 0.0f, 0.0f, (shadow_debug_mode == 1 || shadow_debug_mode == 8) ? 1.0f : 0.0f, shadow_debug_mode == 8 ? 1.0f : 0.0f);
 			tex[1].texture = wiiu_gx2_render_target_texture(shadow_target);
 			tex[1].location = loc.shadow_map;
 			tex[1].filter = 0; // Nearest: depth can't be filtered.
