@@ -69,6 +69,8 @@ WiiUTexture *wiiu_gx2_white_texture(void);
 
 // Render targets: a colour buffer that can also be sampled as a texture.
 WiiURenderTarget *wiiu_gx2_render_target_create(uint32_t p_width, uint32_t p_height);
+// Debug: logs the distinct depths in a linear FLOAT_R32 target.
+void wiiu_gx2_debug_float_stats(WiiURenderTarget *p_rt);
 // The same with one 32-bit float channel (red), e.g. for shadow map depth.
 WiiURenderTarget *wiiu_gx2_render_target_create_float(uint32_t p_width, uint32_t p_height);
 void wiiu_gx2_render_target_free(WiiURenderTarget *p_rt);

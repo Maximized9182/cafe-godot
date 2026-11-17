@@ -1043,6 +1043,12 @@ void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_b
 				shadow_split_matrix[i] = shadow_split_matrix[shadow_split_count - 1];
 				shadow_split_bias[i] = shadow_split_bias[shadow_split_count - 1];
 			}
+			if (shadow_debug_mode == 9) {
+				static int stats_frame = 0;
+				if (++stats_frame % 120 == 1) {
+					wiiu_gx2_debug_float_stats(shadow_target);
+				}
+			}
 			static int logged_mode = -1;
 			if (logged_mode != shadow_debug_mode) {
 				logged_mode = shadow_debug_mode;

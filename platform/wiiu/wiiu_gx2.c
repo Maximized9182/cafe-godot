@@ -804,6 +804,76 @@ WiiURenderTarget *wiiu_gx2_render_target_create_float(uint32_t p_width, uint32_t
 	return rt;
 }
 
+// Debug: reads a FLOAT_R32 target back (linear memory only) and logs how many
+// different depths it holds (a full-precision map has thousands).
+void wiiu_gx2_debug_float_stats(WiiURenderTarget *p_rt) {
+	if (p_rt == NULL || p_rt->color_buffer.surface.tileMode != GX2_TILE_MODE_LINEAR_ALIGNED) {
+		return;
+	}
+	GX2DrawDone();
+	const GX2Surface *s = &p_rt->color_buffer.surface;
+	GX2Invalidate(GX2_INVALIDATE_MODE_CPU, s->image, s->imageSize);
+	const float *img = (const float *)s->image;
+	enum { SLOTS = 8192 };
+	static uint32_t slots[SLOTS];
+	static float vals[SLOTS];
+	memset(slots, 0, sizeof(slots));
+	uint32_t distinct = 0, stored = 0;
+	const uint32_t one = 0x3f800000u;
+	float lo = 2.0f, hi = -1.0f;
+	for (uint32_t y = 0; y < s->height; y++) {
+		for (uint32_t x = 0; x < s->width; x++) {
+			const float f = img[y * s->pitch + x];
+			uint32_t bits;
+			memcpy(&bits, &f, 4);
+			if (bits == one) {
+				continue;
+			}
+			stored++;
+			if (f < lo) {
+				lo = f;
+			}
+			if (f > hi) {
+				hi = f;
+			}
+			uint32_t h = (bits * 2654435761u) % SLOTS;
+			uint32_t probes = 0;
+			while (slots[h] != 0 && slots[h] != bits && probes < SLOTS) {
+				h = (h + 1) % SLOTS;
+				probes++;
+			}
+			if (slots[h] == 0 && distinct < SLOTS - 1) {
+				slots[h] = bits;
+				distinct++;
+			}
+		}
+	}
+	uint32_t n = 0;
+	for (uint32_t i = 0; i < SLOTS; i++) {
+		if (slots[i] != 0) {
+			memcpy(&vals[n++], &slots[i], 4);
+		}
+	}
+	for (uint32_t i = 1; i < n; i++) {
+		const float v = vals[i];
+		uint32_t j = i;
+		while (j > 0 && vals[j - 1] > v) {
+			vals[j] = vals[j - 1];
+			j--;
+		}
+		vals[j] = v;
+	}
+	float gap = 1.0f;
+	for (uint32_t i = 1; i < n; i++) {
+		if (vals[i] - vals[i - 1] < gap) {
+			gap = vals[i] - vals[i - 1];
+		}
+	}
+	WHBLogPrintf("[gx2] float target: %u texels stored, %u distinct depths (cap %u), range %.6f..%.6f, smallest gap %.9f, first %.6f %.6f %.6f %.6f",
+			(unsigned)stored, (unsigned)distinct, (unsigned)SLOTS, lo, hi, gap, n > 0 ? vals[0] : 0.0f, n > 1 ? vals[1] : 0.0f,
+			n > 2 ? vals[2] : 0.0f, n > 3 ? vals[3] : 0.0f);
+}
+
 void wiiu_gx2_render_target_free(WiiURenderTarget *p_rt) {
 	if (p_rt == NULL) {
 		return;
