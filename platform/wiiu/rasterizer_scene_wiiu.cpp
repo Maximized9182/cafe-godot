@@ -1015,7 +1015,12 @@ void RasterizerSceneWiiU::render_scene(const Ref<RenderSceneBuffers> &p_render_b
 				// range (0..1 depth here); normal offset = normal_bias texels,
 				// scaled in the shader by how far the surface turns from the light.
 				Vector4 &b = shadow_split_bias[split];
-				b.x = dir_light->param[RSE::LIGHT_PARAM_SHADOW_BIAS] / 100.0f;
+				// Depth bias: 16 texels of the split at the default bias (0.1),
+				// at most one unit. A fixed fraction of the range was too small
+				// for the finest split (3 cm texels): a bias under about 0.4
+				// units left bands of self-shadow on faces turned away from
+				// the camera at an angle.
+				b.x = MIN(dir_light->param[RSE::LIGHT_PARAM_SHADOW_BIAS] * 160.0f * texel, 1.0f) / depth_range;
 				b.y = dir_light->param[RSE::LIGHT_PARAM_SHADOW_NORMAL_BIAS] * texel;
 				b.z = texel / depth_range;
 				b.w = depth_range;
