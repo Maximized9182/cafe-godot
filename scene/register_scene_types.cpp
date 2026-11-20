@@ -169,9 +169,7 @@
 #include "servers/display/display_server.h"
 #include "servers/rendering/rendering_server.h"
 
-#ifndef DISABLE_DEPRECATED
 #include "scene/resources/animated_texture.h"
-#endif
 
 // 2D
 #include "scene/2d/animated_sprite_2d.h"
@@ -972,9 +970,8 @@ void register_scene_types() {
 	GDREGISTER_CLASS(PlaceholderCubemap);
 	GDREGISTER_CLASS(PlaceholderCubemapArray);
 	GDREGISTER_CLASS(DPITexture);
-#ifndef DISABLE_DEPRECATED
+	// Cafe Godot: registered even with deprecated=no, games still use it.
 	GDREGISTER_CLASS(AnimatedTexture);
-#endif
 
 	// These classes are part of renderer_rd
 	GDREGISTER_CLASS(Texture2DRD);

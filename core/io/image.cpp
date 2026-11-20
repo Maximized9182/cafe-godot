@@ -570,6 +570,10 @@ static bool _are_formats_compatible(Image::Format p_format0, Image::Format p_for
 
 void Image::convert(Format p_new_format) {
 	ERR_FAIL_INDEX_MSG(p_new_format, FORMAT_MAX, vformat("The Image format specified (%d) is out of range. See Image's Format enum.", p_new_format));
+	// Cafe Godot: a compressed source is decompressed first instead of failing.
+	if (Image::is_format_compressed(format) && !Image::is_format_compressed(p_new_format)) {
+		decompress();
+	}
 	ERR_FAIL_COND_MSG(Image::is_format_compressed(format) || Image::is_format_compressed(p_new_format),
 			"Cannot convert to (or from) compressed formats. Use compress() and decompress() instead.");
 
