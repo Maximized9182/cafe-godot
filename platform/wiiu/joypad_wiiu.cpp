@@ -298,10 +298,10 @@ void JoypadWiiU::process_touch(const VPADTouchData &p_touch) {
 	if (wiiu_stats_touch(down, down && p_touch.validity == VPAD_VALID, calibrated.x, calibrated.y, touching)) {
 		return;
 	}
-	// A game with its own GamePad viewport (CafeDisplay) gets the touches in
+	// A game with its own GamePad viewport (Cafe) gets the touches in
 	// that viewport's pixels (touch and left-mouse events); otherwise they go
 	// to the main window as screen touches, in window pixels.
-	CafeDisplay *cafe_display = CafeDisplay::get_singleton();
+	Cafe *cafe_display = Cafe::get_singleton();
 	Viewport *gamepad_viewport = cafe_display ? cafe_display->get_gamepad_viewport() : nullptr;
 	if (down) {
 		if (p_touch.validity != VPAD_VALID) {

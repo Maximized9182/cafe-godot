@@ -66,7 +66,7 @@ static void draw_cursor(const Vector2 &p_tip) {
 	wiiu_gx2_draw(nullptr, WIIU_PRIM_TRIANGLES, nullptr, 0, false, v, 6);
 }
 
-// Geometry of the last GamePad viewport (CafeDisplay) shown on the GamePad.
+// Geometry of the last GamePad viewport (Cafe) shown on the GamePad.
 static struct {
 	bool valid = false;
 	Size2 rt_size;
@@ -140,9 +140,9 @@ void RasterizerWiiU::_blit_to_screen(WiiUScreen p_screen, const RenderingServerT
 	wiiu_gx2_bind_screen(p_screen);
 	wiiu_gx2_clear(0, 0, 0, 1);
 	if (p_screen == WIIU_SCREEN_DRC) {
-		// A game that set a GamePad viewport (CafeDisplay) gets it here instead
+		// A game that set a GamePad viewport (Cafe) gets it here instead
 		// of the mirrored main window.
-		CafeDisplay *cd = CafeDisplay::get_singleton();
+		Cafe *cd = Cafe::get_singleton();
 		last_gp_blit.valid = false;
 		if (cd && cd->get_gamepad_viewport()) {
 			const TextureStorageWiiU::Resolved res = ts->resolve(cd->get_gamepad_texture());

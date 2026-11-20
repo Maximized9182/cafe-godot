@@ -11,24 +11,24 @@ class Viewport;
 // window on the TV, mirrored onto the GamePad. A game that asks for it can
 // instead put its own Viewport on the GamePad:
 //
-//   if Engine.has_singleton("CafeDisplay"):
-//       Engine.get_singleton("CafeDisplay").set_gamepad_viewport($GamePadView)
+//   if Engine.has_singleton("Cafe"):
+//       Engine.get_singleton("Cafe").set_gamepad_viewport($GamePadView)
 //
 // The viewport is a SubViewport, usually 854x480 (the GamePad's size); it is
 // shown fitted on the GamePad, and GamePad touches are delivered to it (touch
 // and left-mouse events, in the viewport's own pixels) instead of to the
 // main window. Passing null goes back to mirroring.
-class CafeDisplay : public Object {
-	GDCLASS(CafeDisplay, Object);
+class Cafe : public Object {
+	GDCLASS(Cafe, Object);
 
-	static inline CafeDisplay *singleton = nullptr;
+	static inline Cafe *singleton = nullptr;
 	ObjectID gamepad_viewport;
 
 protected:
 	static void _bind_methods();
 
 public:
-	static CafeDisplay *get_singleton() { return singleton; }
+	static Cafe *get_singleton() { return singleton; }
 
 	// True when running on a Wii U (the class also exists in other builds of
 	// this engine, where it does nothing).
@@ -39,8 +39,8 @@ public:
 	// The render target texture of the GamePad viewport (renderer use).
 	RID get_gamepad_texture() const;
 
-	CafeDisplay();
-	~CafeDisplay();
+	Cafe();
+	~Cafe();
 };
 
 void register_wiiu_api();
