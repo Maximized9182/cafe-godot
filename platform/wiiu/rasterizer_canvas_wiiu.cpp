@@ -179,6 +179,9 @@ void RasterizerCanvasWiiU::canvas_render_items(RID p_to_render_target, Item *p_i
 	screen_texture = nullptr;
 	bool clip_ignored = false;
 	batch.clear();
+	// Cafe Godot: the scissor of a previous call (a clipping Control rect)
+	// stays set while the same target is bound; start every call unclipped.
+	wiiu_gx2_set_scissor(0, 0, rt_size.x, rt_size.y);
 
 	auto apply_clip = [&](Item *p_clip) {
 		_flush();
@@ -612,4 +615,6 @@ void RasterizerCanvasWiiU::canvas_render_items(RID p_to_render_target, Item *p_i
 		}
 	}
 	_flush();
+	// Leave no clip behind for the next canvas drawn into this target.
+	wiiu_gx2_set_scissor(0, 0, rt_size.x, rt_size.y);
 }
