@@ -174,8 +174,6 @@ void RasterizerCanvasWiiU::canvas_render_items(RID p_to_render_target, Item *p_i
 		wiiu_gx2_clear(c.r, c.g, c.b, rt->transparent ? c.a : 1.0f);
 		rt->clear_requested = false;
 	}
-	rt->used = true;
-
 	const Size2i rt_size = rt->size;
 	Item *current_clip = nullptr;
 	screen_texture = nullptr;

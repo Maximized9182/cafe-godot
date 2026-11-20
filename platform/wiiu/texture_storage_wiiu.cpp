@@ -91,6 +91,8 @@ TextureStorageWiiU::Resolved TextureStorageWiiU::resolve(RID p_texture) const {
 		return r;
 	}
 	if (t->render_target) {
+		// Sampled: the viewport must render next frame (UPDATE_WHEN_VISIBLE), like GLES3.
+		t->render_target->used = true;
 		r.texture = wiiu_gx2_render_target_texture(t->render_target->gpu);
 		r.size = Size2(MAX(t->render_target->size.x, 1), MAX(t->render_target->size.y, 1));
 	} else {

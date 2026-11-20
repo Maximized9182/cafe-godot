@@ -777,6 +777,10 @@ static WiiURenderTarget *render_target_create(uint32_t p_width, uint32_t p_heigh
 		free(rt);
 		return NULL;
 	}
+	// Start as transparent black: a viewport that has not rendered yet
+	// (UPDATE_WHEN_VISIBLE) would otherwise show whatever the memory held.
+	memset(rt->color_buffer.surface.image, 0, rt->color_buffer.surface.imageSize);
+	DCFlushRange(rt->color_buffer.surface.image, rt->color_buffer.surface.imageSize);
 	// Only the GPU writes it: no dirty CPU cache lines on top (see texture_create).
 	GX2Invalidate(GX2_INVALIDATE_MODE_CPU, rt->color_buffer.surface.image, rt->color_buffer.surface.imageSize);
 	init_texture_view(&rt->texture, &rt->color_buffer.surface);
