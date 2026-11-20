@@ -621,6 +621,8 @@ public:
 // coordinates, undoing the per-screen fit of the last blit. Returns false if
 // the point is outside the game's picture (in the black bars).
 bool rasterizer_wiiu_drc_to_window(const Vector2 &p_drc, Vector2 &r_window);
+// GamePad pixel -> pixel of the GamePad viewport (CafeDisplay); false when the GamePad shows the mirror or the touch is in the bars.
+bool rasterizer_wiiu_drc_to_gamepad_viewport(const Vector2 &p_drc, Vector2 &r_pos);
 
 class RasterizerWiiU : public RasterizerDummy {
 	bool blitted = false;

@@ -3,6 +3,9 @@
 #include "core/input/input_event.h"
 #include "rasterizer_wiiu.h"
 
+#include "platform/wiiu/api/api.h"
+#include "scene/main/viewport.h"
+
 #include <padscore/kpad.h>
 #include <padscore/wpad.h>
 #include <vpad/input.h>
@@ -295,11 +298,20 @@ void JoypadWiiU::process_touch(const VPADTouchData &p_touch) {
 	if (wiiu_stats_touch(down, down && p_touch.validity == VPAD_VALID, calibrated.x, calibrated.y, touching)) {
 		return;
 	}
+	// A game with its own GamePad viewport (CafeDisplay) gets the touches in
+	// that viewport's pixels (touch and left-mouse events); otherwise they go
+	// to the main window as screen touches, in window pixels.
+	CafeDisplay *cafe_display = CafeDisplay::get_singleton();
+	Viewport *gamepad_viewport = cafe_display ? cafe_display->get_gamepad_viewport() : nullptr;
 	if (down) {
 		if (p_touch.validity != VPAD_VALID) {
 			// One axis is unreliable this sample: keep the last position.
 			if (!touching) {
 				return;
+			}
+		} else if (gamepad_viewport) {
+			if (!rasterizer_wiiu_drc_to_gamepad_viewport(Vector2(calibrated.x, calibrated.y), position)) {
+				down = false;
 			}
 		} else if (!rasterizer_wiiu_drc_to_window(Vector2(calibrated.x, calibrated.y), position)) {
 			// In the black bars around the picture: treat as no touch.
@@ -307,13 +319,35 @@ void JoypadWiiU::process_touch(const VPADTouchData &p_touch) {
 		}
 	}
 
+	auto send = [&](const Ref<InputEvent> &p_event) {
+		if (gamepad_viewport) {
+			gamepad_viewport->push_input(p_event, true);
+		} else {
+			input->parse_input_event(p_event);
+		}
+	};
+	auto send_mouse_button = [&](const Vector2 &p_pos, bool p_pressed) {
+		if (!gamepad_viewport) {
+			return; // Godot emulates the mouse from touch for the main window.
+		}
+		Ref<InputEventMouseButton> mb;
+		mb.instantiate();
+		mb->set_button_index(MouseButton::LEFT);
+		mb->set_pressed(p_pressed);
+		mb->set_position(p_pos);
+		mb->set_global_position(p_pos);
+		mb->set_button_mask(p_pressed ? BitField<MouseButtonMask>(MouseButtonMask::LEFT) : BitField<MouseButtonMask>());
+		gamepad_viewport->push_input(mb, true);
+	};
+
 	if (down && !touching) {
 		Ref<InputEventScreenTouch> ev;
 		ev.instantiate();
 		ev->set_index(0);
 		ev->set_position(position);
 		ev->set_pressed(true);
-		input->parse_input_event(ev);
+		send(ev);
+		send_mouse_button(position, true);
 	} else if (down && touching && position != touch_position) {
 		Ref<InputEventScreenDrag> ev;
 		ev.instantiate();
@@ -321,14 +355,24 @@ void JoypadWiiU::process_touch(const VPADTouchData &p_touch) {
 		ev->set_position(position);
 		ev->set_relative(position - touch_position);
 		ev->set_relative_screen_position(position - touch_position);
-		input->parse_input_event(ev);
+		send(ev);
+		if (gamepad_viewport) {
+			Ref<InputEventMouseMotion> mm;
+			mm.instantiate();
+			mm->set_position(position);
+			mm->set_global_position(position);
+			mm->set_relative(position - touch_position);
+			mm->set_button_mask(MouseButtonMask::LEFT);
+			gamepad_viewport->push_input(mm, true);
+		}
 	} else if (!down && touching) {
 		Ref<InputEventScreenTouch> ev;
 		ev.instantiate();
 		ev->set_index(0);
 		ev->set_position(touch_position);
 		ev->set_pressed(false);
-		input->parse_input_event(ev);
+		send(ev);
+		send_mouse_button(touch_position, false);
 	}
 	touching = down;
 	if (down) {

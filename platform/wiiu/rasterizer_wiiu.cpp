@@ -1,5 +1,7 @@
 #include "rasterizer_wiiu.h"
 
+#include "platform/wiiu/api/api.h"
+
 #include "keyboard_mouse_wiiu.h"
 
 #include "core/io/image.h"
@@ -64,6 +66,21 @@ static void draw_cursor(const Vector2 &p_tip) {
 	wiiu_gx2_draw(nullptr, WIIU_PRIM_TRIANGLES, nullptr, 0, false, v, 6);
 }
 
+// Geometry of the last GamePad viewport (CafeDisplay) shown on the GamePad.
+static struct {
+	bool valid = false;
+	Size2 rt_size;
+	Rect2 drc_rect;
+} last_gp_blit;
+
+bool rasterizer_wiiu_drc_to_gamepad_viewport(const Vector2 &p_drc, Vector2 &r_pos) {
+	if (!last_gp_blit.valid || !last_gp_blit.drc_rect.has_point(p_drc)) {
+		return false;
+	}
+	r_pos = (p_drc - last_gp_blit.drc_rect.position) * last_gp_blit.rt_size / last_gp_blit.drc_rect.size;
+	return true;
+}
+
 bool rasterizer_wiiu_drc_to_window(const Vector2 &p_drc, Vector2 &r_window) {
 	if (!last_drc_blit.valid || last_drc_blit.drc_rect.size.x <= 0 || last_drc_blit.drc_rect.size.y <= 0) {
 		// No blit yet: scale the GamePad screen to the 1280x720 window.
@@ -122,6 +139,32 @@ void RasterizerWiiU::_blit_to_screen(WiiUScreen p_screen, const RenderingServerT
 	wiiu_gx2_screen_size(p_screen, &sw, &sh);
 	wiiu_gx2_bind_screen(p_screen);
 	wiiu_gx2_clear(0, 0, 0, 1);
+	if (p_screen == WIIU_SCREEN_DRC) {
+		// A game that set a GamePad viewport (CafeDisplay) gets it here instead
+		// of the mirrored main window.
+		CafeDisplay *cd = CafeDisplay::get_singleton();
+		last_gp_blit.valid = false;
+		if (cd && cd->get_gamepad_viewport()) {
+			const TextureStorageWiiU::Resolved res = ts->resolve(cd->get_gamepad_texture());
+			if (res.texture != nullptr && res.size.x > 0 && res.size.y > 0) {
+				const float rw = res.size.x, rh = res.size.y;
+				float scale = MIN((float)sw / rw, (float)sh / rh);
+				bool linear = true;
+				if (scale >= 1.0f) {
+					scale = Math::floor(scale);
+					linear = false;
+				}
+				const Size2 size(Math::round(rw * scale), Math::round(rh * scale));
+				const Point2 pos(Math::floor(((float)sw - size.x) * 0.5f), Math::floor(((float)sh - size.y) * 0.5f));
+				cv->draw_texture_rect(res.texture, Rect2(pos, size), Rect2(0, 0, 1, 1), linear);
+				last_gp_blit.valid = true;
+				last_gp_blit.rt_size = Size2(rw, rh);
+				last_gp_blit.drc_rect = Rect2(pos, size);
+				last_drc_blit.valid = false;
+				return;
+			}
+		}
+	}
 	for (int i = 0; i < p_amount; i++) {
 		TextureStorageWiiU::RenderTarget *rt = ts->get_render_target(p_render_targets[i].render_target);
 		if (rt == nullptr || rt->gpu == nullptr) {
@@ -181,6 +224,9 @@ void RasterizerWiiU::end_frame(bool p_present) {
 		for (int s = 0; s < 2; s++) {
 			const WiiUScreen screen = s == 0 ? WIIU_SCREEN_TV : WIIU_SCREEN_DRC;
 			Vector2 at;
+			if (screen == WIIU_SCREEN_DRC && last_gp_blit.valid) {
+				continue;
+			}
 			if (window_to_screen(screen, cursor, at)) {
 				wiiu_gx2_bind_screen(screen);
 				draw_cursor(at);
