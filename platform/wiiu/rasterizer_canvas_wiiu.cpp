@@ -179,6 +179,7 @@ void RasterizerCanvasWiiU::canvas_render_items(RID p_to_render_target, Item *p_i
 	screen_texture = nullptr;
 	bool clip_ignored = false;
 	batch.clear();
+	LocalVector<Vector2> poly_screen; // Transformed polygon points (see TYPE_POLYGON).
 	// Cafe Godot: the scissor of a previous call (a clipping Control rect)
 	// stays set while the same target is bound; start every call unclipped.
 	wiiu_gx2_set_scissor(0, 0, rt_size.x, rt_size.y);
@@ -512,15 +513,59 @@ void RasterizerCanvasWiiU::canvas_render_items(RID p_to_render_target, Item *p_i
 						};
 						switch (poly->primitive) {
 							case RSE::PRIMITIVE_TRIANGLES:
+							case RSE::PRIMITIVE_TRIANGLE_STRIP:
+								if (local_item == 0 && count >= 3) {
+									// Cafe Godot: long polygons (draw_polyline paths are
+									// triangle strips, big shapes) are mostly off screen.
+									// Transform every point once, then skip the triangles
+									// that are completely outside the render target.
+									const uint32_t pc = data->points.size();
+									poly_screen.resize(pc);
+									for (uint32_t k = 0; k < pc; k++) {
+										poly_screen[k] = xform.xform(data->points[k]);
+									}
+									const float W = (float)rt_size.x, H = (float)rt_size.y;
+									const bool indexed = data->indices.size() > 0;
+									const bool vcolors = data->colors.size() == data->points.size();
+									const bool one_color = data->colors.size() == 1;
+									const bool strip = poly->primitive == RSE::PRIMITIVE_TRIANGLE_STRIP;
+									const uint32_t step = strip ? 1 : 3;
+									for (uint32_t i = 0; i + 2 < count; i += step) {
+										int id[3];
+										for (int k = 0; k < 3; k++) {
+											id[k] = indexed ? data->indices[i + k] : (int)(i + k);
+										}
+										if (id[0] < 0 || id[1] < 0 || id[2] < 0 || id[0] >= (int)pc || id[1] >= (int)pc || id[2] >= (int)pc) {
+											continue;
+										}
+										const Vector2 &p0 = poly_screen[id[0]], &p1 = poly_screen[id[1]], &p2 = poly_screen[id[2]];
+										if ((p0.x < 0 && p1.x < 0 && p2.x < 0) || (p0.x > W && p1.x > W && p2.x > W) ||
+												(p0.y < 0 && p1.y < 0 && p2.y < 0) || (p0.y > H && p1.y > H && p2.y > H)) {
+											continue;
+										}
+										for (int k = 0; k < 3; k++) {
+											Color col = base_color;
+											if (vcolors) {
+												col = data->colors[id[k]] * base_color;
+											} else if (one_color) {
+												col = data->colors[0] * base_color;
+											}
+											_vertex(poly_screen[id[k]], data->uvs.size() > 0 ? data->uvs[id[k]] : Vector2(), col);
+										}
+									}
+									break;
+								}
+								if (poly->primitive == RSE::PRIMITIVE_TRIANGLE_STRIP) {
+									for (uint32_t i = 2; i < count; i++) {
+										vertex_at(i - 2);
+										vertex_at(i - 1);
+										vertex_at(i);
+									}
+									break;
+								}
+								[[fallthrough]];
 							case RSE::PRIMITIVE_LINES:
 								for (uint32_t i = 0; i < count; i++) {
-									vertex_at(i);
-								}
-								break;
-							case RSE::PRIMITIVE_TRIANGLE_STRIP:
-								for (uint32_t i = 2; i < count; i++) {
-									vertex_at(i - 2);
-									vertex_at(i - 1);
 									vertex_at(i);
 								}
 								break;
