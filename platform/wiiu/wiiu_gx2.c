@@ -45,6 +45,24 @@
 #include <string.h>
 #include <whb/gfx.h>
 #include <whb/log.h>
+#include <coreinit/time.h>
+
+// Frame stall counters for the stats overlay: every GX2DrawDone in this file
+// goes through timed_draw_done (a full CPU wait for the GPU), and texture
+// creates, updates and frees are counted per frame.
+static uint32_t stat_dd_count = 0, stat_dd_count_last = 0;
+static double stat_dd_ms = 0.0, stat_dd_ms_last = 0.0;
+static uint32_t stat_tex_new = 0, stat_tex_new_last = 0;
+static uint32_t stat_tex_upd = 0, stat_tex_upd_last = 0;
+static uint32_t stat_tex_del = 0, stat_tex_del_last = 0;
+static BOOL timed_draw_done(void) {
+	const OSTime t0 = OSGetSystemTime();
+	const BOOL r = GX2DrawDone();
+	stat_dd_ms += (double)OSTicksToMicroseconds(OSGetSystemTime() - t0) / 1000.0;
+	stat_dd_count++;
+	return r;
+}
+#define GX2DrawDone timed_draw_done
 
 // GPU timestamps (gx2.rpl exports these; wut has no header for them).
 extern void GX2SampleTopGPUCycle(uint64_t *result);
@@ -672,6 +690,7 @@ static WiiUTexture *texture_create(uint32_t p_width, uint32_t p_height, const ui
 	init_texture_view(t, &surface);
 	t->owns_image = true;
 	stat_textures++;
+	stat_tex_new++;
 	stat_texture_bytes += surface.imageSize + (surface.mipmaps != NULL ? surface.mipmapSize : 0);
 	wiiu_gx2_texture_update_levels(t, p_levels, p_count);
 	return t;
@@ -702,6 +721,7 @@ void wiiu_gx2_texture_update(WiiUTexture *p_texture, const uint8_t *p_rgba) {
 }
 
 void wiiu_gx2_texture_update_levels(WiiUTexture *p_texture, const uint8_t *const *p_levels, uint32_t p_count) {
+	stat_tex_upd++;
 	if (p_texture == NULL || !p_texture->owns_image) {
 		return;
 	}
@@ -741,6 +761,7 @@ void wiiu_gx2_texture_free(WiiUTexture *p_texture) {
 	if (p_texture->owns_image) {
 		GX2Surface *s = &p_texture->texture.surface;
 		stat_textures--;
+		stat_tex_del++;
 		stat_texture_bytes -= s->imageSize + (s->mipmaps != NULL ? s->mipmapSize : 0);
 		MEMFreeToDefaultHeap(s->image);
 		if (s->mipmaps != NULL) {
@@ -1645,6 +1666,14 @@ void wiiu_gx2_frame_begin(void) {
 	arena_used = 0;
 	stat_last_draws = stat_draws;
 	stat_last_vertices = stat_vertices;
+	stat_dd_count_last = stat_dd_count;
+	stat_dd_ms_last = stat_dd_ms;
+	stat_tex_new_last = stat_tex_new;
+	stat_tex_upd_last = stat_tex_upd;
+	stat_tex_del_last = stat_tex_del;
+	stat_dd_count = 0;
+	stat_dd_ms = 0.0;
+	stat_tex_new = stat_tex_upd = stat_tex_del = 0;
 	stat_draws = 0;
 	stat_vertices = 0;
 	if (!wiiu_gx2_can_draw()) {
@@ -1681,6 +1710,11 @@ void wiiu_gx2_get_stats(WiiUGX2Stats *r_stats) {
 	r_stats->render_target_bytes = stat_render_target_bytes;
 	r_stats->gpu_ms = stat_gpu_ms;
 	r_stats->flip_wait_ms = stat_flip_wait_ms;
+	r_stats->draw_done_count = stat_dd_count_last;
+	r_stats->draw_done_ms = (float)stat_dd_ms_last;
+	r_stats->tex_new = stat_tex_new_last;
+	r_stats->tex_updates = stat_tex_upd_last;
+	r_stats->tex_freed = stat_tex_del_last;
 }
 
 void wiiu_gx2_frame_present(void) {

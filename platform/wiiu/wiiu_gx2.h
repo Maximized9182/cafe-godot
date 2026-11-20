@@ -231,6 +231,11 @@ typedef struct {
 	uint64_t render_target_bytes;
 	float gpu_ms;
 	float flip_wait_ms; // Last frame, in GX2WaitForFlip (vsync).
+	uint32_t draw_done_count; // Last frame: GX2DrawDone calls (CPU waits for the GPU) and their time.
+	float draw_done_ms;
+	uint32_t tex_new; // Last frame: textures created, uploaded to, freed.
+	uint32_t tex_updates;
+	uint32_t tex_freed;
 } WiiUGX2Stats;
 void wiiu_gx2_get_stats(WiiUGX2Stats *r_stats);
 

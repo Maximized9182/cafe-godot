@@ -18,6 +18,7 @@ wiiu_files = [
     "audio_driver_wiiu.cpp",
     "wiiu_gx2.c",
     "crash_font_data.c",
+    "stats_font_data.c",
     "wiiu_system_font.cpp",
     "wiiu_stats.cpp",
     "atomic64.c",
