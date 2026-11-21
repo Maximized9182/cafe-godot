@@ -10,7 +10,7 @@ PowerPC CPU, with new backends for the display, GPU (GX2), input, audio (AX), fi
 the HOME menu.
 
 > Status: early but playable. Several full 2D games run, including a [Friday Night Funkin'
-> engine](https://github.com/cherrythecool/funkin_godot) and an [Undertale-style RPG engine](https://github.com/Maximized9182/LVENGINE). Expect rough edges.
+> engine](https://github.com/cherrythecool/funkin_godot), [this DELTARUNE fangame](https://gamejolt.com/games/no_cats/1113174) and an [Undertale RPG engine made by me](https://github.com/Maximized9182/LVENGINE). Expect rough edges.
 
 ## What works
 
@@ -36,7 +36,7 @@ the HOME menu.
 - **GDScript**, 2D and 3D physics (Godot Physics; projects set to Jolt use it too), `RichTextLabel`, RegEx, interactive music
   (`AudioStreamSynchronized` and friends).
 - **Saves**: `user://` is `sd:/wiiu/godot/<project user dir>/`.
-- **HOME menu**, closing from HOME and the Aroma close plugin.
+- **HOME menu**, closing from HOME and `Close/Restart Game` plugin.
 - **Crash screen** with the error and a backtrace on both screens.
 
 ## What doesn't (yet)
