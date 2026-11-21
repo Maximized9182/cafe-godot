@@ -85,7 +85,9 @@ double Engine::get_physics_jitter_fix() const {
 }
 
 void Engine::set_max_fps(int p_fps) {
-	_max_fps = p_fps > 0 ? p_fps : 0;
+	// Cafe Godot: the Wii U never goes above 60 fps, so neither does a playtest;
+	// 0 (unlimited) and anything higher become 60.
+	_max_fps = (p_fps > 0 && p_fps < 60) ? p_fps : 60;
 
 	RenderingDevice *rd = RenderingDevice::get_singleton();
 	if (rd) {
