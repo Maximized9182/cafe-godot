@@ -23,9 +23,12 @@ the HOME menu.
 - **3D, early**: `MeshInstance3D` with primitive meshes (box, sphere, plane, cylinder...) and
   meshes made at run time (`SurfaceTool`, `ArrayMesh` from arrays), 3D `MultiMeshInstance3D`,
   depth, and `StandardMaterial3D` basics: albedo colour and texture, UV1 scale/offset, vertex
-  colour, unshaded, alpha transparency (sorted), alpha scissor, cull and depth modes. Lighting
-  is diffuse only: the environment's ambient light, one `DirectionalLight3D` and up to four
-  `OmniLight3D`s. Needs `cafeglsl.rpl` (see "Canvas shaders"). VRAM-compressed (S3TC/BPTC)
+  colour, unshaded, alpha transparency (sorted), alpha scissor, cull and depth modes, and
+  roughness/metallic/specular. Lighting: the environment's ambient light, one
+  `DirectionalLight3D` with shadows (up to 4 cascades) and the four nearest `OmniLight3D`s or
+  `SpotLight3D`s per object, with GGX specular. Procedural, panorama and physical skies (and
+  custom sky shaders) draw behind the scene. Needs `cafeglsl.rpl` (see "Canvas shaders").
+  VRAM-compressed (S3TC/BPTC)
   textures, which Godot imports 3D textures as, are decompressed when they load.
 - **Input**: Wii U GamePad (buttons, sticks, touchscreen, motion sensors), Wii Remote (with
   Nunchuk or Classic Controller) and Pro Controller, as Godot joypads. Button 0 is A, as on an
@@ -42,8 +45,7 @@ the HOME menu.
 ## What doesn't (yet)
 
 - **3D, the rest**: imported models (`.glb`, `.obj`, `.mesh`: their vertex data is read
-  with the wrong byte order), shadows, spot lights, specular, sky (a sky background is a flat
-  colour), fog, glow and tone mapping, custom `spatial` shaders (drawn as plain materials),
+  with the wrong byte order), shadows from omni and spot lights, fog, glow and tone mapping, custom `spatial` shaders (drawn as plain materials),
   skeletons and blend shapes, `Sprite3D` and `Label3D`.
 - **Shaders, partly**: see "Canvas shaders" below. Shaders with SDF, global/instance uniforms,
   uniform arrays or textures read in `vertex()` draw without the shader (blend mode only).
@@ -115,11 +117,44 @@ platform/wiiu/tools/cafe-export.sh path/to/project mygame.wuhb --name "My Game" 
 Any export preset works. It only decides which resources go into the pack; the template does
 the rest.
 
+### From the editor
+
+The desktop editor fork (`scons platform=linuxbsd target=editor`, installed as `godot-cafe`)
+opens normal Godot projects and adds a **Wii U** export platform: Project > Export > Add > Wii U
+packs the project, the template and `wuhbtool` straight into a `.wuhb`, with the pack embedded
+(or `binary_format/pack_on_sd` to keep it on the SD card). It has options for the name, author,
+icon, splashes and boot sound. It finds the template as a custom template option, an installed
+export template `wiiu_debug.rpx`, or `$CAFE_GODOT_HOME/templates/<version>/wiiu_template_debug.rpx`
+(`wuhbtool` is looked up in `$CAFE_GODOT_HOME/bin` or `PATH`).
+
+## The `Cafe` API
+
+The engine registers a `Cafe` singleton (use `Engine.has_singleton("Cafe")` to keep a game
+running on regular Godot):
+
+```gdscript
+if Engine.has_singleton("Cafe"):
+    Engine.get_singleton("Cafe").set_gamepad_viewport($GamePadViewport)
+```
+
+- `set_gamepad_viewport(SubViewport)` shows that viewport on the GamePad instead of mirroring
+  the TV (`null` mirrors again). GamePad touches go to it as `InputEventScreenTouch`,
+  `InputEventScreenDrag` and left-mouse events, in the viewport's pixels.
+- `get_gamepad_viewport()`, `get_gamepad_size()` (854x480), `is_available()`, `is_wiiu()`.
+
+In the Cafe Godot editor (and any desktop build with a display) the GamePad is a second window,
+"Cafe GamePad", where clicks act as touches.
+
+Godot 4.7's default `ui_accept` has no joypad event, so bind joypad buttons yourself (the Wii U
+A button is joypad button 0).
+
+The frame rate is capped at 60 (`application/run/max_fps` above 60 counts as 60).
+
 ## On the console
 
 | Combo (on the GamePad) | What it does |
 |---|---|
-| `ZR` + `R` + `←` + `Y` + `B` + `L` | Stats overlay: fps, frame time graph, CPU/GPU time, memory, draw calls. Drag it to any corner. |
+| `ZR` + `R` + `←` + `Y` + `B` + `L` | Stats overlay: a compact table at the top left with fps, frame times, CPU and GPU load. Tap the arrow at its top right on the GamePad for the details (memory, draw calls, textures, GPU waits). Drag it to any corner. |
 | `ZL` + `L` + `→` + `X` + `Y` + `TV` | Log overlay: engine output on screen. D-pad, `L` and `R` scroll it. |
 
 The OS name and display server are both reported as `"Cafe OS"` (`OS.get_name()`).
